@@ -11,7 +11,9 @@ which runs trusted, pinned tools on candidate trees outside the candidate's cont
   TypeScript directive comments banned); `tsc`; Vitest with the explicit root config; schema drift.
 - **sensors** (`.github/workflows/sensors.yml`): gitleaks over full history ignoring
   `gitleaks:allow`; osv-scanner on the lockfile; Semgrep (pinned image and rules, `nosemgrep`
-  ignored, owner ignore file); actionlint (owner config) and zizmor (no ignores or config).
+  ignored, owner ignore file); actionlint (owner config) and zizmor (no ignores or config); Grype on
+  the sandbox image built from `packages/harness/sandbox/Dockerfile` (owner empty config; fails on fixable
+  high or critical).
 - **config guard**: rejects tool config, ignore and hook files the tools would discover; install
   scripts, pnpm settings, `devEngines`, `resolutions`/`overrides`; dependency specifiers other than
   registry semver or `@helmwright/*` workspace packages; non-registry lockfile resolutions and
@@ -31,4 +33,5 @@ which runs trusted, pinned tools on candidate trees outside the candidate's cont
 | The schema generator is PR code, so the drift check proves self-consistency only                                                                                        | Same                                              | Harness floor regenerates with the base revision's generator (B3, M1)                         |
 | A newly published registry package could ship another tool's `bin`                                                                                                      | Specifier checks can't see package contents       | Owner-routed dependency decisions; harness structural floor flags dependency changes (A2, M1) |
 | `minimumReleaseAge` applies at resolution time, not to a hand-edited lockfile                                                                                           | `--frozen-lockfile` does not re-resolve           | Harness floor installs from a trusted lockfile (B3, M1)                                       |
+| Grype's vulnerability database is fetched at scan time, so results can change without a code change                                                                     | Pinning the database would hide new advisories    | Accepted: a new finding blocks the next PR until the image is fixed (M1)                      |
 | Runner-provided `jq`, `git` and `docker` are not pinned                                                                                                                 | GitHub-hosted runner image                        | Accepted for the backstop; harness floor pins its own tools (B3, M1)                          |
