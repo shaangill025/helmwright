@@ -28,6 +28,8 @@ env:
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
   ZIZMOR_VERSION: "1.30.1"
   ZIZMOR_SHA256: e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a
+  GRYPE_VERSION: "0.120.0"
+  GRYPE_SHA256: a5a1218dce63acdac152a6b3b5bb366e7267e36f4069848cf455543b3fa5700e
   SEMGREP_IMAGE: semgrep/semgrep@sha256:93963d9295a366f59e4850127b1550400ee7b388f04fe144e4a1f6325d96e01b # 1.179.0
   SEMGREP_RULES_SHA: a84ff9cc2453ca91d581380de4b8b3f272f6f4be
 
@@ -52,7 +54,7 @@ jobs:
 
           # Config, ignore and hook files that scanners, linters, test runners or pnpm discover on
           # their own. NUL-separated names, so quoting of unusual paths can't dodge the pattern.
-          discovered='(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml|actionlint\.ya?ml|\.npmrc|\.yarnrc(\.ya?ml)?|\.pnpmfile\.[cm]?js|package\.(yaml|json5)|\.eslintrc(\.[a-z]+)?|eslint\.config\.[cm]?[jt]s|[jt]sconfig[^/]*\.json|\.prettierrc(\.[a-z]+)?|prettier\.config\.[cm]?[jt]s|\.editorconfig|vite\.config\.[cm]?[jt]s|vitest\.(config|workspace)\.[cm]?[jt]s)$'
+          discovered='(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml|actionlint\.ya?ml|\.grype\.ya?ml|\.grype/[^/]+|\.npmrc|\.yarnrc(\.ya?ml)?|\.pnpmfile\.[cm]?js|package\.(yaml|json5)|\.eslintrc(\.[a-z]+)?|eslint\.config\.[cm]?[jt]s|[jt]sconfig[^/]*\.json|\.prettierrc(\.[a-z]+)?|prettier\.config\.[cm]?[jt]s|\.editorconfig|vite\.config\.[cm]?[jt]s|vitest\.(config|workspace)\.[cm]?[jt]s)$'
           owner_files='^(eslint\.config\.js|tsconfig\.json|tsconfig\.base\.json|vitest\.config\.ts)$'
           found=$(git ls-files -z | zmatch "$discovered" | zdrop "$owner_files" | tr '\0' ' ')
           if [ -n "$found" ]; then
@@ -212,3 +214,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: '"$RUNNER_TEMP/zizmor" --no-ignores --no-config .'
+
+  image:
+    name: grype (sandbox image)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install grype
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/grype.tar.gz" \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP" grype
+      - name: Build the sandbox image
+        run: docker build --quiet --tag helmwright-sandbox:ci packages/harness/sandbox
+      # Owner decision: fail on any fixable high or critical; unfixed findings are reported only.
+      # The vulnerability database is fetched at scan time and is not pinned.
+      - name: Scan
+        run: |
+          : > "$RUNNER_TEMP/grype.yaml"
+          "$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml" --only-fixed --fail-on high
