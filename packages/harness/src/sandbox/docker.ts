@@ -1,13 +1,20 @@
 import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { existsSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { isAbsolute, join, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { errorMessage } from "../loop/terminal.ts";
 
 /** node:26-slim (Node 26.10.0), multi-arch index digest. Has user `node` (uid 1000). */
 export const SANDBOX_BASE_IMAGE =
@@ -16,9 +23,12 @@ export const SANDBOX_BASE_IMAGE =
 export const SANDBOX_DOCKERFILE_DIR = fileURLToPath(
   new URL("../../sandbox", import.meta.url),
 );
+/** Every sandbox container carries this label; `reapSandboxContainers` removes them. */
+export const SANDBOX_LABEL = "helmwright.sandbox=1";
 const BUILD_TIMEOUT_MS = 600_000;
 export const MAX_SANDBOX_VALUE = 2_147_483_647;
 export const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576;
+export const MAX_OUTPUT_BYTES = 67_108_864;
 
 export interface SandboxLimits {
   readonly memoryMb: number;
@@ -39,13 +49,23 @@ export interface SandboxRequest {
    * references are rejected, and `--pull=never` keeps Docker from fetching anything.
    */
   readonly image: string;
-  /** Absolute host directory; its realpath is mounted read-write at /workspace. */
+  /**
+   * Absolute host directory, not itself a symlink, whose realpath must be strictly inside
+   * `workspaceRoot`'s realpath; it is mounted read-write at /workspace. The container can
+   * plant symlinks there: callers must read its outputs without following symlinks
+   * (lstat / O_NOFOLLOW), or they may read or overwrite host files.
+   */
   readonly workspace: string;
+  /** Absolute host directory that confines `workspace`. */
+  readonly workspaceRoot: string;
   readonly timeoutMs: number;
-  /** The container's only variables besides the image's. Host env never passes through. */
+  /**
+   * The container's only variables besides the image's. Host env never passes through, and
+   * credential-shaped names (…TOKEN, …SECRET, AWS_…, …) are rejected.
+   */
   readonly env?: Readonly<Record<string, string>>;
   readonly limits?: SandboxLimits;
-  /** Per-stream capture bound; the head is kept. Default 1 MiB. */
+  /** Per-stream capture bound; the head is kept. Default 1 MiB, at most 64 MiB. */
   readonly maxOutputBytes?: number;
   readonly signal?: AbortSignal;
 }
@@ -55,36 +75,66 @@ export interface SandboxResult {
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
+  readonly stdoutTruncated: boolean;
+  readonly stderrTruncated: boolean;
+  /** Either stream was truncated. */
   readonly truncated: boolean;
   readonly timedOut: boolean;
   readonly cancelled: boolean;
+  /** Exit 126/127: the program could not be executed (or itself exited so). */
+  readonly startFailed: boolean;
+  /** After a timeout/cancel, the container could not be confirmed removed. */
+  readonly cleanupFailed: boolean;
+  readonly containerName: string;
   readonly durationMs: number;
 }
 
 export interface SandboxDeps {
   /** Docker CLI executable. Default "docker". */
   readonly dockerBinary?: string;
-  /** Source of the docker client's PATH/HOME/DOCKER_*. Default process.env. */
+  /** Source of the client's PATH and of the endpoint lookup. Default process.env. */
   readonly hostEnv?: Readonly<Record<string, string | undefined>>;
   /** Default `helmwright-sandbox-<uuid>`. */
   readonly containerName?: string;
+  /**
+   * Daemon endpoint, which must be `unix://`. Default: `resolveDockerEndpoint` with the
+   * first caller's deps, once per process.
+   */
+  readonly resolveEndpoint?: () => Promise<string>;
+  /** Bound on each docker cleanup command and on the client's exit. Default 10 s. */
+  readonly cleanupTimeoutMs?: number;
+  /** Bound on `buildSandboxImage`. Default 10 min. */
+  readonly buildTimeoutMs?: number;
 }
 
 const CONTAINER_PATH = "/workspace";
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
+const CREDENTIAL_KEY =
+  /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY)|^(AWS|ANTHROPIC|GITHUB|GH|NPM|OPENAI)_/;
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
-const CLIENT_ENV_KEYS = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"];
-/** Bound on each docker cleanup command and on waiting for the client to exit. */
 const CLEANUP_MS = 10_000;
+/** After SIGKILL, how long to wait for the client to exit. */
+const KILL_SETTLE_MS = 2_000;
+const MESSAGE_CHARS = 4_096;
 
 const fail = (field: string, problem: string): RangeError =>
   new RangeError(`SandboxRequest.${field} ${problem}`);
 
-function checkInteger(field: string, value: number, min: number): void {
-  if (!Number.isInteger(value) || value < min || value > MAX_SANDBOX_VALUE) {
+const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const bounded = (text: string): string => text.trim().slice(0, MESSAGE_CHARS);
+
+function checkInteger(
+  field: string,
+  value: number,
+  min: number,
+  max = MAX_SANDBOX_VALUE,
+): void {
+  if (!Number.isInteger(value) || value < min || value > max) {
     throw fail(
       field,
-      `must be an integer in [${String(min)}, ${String(MAX_SANDBOX_VALUE)}], got ${String(value)}`,
+      `must be an integer in [${String(min)}, ${String(max)}], got ${String(value)}`,
     );
   }
 }
@@ -102,22 +152,33 @@ function checkArgv(argv: readonly string[]): void {
   });
 }
 
-/** Returns the workspace realpath, or throws. */
-function resolveWorkspace(workspace: string): string {
-  if (typeof workspace !== "string" || workspace.includes("\0")) {
-    throw new TypeError(
-      "SandboxRequest.workspace must be a string without NUL",
-    );
+/** Returns the realpath of an existing absolute directory, or throws. */
+function realDirectory(field: string, path: string): string {
+  if (typeof path !== "string" || path.includes("\0")) {
+    throw new TypeError(`SandboxRequest.${field} must be a string without NUL`);
   }
-  if (!isAbsolute(workspace)) throw fail("workspace", "must be absolute");
+  if (!isAbsolute(path)) throw fail(field, "must be absolute");
   let real: string;
   try {
-    real = realpathSync(workspace);
+    real = realpathSync(path);
   } catch {
-    throw fail("workspace", `does not exist: ${workspace}`);
+    throw fail(field, `does not exist: ${path}`);
   }
   if (!statSync(real).isDirectory()) {
-    throw fail("workspace", `is not a directory: ${real}`);
+    throw fail(field, `is not a directory: ${real}`);
+  }
+  return real;
+}
+
+/** Returns the workspace realpath, or throws. */
+function resolveWorkspace(workspace: string, workspaceRoot: string): string {
+  const real = realDirectory("workspace", workspace);
+  if (lstatSync(workspace).isSymbolicLink()) {
+    throw fail("workspace", `must not be a symlink: ${workspace}`);
+  }
+  const root = realDirectory("workspaceRoot", workspaceRoot);
+  if (!real.startsWith(root.endsWith(sep) ? root : root + sep)) {
+    throw fail("workspace", `must be strictly inside ${root}: ${real}`);
   }
   const home = homedir();
   const realHome = existsSync(home) ? realpathSync(home) : home;
@@ -137,6 +198,9 @@ function checkEnv(env: Readonly<Record<string, string>>): [string, string][] {
     if (!ENV_KEY.test(key)) {
       throw fail("env", `key must match ${String(ENV_KEY)}, got ${key}`);
     }
+    if (CREDENTIAL_KEY.test(key)) {
+      throw fail("env", `key looks like a credential: ${key}`);
+    }
     if (typeof value !== "string" || value.includes("\0")) {
       throw new TypeError(
         `SandboxRequest.env.${key} must be a string without NUL`,
@@ -155,10 +219,22 @@ function checkLimits(limits: SandboxLimits): void {
   }
 }
 
+/** The host user as `uid:gid`, so workspace files stay the caller's; never root. */
+function hostUser(): string {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (uid === undefined || gid === undefined) return "1000:1000";
+  if (uid === 0) {
+    throw new Error("sandbox refuses to run as root (uid 0); run unprivileged");
+  }
+  return `${String(uid)}:${String(gid)}`;
+}
+
 /**
  * Validates `request` and builds the `docker run` argv. No side effects
  * beyond reading the filesystem to resolve the workspace.
- * @throws RangeError | TypeError for an invalid request or container name.
+ * @throws RangeError | TypeError for an invalid request or container name;
+ * Error when the harness itself runs as root.
  */
 export function dockerRunArgs(
   request: SandboxRequest,
@@ -172,12 +248,13 @@ export function dockerRunArgs(
       "must be an image ID (sha256:<64 hex>) from buildSandboxImage",
     );
   }
-  const workspace = resolveWorkspace(request.workspace);
+  const workspace = resolveWorkspace(request.workspace, request.workspaceRoot);
   checkInteger("timeoutMs", request.timeoutMs, 1);
   checkInteger(
     "maxOutputBytes",
     request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
     1,
+    MAX_OUTPUT_BYTES,
   );
   const limits = request.limits ?? DEFAULT_SANDBOX_LIMITS;
   checkLimits(limits);
@@ -185,18 +262,25 @@ export function dockerRunArgs(
   if (!CONTAINER_NAME.test(containerName)) {
     throw new RangeError(`invalid sandbox container name: ${containerName}`);
   }
+  const memory = `${String(limits.memoryMb)}m`;
   const options: (readonly [string, string])[] = [
     ["--name", containerName],
+    ["--label", SANDBOX_LABEL],
     // Never fetch an image, and never run an image-defined entrypoint before argv.
     ["--pull", "never"],
     ["--entrypoint", ""],
     ["--network", "none"],
+    ["--ipc", "none"],
     ["--cap-drop", "ALL"],
     ["--security-opt", "no-new-privileges"],
-    ["--user", "1000:1000"],
+    ["--user", hostUser()],
     ["--pids-limit", String(limits.pids)],
-    ["--memory", `${String(limits.memoryMb)}m`],
+    ["--memory", memory],
+    ["--memory-swap", memory],
     ["--cpus", String(limits.cpus)],
+    ["--ulimit", "nofile=1024:1024"],
+    ["--ulimit", "fsize=1073741824"],
+    ["--log-driver", "none"],
     ["--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"],
     ["--mount", `type=bind,src=${workspace},dst=${CONTAINER_PATH}`],
     ["--workdir", CONTAINER_PATH],
@@ -210,38 +294,132 @@ export function dockerRunArgs(
   ];
 }
 
+function checkEndpoint(endpoint: string): string {
+  if (!/^unix:\/\/\/[^\0\n]*$/.test(endpoint)) {
+    const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(endpoint)?.[0] ?? "no scheme";
+    throw new Error(
+      `sandbox requires a local unix:// docker endpoint, got ${scheme}`,
+    );
+  }
+  return endpoint;
+}
+
+/**
+ * The daemon endpoint: DOCKER_HOST if set, else the current docker context's. Rejects
+ * anything but `unix://` (tcp://, ssh://, npipe:// …): no remote daemons.
+ */
+export async function resolveDockerEndpoint(
+  deps: Pick<SandboxDeps, "dockerBinary" | "hostEnv"> = {},
+): Promise<string> {
+  const hostEnv = deps.hostEnv ?? process.env;
+  const fromEnv = hostEnv["DOCKER_HOST"];
+  if (fromEnv !== undefined && fromEnv !== "") return checkEndpoint(fromEnv);
+  const env: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "DOCKER_CONFIG", "DOCKER_CONTEXT"]) {
+    const value = hostEnv[key];
+    if (value !== undefined) env[key] = value;
+  }
+  const docker = { binary: deps.dockerBinary ?? "docker", env, ms: CLEANUP_MS };
+  const args = ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"];
+  return checkEndpoint((await dockerOutput(docker, args)).trim());
+}
+
+let defaultEndpoint: Promise<string> | undefined;
+let clientHome: string | undefined;
+
+/**
+ * The docker client's environment: the host PATH, the given `unix://` endpoint, and a
+ * harness-owned HOME/DOCKER_CONFIG (0700, `{}` config), so the user's docker config
+ * (credentials, proxies, contexts) never reaches the daemon or the container.
+ */
+export function dockerClientEnv(
+  hostEnv: Readonly<Record<string, string | undefined>>,
+  endpoint: string,
+): Record<string, string> {
+  const host = checkEndpoint(endpoint);
+  if (clientHome === undefined) {
+    const home = mkdtempSync(join(tmpdir(), "helmwright-docker-"));
+    mkdirSync(join(home, ".docker"), { mode: 0o700 });
+    writeFileSync(join(home, ".docker", "config.json"), "{}\n", {
+      mode: 0o600,
+    });
+    process.once("exit", () => {
+      rmSync(home, { recursive: true, force: true });
+    });
+    clientHome = home;
+  }
+  const env: Record<string, string> = {};
+  const path = hostEnv["PATH"];
+  if (path !== undefined) env["PATH"] = path;
+  env["HOME"] = clientHome;
+  env["DOCKER_CONFIG"] = join(clientHome, ".docker");
+  env["DOCKER_HOST"] = host;
+  return env;
+}
+
+interface Docker {
+  readonly binary: string;
+  readonly env: Record<string, string>;
+  /** Bound on each cleanup/query command. */
+  readonly ms: number;
+}
+
+async function dockerContext(deps: SandboxDeps): Promise<Docker> {
+  let endpoint: Promise<string>;
+  if (deps.resolveEndpoint !== undefined) {
+    endpoint = deps.resolveEndpoint();
+  } else {
+    defaultEndpoint ??= resolveDockerEndpoint(deps).catch((error: unknown) => {
+      defaultEndpoint = undefined;
+      throw error;
+    });
+    endpoint = defaultEndpoint;
+  }
+  return {
+    binary: deps.dockerBinary ?? "docker",
+    env: dockerClientEnv(deps.hostEnv ?? process.env, await endpoint),
+    ms: deps.cleanupTimeoutMs ?? CLEANUP_MS,
+  };
+}
+
 /**
  * Builds the sandbox image from SANDBOX_DOCKERFILE_DIR (base must be present
  * locally: `--pull=false`). Resolves with the image ID (`sha256:…`).
  * @throws Error if docker is unavailable, the build fails, or it exceeds 10 min.
  */
 export async function buildSandboxImage(
-  deps: Pick<SandboxDeps, "dockerBinary" | "hostEnv"> = {},
+  deps: Omit<SandboxDeps, "containerName" | "cleanupTimeoutMs"> = {},
 ): Promise<string> {
+  const docker = await dockerContext(deps);
   const args = ["build", "--quiet", "--pull=false", SANDBOX_DOCKERFILE_DIR];
-  const { child, stdout, stderr, closed } = startDocker(args, deps, 65_536);
-  const timer = setTimeout(() => child.kill("SIGKILL"), BUILD_TIMEOUT_MS);
-  const code = await closed.finally(() => {
+  const proc = startDocker(docker, args, 65_536);
+  const limit = deps.buildTimeoutMs ?? BUILD_TIMEOUT_MS;
+  const { promise: killed, resolve } = Promise.withResolvers<null>();
+  const state = { timedOut: false };
+  const timer = setTimeout(() => {
+    state.timedOut = true;
+    proc.child.kill("SIGKILL");
+    // A killed client may leave its pipes open (helpers): settle on exit, bounded.
+    void within(proc.exited, KILL_SETTLE_MS).then(() => {
+      resolve(null);
+    });
+  }, limit);
+  const code = await Promise.race([proc.closed, killed]).finally(() => {
     clearTimeout(timer);
   });
-  const id = stdout.text().trim();
+  // Whichever settled first, a fired timer means the build was killed.
+  if (state.timedOut) {
+    proc.destroy();
+    throw new Error(`sandbox image build timed out after ${String(limit)} ms`);
+  }
+  const id = proc.stdout.text().trim();
   if (code !== 0 || !/^sha256:[0-9a-f]{64}$/.test(id)) {
-    const why = `exit ${String(code)}, signal ${String(child.signalCode)}`;
-    throw new Error(`sandbox image build failed (${why}): ${stderr.text()}`);
+    const stderr = bounded(proc.stderr.text());
+    throw new Error(
+      `sandbox image build failed (exit ${String(code)}): ${stderr}`,
+    );
   }
   return id;
-}
-
-/** The docker client's environment: only what it needs to reach the daemon. */
-export function dockerClientEnv(
-  hostEnv: Readonly<Record<string, string | undefined>>,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of CLIENT_ENV_KEYS) {
-    const value = hostEnv[key];
-    if (value !== undefined) env[key] = value;
-  }
-  return env;
 }
 
 function capture(stream: Readable | null, max: number) {
@@ -277,11 +455,11 @@ function within(promise: Promise<unknown>, ms: number): Promise<boolean> {
   });
 }
 
-/** Spawns the docker CLI (argv, no shell) with the minimal client env. */
-function startDocker(args: readonly string[], deps: SandboxDeps, max: number) {
-  const child = spawn(deps.dockerBinary ?? "docker", args, {
+/** Spawns the docker CLI (argv, no shell) with the isolated client env. */
+function startDocker(docker: Docker, args: readonly string[], max: number) {
+  const child = spawn(docker.binary, args, {
     stdio: ["ignore", "pipe", "pipe"],
-    env: dockerClientEnv(deps.hostEnv ?? process.env),
+    env: docker.env,
   });
   const stdout = capture(child.stdout, max);
   const stderr = capture(child.stderr, max);
@@ -289,33 +467,85 @@ function startDocker(args: readonly string[], deps: SandboxDeps, max: number) {
   const closed = events.then(
     ([code]) => (typeof code === "number" ? code : null),
     (error: unknown) => {
-      const message = `docker is unavailable: ${errorMessage(error)}`;
+      const message = `docker is unavailable: ${messageOf(error)}`;
       throw new Error(message, { cause: error });
     },
   );
-  return { child, stdout, stderr, closed };
+  const exited: Promise<unknown> = once(child, "exit").catch(() => undefined);
+  const destroy = () => {
+    child.stdout.destroy();
+    child.stderr.destroy();
+  };
+  return { child, stdout, stderr, closed, exited, destroy };
 }
 
 /** Runs a docker command for its effect, ignoring failure. Bounded. */
-async function dockerQuiet(deps: SandboxDeps, args: string[]): Promise<void> {
-  const { child, closed } = startDocker(args, deps, 0);
-  if (!(await within(closed, CLEANUP_MS))) child.kill("SIGKILL");
+async function dockerQuiet(docker: Docker, args: string[]): Promise<void> {
+  const proc = startDocker(docker, args, 0);
+  if (!(await within(proc.closed, docker.ms))) {
+    proc.child.kill("SIGKILL");
+    proc.destroy();
+  }
 }
 
-/** Kills and removes the container; waits (bounded) for the client to exit. */
+/** Runs a docker command for its stdout. Bounded; rejects on failure. */
+async function dockerOutput(docker: Docker, args: string[]): Promise<string> {
+  const proc = startDocker(docker, args, 1_048_576);
+  if (!(await within(proc.closed, docker.ms))) {
+    proc.child.kill("SIGKILL");
+    proc.destroy();
+    throw new Error(`docker ${String(args[0])} timed out`);
+  }
+  const code = await proc.closed;
+  if (code !== 0) {
+    const why = `exit ${String(code)}: ${bounded(proc.stderr.text())}`;
+    throw new Error(`docker ${String(args[0])} failed (${why})`);
+  }
+  return proc.stdout.text();
+}
+
+/** Kills and removes the container (bounded); resolves true once confirmed gone. */
 async function stopContainer(
-  deps: SandboxDeps,
+  docker: Docker,
   name: string,
-  client: ChildProcess,
-  exited: Promise<unknown>,
-): Promise<void> {
-  await dockerQuiet(deps, ["kill", name]);
-  await dockerQuiet(deps, ["rm", "-f", name]);
-  if (await within(exited, CLEANUP_MS)) return;
-  // The container may have been created after the first removal.
-  client.kill("SIGKILL");
-  await dockerQuiet(deps, ["rm", "-f", name]);
-  await within(exited, CLEANUP_MS);
+  client: ReturnType<typeof startDocker>,
+): Promise<boolean> {
+  await dockerQuiet(docker, ["kill", name]);
+  await dockerQuiet(docker, ["rm", "-f", name]);
+  if (!(await within(client.closed, docker.ms))) {
+    // The container may have been created after the first removal.
+    client.child.kill("SIGKILL");
+    await dockerQuiet(docker, ["rm", "-f", name]);
+    await within(client.exited, KILL_SETTLE_MS);
+  }
+  client.destroy();
+  const filter = `name=^/${name.replaceAll(".", "\\.")}$`;
+  return dockerOutput(docker, ["ps", "-a", "-q", "--filter", filter]).then(
+    (out) => out.trim() === "",
+    () => false,
+  );
+}
+
+/**
+ * Force-removes every container labelled SANDBOX_LABEL (call at harness startup, when no
+ * sandbox runs). Resolves with how many were removed.
+ * @throws Error if docker cannot list or remove them.
+ */
+export async function reapSandboxContainers(
+  deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
+): Promise<number> {
+  const docker = await dockerContext(deps);
+  const filter = `label=${SANDBOX_LABEL}`;
+  const out = await dockerOutput(docker, [
+    "ps",
+    "-a",
+    "-q",
+    "--filter",
+    filter,
+  ]);
+  const ids = out.split("\n").filter((id) => /^[0-9a-f]+$/.test(id));
+  if (ids.length > 0) await dockerOutput(docker, ["rm", "-f", ...ids]);
+  return ids.length;
 }
 
 /**
@@ -324,7 +554,9 @@ async function stopContainer(
  * timeout, or abort (the container is killed and removed); never hangs.
  *
  * @throws RangeError | TypeError synchronously, before spawning, for an
- * invalid request. Rejects if the docker CLI cannot be started.
+ * invalid request. Rejects if the endpoint is not `unix://`, if the docker CLI
+ * cannot be started, or if docker fails to start the container (exit 125:
+ * "sandbox failed to start: …").
  */
 export function runInSandbox(
   request: SandboxRequest,
@@ -342,11 +574,20 @@ async function execute(
   deps: SandboxDeps,
 ): Promise<SandboxResult> {
   const started = performance.now();
+  const docker = await dockerContext(deps);
+  const base = {
+    containerName: name,
+    startFailed: false,
+    cleanupFailed: false,
+  };
   if (request.signal?.aborted === true) {
     return {
+      ...base,
       exitCode: null,
       stdout: "",
       stderr: "",
+      stdoutTruncated: false,
+      stderrTruncated: false,
       truncated: false,
       timedOut: false,
       cancelled: true,
@@ -354,7 +595,7 @@ async function execute(
     };
   }
   const max = request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const { child, stdout, stderr, closed } = startDocker(args, deps, max);
+  const client = startDocker(docker, args, max);
   let reason: "timeout" | "cancelled" | undefined;
   const { promise: interrupted, resolve: interrupt } =
     Promise.withResolvers<null>();
@@ -370,15 +611,29 @@ async function execute(
   };
   request.signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    const code = await Promise.race([closed, interrupted]);
-    if (reason !== undefined) await stopContainer(deps, name, child, closed);
+    const code = await Promise.race([client.closed, interrupted]);
+    let cleanupFailed = false;
+    if (reason !== undefined) {
+      cleanupFailed = !(await stopContainer(docker, name, client));
+    } else if (code === 125) {
+      await dockerQuiet(docker, ["rm", "-f", name]);
+      const stderr = bounded(client.stderr.text());
+      throw new Error(`sandbox failed to start: ${stderr}`);
+    }
+    const stdoutTruncated = client.stdout.truncated();
+    const stderrTruncated = client.stderr.truncated();
     return {
+      ...base,
       exitCode: reason === undefined ? code : null,
-      stdout: stdout.text(),
-      stderr: stderr.text(),
-      truncated: stdout.truncated() || stderr.truncated(),
+      stdout: client.stdout.text(),
+      stderr: client.stderr.text(),
+      stdoutTruncated,
+      stderrTruncated,
+      truncated: stdoutTruncated || stderrTruncated,
       timedOut: reason === "timeout",
       cancelled: reason === "cancelled",
+      startFailed: reason === undefined && (code === 126 || code === 127),
+      cleanupFailed,
       durationMs: Math.round(performance.now() - started),
     };
   } finally {

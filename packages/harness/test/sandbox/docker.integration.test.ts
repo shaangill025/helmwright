@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
@@ -23,6 +23,7 @@ import {
 import {
   SANDBOX_BASE_IMAGE,
   buildSandboxImage,
+  reapSandboxContainers,
   runInSandbox,
   type SandboxRequest,
   type SandboxResult,
@@ -31,6 +32,7 @@ import {
 // Real Docker: this file fails (never skips) when Docker is unavailable.
 const T = 60_000;
 let image: string;
+let root: string;
 let workspace: string;
 let outside: string;
 
@@ -49,13 +51,13 @@ beforeAll(async () => {
 }, 600_000);
 
 beforeEach(() => {
-  workspace = realpathSync(mkdtempSync(join(tmpdir(), "hw-sandbox-ws-")));
+  root = realpathSync(mkdtempSync(join(tmpdir(), "hw-sandbox-ws-")));
+  workspace = join(root, "ws");
+  mkdirSync(workspace);
   outside = realpathSync(mkdtempSync(join(tmpdir(), "hw-sandbox-out-")));
-  // The container runs as uid 1000; a CI runner's uid may differ.
-  chmodSync(workspace, 0o777);
 });
 afterEach(() => {
-  rmSync(workspace, { recursive: true, force: true });
+  rmSync(root, { recursive: true, force: true });
   rmSync(outside, { recursive: true, force: true });
 });
 
@@ -63,7 +65,14 @@ const run = (
   argv: readonly string[],
   over: Partial<SandboxRequest> = {},
 ): Promise<SandboxResult> =>
-  runInSandbox({ argv, image, workspace, timeoutMs: 30_000, ...over });
+  runInSandbox({
+    argv,
+    image,
+    workspace,
+    workspaceRoot: root,
+    timeoutMs: 30_000,
+    ...over,
+  });
 
 function expectNoContainer(name: string): void {
   const ps = spawnSync("docker", ["ps", "-aq", "--filter", `name=${name}`], {
@@ -121,12 +130,20 @@ describe("runInSandbox (docker)", () => {
     }
   });
 
-  it("runs as non-root with no capabilities", { timeout: T }, async () => {
-    const uid = await run(["id", "-u"]);
-    expect(uid.stdout).toBe("1000\n");
+  it("runs as the host user with no capabilities", { timeout: T }, async () => {
+    const id = await run(["sh", "-c", "id -u; id -g"]);
+    const [uid, gid] = [process.getuid?.() ?? 1000, process.getgid?.() ?? 1000];
+    expect(id.stdout).toBe(`${String(uid)}\n${String(gid)}\n`);
     // CapBnd is zero only with --cap-drop ALL; CapEff alone is zero for any non-root user.
     const caps = await run(["grep", "-E", "Cap(Eff|Bnd)", "/proc/self/status"]);
     expect(caps.stdout).toMatch(/^CapEff:\s+0+\nCapBnd:\s+0+\n$/);
+    const seccomp = await run(["grep", "^Seccomp:", "/proc/self/status"]);
+    expect(seccomp.stdout).toBe("Seccomp:\t2\n");
+  });
+
+  it("flags a missing program as a start failure", { timeout: T }, async () => {
+    const result = await run(["/nonexistent"]);
+    expect(result).toMatchObject({ exitCode: 127, startFailed: true });
   });
 
   it(
@@ -158,11 +175,21 @@ describe("runInSandbox (docker)", () => {
     const name = `hw-it-${randomUUID()}`;
     const started = Date.now();
     const result = await runInSandbox(
-      { argv: ["sleep", "30"], image, workspace, timeoutMs: 1_500 },
+      {
+        argv: ["sleep", "30"],
+        image,
+        workspace,
+        workspaceRoot: root,
+        timeoutMs: 1_500,
+      },
       { containerName: name },
     );
-    expect(result.timedOut).toBe(true);
-    expect(result.cancelled).toBe(false);
+    expect(result).toMatchObject({
+      timedOut: true,
+      cancelled: false,
+      cleanupFailed: false,
+      containerName: name,
+    });
     expect(Date.now() - started).toBeLessThan(15_000);
     expectNoContainer(name);
   });
@@ -178,12 +205,29 @@ describe("runInSandbox (docker)", () => {
         argv: ["sleep", "30"],
         image,
         workspace,
+        workspaceRoot: root,
         timeoutMs: 30_000,
         signal: controller.signal,
       },
       { containerName: name },
     );
-    expect(result).toMatchObject({ cancelled: true, timedOut: false });
+    expect(result).toMatchObject({
+      cancelled: true,
+      timedOut: false,
+      cleanupFailed: false,
+    });
+    expectNoContainer(name);
+  });
+
+  it("reaps leftover sandbox containers", { timeout: T }, async () => {
+    const name = `hw-it-${randomUUID()}`;
+    const create = spawnSync(
+      "docker",
+      ["create", "--name", name, "--label", "helmwright.sandbox=1", image],
+      { encoding: "utf8" },
+    );
+    expect(create.status).toBe(0);
+    expect(await reapSandboxContainers()).toBeGreaterThanOrEqual(1);
     expectNoContainer(name);
   });
 
@@ -193,7 +237,7 @@ describe("runInSandbox (docker)", () => {
       { maxOutputBytes: 1_024 },
     );
     expect(result.exitCode).toBe(0);
-    expect(result.truncated).toBe(true);
+    expect(result).toMatchObject({ truncated: true, stdoutTruncated: true });
     expect(result.stdout.length).toBeLessThanOrEqual(1_024);
     expect(result.stdout).toBe("x".repeat(1_024));
   });
