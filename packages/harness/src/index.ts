@@ -44,11 +44,15 @@ export type {
 export {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_SANDBOX_LIMITS,
+  MAX_OUTPUT_BYTES,
   MAX_SANDBOX_VALUE,
   SANDBOX_BASE_IMAGE,
   SANDBOX_DOCKERFILE_DIR,
+  SANDBOX_LABEL,
   buildSandboxImage,
   dockerClientEnv,
   dockerRunArgs,
+  reapSandboxContainers,
+  resolveDockerEndpoint,
   runInSandbox,
 } from "./sandbox/docker.ts";
