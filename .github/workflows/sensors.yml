@@ -9,13 +9,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: sensors-${{ github.ref }}
-  # Never cancel runs on main: every merged commit keeps its sensor evidence.
+  # PRs share a group per branch so a new push cancels the old run; every push to main gets its
+  # own group, so no merged commit loses its sensor evidence.
+  group: sensors-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Ring 0 sensor floor. Every scanner is pinned by version and SHA-256 (binaries) or image digest,
 # and candidate-supplied suppressions/config are ignored or rejected.
 env:
+  PNPM_VERSION: "10.21.0"
   GITLEAKS_VERSION: "8.30.1"
   GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
   OSV_SCANNER_VERSION: "2.6.0"
@@ -41,33 +43,53 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
+          error() { echo "::error::$*"; fail=1; }
           # grep exits 1 for "no match" (fine) and 2 for an error (fatal under pipefail).
-          match() { grep -E "$1" || [ $? -eq 1 ]; }
-          drop() { grep -vE "$1" || [ $? -eq 1 ]; }
+          zmatch() { grep -zE "$1" || [ $? -eq 1 ]; }
+          zdrop() { grep -zvE "$1" || [ $? -eq 1 ]; }
 
-          # Config and ignore files that scanners, linters or pnpm discover on their own.
-          discovered='(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml|actionlint\.ya?ml|\.npmrc|\.pnpmfile\.[cm]?js|\.eslintrc(\.[a-z]+)?|eslint\.config\.[cm]?[jt]s|tsconfig[^/]*\.json)$'
-          owner_files='^(eslint\.config\.js|tsconfig\.json|tsconfig\.base\.json)$'
-          found=$(git ls-files | match "$discovered" | drop "$owner_files")
+          # Config, ignore and hook files that scanners, linters, test runners or pnpm discover on
+          # their own. NUL-separated names, so quoting of unusual paths can't dodge the pattern.
+          discovered='(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml|actionlint\.ya?ml|\.npmrc|\.yarnrc(\.ya?ml)?|\.pnpmfile\.[cm]?js|package\.(yaml|json5)|\.eslintrc(\.[a-z]+)?|eslint\.config\.[cm]?[jt]s|[jt]sconfig[^/]*\.json|\.prettierrc(\.[a-z]+)?|prettier\.config\.[cm]?[jt]s|\.editorconfig|vite\.config\.[cm]?[jt]s|vitest\.(config|workspace)\.[cm]?[jt]s)$'
+          owner_files='^(eslint\.config\.js|tsconfig\.json|tsconfig\.base\.json|vitest\.config\.ts)$'
+          found=$(git ls-files -z | zmatch "$discovered" | zdrop "$owner_files" | tr '\0' ' ')
           if [ -n "$found" ]; then
-            echo "::error::Tool config and ignore files are owner-controlled; only the root eslint.config.js and tsconfig files are allowed:"
-            echo "$found"
-            fail=1
+            error "Tool config, ignore and hook files are owner-controlled; only the root eslint.config.js, tsconfig and vitest.config.ts are allowed: $found"
           fi
 
-          # Lifecycle scripts run code during `pnpm install`, before any check.
-          for manifest in $(git ls-files | match '(^|/)package\.json$'); do
-            hooks=$(jq -r '(.scripts // {}) | keys[] | select(test("^(pre|post)?(install|prepare)$|^prepublish$"))' "$manifest")
-            builds=$(jq -r '(.pnpm // {}) | keys[] | select(. == "onlyBuiltDependencies" or . == "dangerouslyAllowAllBuilds")' "$manifest")
-            if [ -n "$hooks$builds" ]; then
-              echo "::error::$manifest declares install-time code: $hooks $builds"
-              fail=1
-            fi
-          done
-          if match '^\s*(onlyBuiltDependencies|dangerouslyAllowAllBuilds)\s*:' < pnpm-workspace.yaml | grep -q .; then
-            echo "::error::pnpm-workspace.yaml allows dependency build scripts"
-            fail=1
+          # pnpm-workspace.yaml can load code (pnpmfile, nodeOptions) or allow build scripts in many
+          # spellings, so it must match the owner's content exactly.
+          expected=$(cat <<'YAML'
+          packages:
+            - packages/*
+
+          # Fail install on the wrong Node major instead of warning.
+          engineStrict: true
+          # Refuse versions published less than 3 days ago (supply-chain floor).
+          minimumReleaseAge: 4320
+          YAML
+          )
+          if [ "$(cat pnpm-workspace.yaml)" != "$expected" ]; then
+            error "pnpm-workspace.yaml differs from the owner-approved content"
           fi
+
+          # Manifests: no install-time code, no pnpm settings block, registry or workspace
+          # dependencies only (file:, link:, git and npm: aliases could swap out the checkers), and
+          # the pinned pnpm (an older pnpm runs dependency build scripts by default).
+          while IFS= read -r -d '' manifest; do
+            problems=$(jq -r --arg pm "pnpm@$PNPM_VERSION" --arg root "$([ "$manifest" = package.json ] && echo yes || echo no)" '
+              ((.scripts // {}) | keys[] | select(test("^(pre|post)?(install|prepare)$|^prepublish$|^pnpm:")) | "lifecycle script \(.)"),
+              (if has("pnpm") then "pnpm settings block" else empty end),
+              (if has("devEngines") then "devEngines block (pnpm would switch to its version)" else empty end),
+              ((.dependencies, .devDependencies, .optionalDependencies, .peerDependencies) // {} | to_entries[]
+                | select(.value | test("^(workspace:[*^~]?|[~^]?[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?)$") | not)
+                | "non-registry dependency \(.key)@\(.value)"),
+              (if $root == "yes" and .packageManager != $pm then "packageManager must be \($pm)" else empty end)
+            ' "$manifest")
+            if [ -n "$problems" ]; then
+              error "$manifest: $(printf '%s' "$problems" | tr '\n' ';')"
+            fi
+          done < <(git ls-files -z | zmatch '(^|/)package\.json$')
           exit "$fail"
 
   secrets:
@@ -124,6 +146,7 @@ jobs:
       - name: Scan
         run: |
           cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/scan"
+          rm -f "$RUNNER_TEMP/scan/.semgrepignore"
           printf 'node_modules/\n' > "$RUNNER_TEMP/scan/.semgrepignore"
           docker run --rm --network none \
             -v "$RUNNER_TEMP/scan:/src:ro" -v "$RUNNER_TEMP/semgrep-rules:/rules:ro" -w /src \
