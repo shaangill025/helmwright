@@ -78,7 +78,7 @@ export function reminderFor(name: string, count: number): string | undefined {
   if (!REMINDER_COUNTS.includes(count)) return undefined;
   return (
     `Reminder: this is identical call #${String(count)} to "${name}"; ` +
-    "it repeats an earlier call with the same input. It was still executed. " +
+    "it repeats an earlier call with the same input. This reminder does not block it. " +
     "Try a different approach or report what is blocking you."
   );
 }
