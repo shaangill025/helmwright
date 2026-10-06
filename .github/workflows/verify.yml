@@ -29,3 +29,15 @@ jobs:
       # Explicit root config: ESLint 10 otherwise lets a nested eslint.config.* replace it.
       - run: pnpm exec eslint --config eslint.config.js --max-warnings 0 .
       - run: pnpm exec tsc -p tsconfig.json
+      # Explicit config: the only one the guard allows. No `pnpm test`, whose script a PR could replace.
+      - run: pnpm exec vitest run --config vitest.config.ts
+      - name: Generated code matches the schemas
+        run: |
+          node packages/schema/scripts/generate.ts
+          changes=$(git status --porcelain --untracked-files=all)
+          if [ -n "$changes" ]; then
+            echo "::error::Regenerating from the schemas changed these files; commit the generator's output:"
+            echo "$changes"
+            git diff
+            exit 1
+          fi

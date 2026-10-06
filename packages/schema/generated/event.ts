@@ -1,0 +1,35 @@
+// Generated from schemas/event.schema.json by scripts/generate.ts. Do not edit.
+
+/**
+ * Opaque identifier. A pattern rather than minLength keeps generated validators free of runtime imports.
+ */
+export type Id = string;
+
+/**
+ * Envelope of every session-log event. Graph, run and node identity are required from the first event (design 06, Ring 0).
+ */
+export interface Event {
+  schemaVersion: 1;
+  eventId: Id;
+  /**
+   * Position in the session log: starts at 0, gap-free and strictly increasing.
+   */
+  seq: number;
+  graphId: Id;
+  runId: Id;
+  nodeId: Id;
+  /**
+   * Dotted event type, e.g. `run.started`.
+   */
+  type: string;
+  /**
+   * UTC timestamp, RFC 3339 with a `Z` designator.
+   */
+  at: string;
+  /**
+   * Event-type-specific body; typed per event kind by the object-model schemas.
+   */
+  payload: {
+    [k: string]: unknown;
+  };
+}
