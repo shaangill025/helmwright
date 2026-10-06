@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: verify-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -26,5 +26,6 @@ jobs:
           node-version-file: .node-version
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec prettier --check .
-      - run: pnpm exec eslint --max-warnings 0 .
+      # Explicit root config: ESLint 10 otherwise lets a nested eslint.config.* replace it.
+      - run: pnpm exec eslint --config eslint.config.js --max-warnings 0 .
       - run: pnpm exec tsc -p tsconfig.json

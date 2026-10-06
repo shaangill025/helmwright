@@ -10,7 +10,8 @@ permissions:
 
 concurrency:
   group: sensors-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel runs on main: every merged commit keeps its sensor evidence.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Ring 0 sensor floor. Every scanner is pinned by version and SHA-256 (binaries) or image digest,
 # and candidate-supplied suppressions/config are ignored or rejected.
@@ -35,14 +36,39 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Reject repo-level scanner config and ignore files
+      - name: Reject candidate-controlled tool config, ignore files and install hooks
+        shell: bash
         run: |
-          found=$(git ls-files | grep -E '(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml)$' || true)
+          set -euo pipefail
+          fail=0
+          # grep exits 1 for "no match" (fine) and 2 for an error (fatal under pipefail).
+          match() { grep -E "$1" || [ $? -eq 1 ]; }
+          drop() { grep -vE "$1" || [ $? -eq 1 ]; }
+
+          # Config and ignore files that scanners, linters or pnpm discover on their own.
+          discovered='(^|/)(\.gitleaks\.toml|\.gitleaksignore|\.semgrepignore|osv-scanner\.toml|zizmor\.ya?ml|actionlint\.ya?ml|\.npmrc|\.pnpmfile\.[cm]?js|\.eslintrc(\.[a-z]+)?|eslint\.config\.[cm]?[jt]s|tsconfig[^/]*\.json)$'
+          owner_files='^(eslint\.config\.js|tsconfig\.json|tsconfig\.base\.json)$'
+          found=$(git ls-files | match "$discovered" | drop "$owner_files")
           if [ -n "$found" ]; then
-            echo "::error::Scanner config and ignore files are owner-controlled and must not be in the repo:"
+            echo "::error::Tool config and ignore files are owner-controlled; only the root eslint.config.js and tsconfig files are allowed:"
             echo "$found"
-            exit 1
+            fail=1
           fi
+
+          # Lifecycle scripts run code during `pnpm install`, before any check.
+          for manifest in $(git ls-files | match '(^|/)package\.json$'); do
+            hooks=$(jq -r '(.scripts // {}) | keys[] | select(test("^(pre|post)?(install|prepare)$|^prepublish$"))' "$manifest")
+            builds=$(jq -r '(.pnpm // {}) | keys[] | select(. == "onlyBuiltDependencies" or . == "dangerouslyAllowAllBuilds")' "$manifest")
+            if [ -n "$hooks$builds" ]; then
+              echo "::error::$manifest declares install-time code: $hooks $builds"
+              fail=1
+            fi
+          done
+          if match '^\s*(onlyBuiltDependencies|dangerouslyAllowAllBuilds)\s*:' < pnpm-workspace.yaml | grep -q .; then
+            echo "::error::pnpm-workspace.yaml allows dependency build scripts"
+            fail=1
+          fi
+          exit "$fail"
 
   secrets:
     name: gitleaks (full history)
@@ -55,7 +81,7 @@ jobs:
           persist-credentials: false
       - name: Install gitleaks
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
@@ -72,7 +98,7 @@ jobs:
           persist-credentials: false
       - name: Install osv-scanner
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/osv-scanner" \
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" \
             "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
           echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/osv-scanner"
@@ -93,12 +119,17 @@ jobs:
           git -C "$RUNNER_TEMP/semgrep-rules" fetch -q --depth 1 https://github.com/semgrep/semgrep-rules.git "$SEMGREP_RULES_SHA"
           git -C "$RUNNER_TEMP/semgrep-rules" checkout -q FETCH_HEAD
           test "$(git -C "$RUNNER_TEMP/semgrep-rules" rev-parse HEAD)" = "$SEMGREP_RULES_SHA"
+      # Scan a copy carrying an owner-written .semgrepignore: without one, Semgrep's built-in
+      # defaults silently skip tests/, build/, vendor/ and friends.
       - name: Scan
         run: |
+          cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/scan"
+          printf 'node_modules/\n' > "$RUNNER_TEMP/scan/.semgrepignore"
           docker run --rm --network none \
-            -v "$GITHUB_WORKSPACE:/src:ro" -v "$RUNNER_TEMP/semgrep-rules:/rules:ro" -w /src \
+            -v "$RUNNER_TEMP/scan:/src:ro" -v "$RUNNER_TEMP/semgrep-rules:/rules:ro" -w /src \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
-            "$SEMGREP_IMAGE" semgrep scan --metrics=off --disable-nosem --error \
+            "$SEMGREP_IMAGE" semgrep scan --metrics=off --disable-nosem --error --strict \
+            --max-target-bytes=0 \
             --config /rules/javascript --config /rules/typescript --config /rules/yaml/github-actions /src
 
   workflows:
@@ -111,16 +142,22 @@ jobs:
           persist-credentials: false
       - name: Install actionlint and zizmor
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
           echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
-          curl -fsSL -o "$RUNNER_TEMP/zizmor.tar.gz" \
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/zizmor.tar.gz" \
             "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
           echo "${ZIZMOR_SHA256}  $RUNNER_TEMP/zizmor.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/zizmor.tar.gz" -C "$RUNNER_TEMP" zizmor
+      # Owner-controlled empty config, so a repo .github/actionlint.yaml can't add ignore rules.
       # shellcheck/pyflakes integration disabled: their runner-image versions are not pinned.
       - name: actionlint
-        run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='
+        run: |
+          : > "$RUNNER_TEMP/actionlint.yaml"
+          "$RUNNER_TEMP/actionlint" -config-file "$RUNNER_TEMP/actionlint.yaml" -shellcheck= -pyflakes=
+      # Online audits (impostor commits, known-vulnerable actions) use the read-only job token.
       - name: zizmor
-        run: '"$RUNNER_TEMP/zizmor" --offline --no-ignores --no-config .github/workflows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/zizmor" --no-ignores --no-config .'
