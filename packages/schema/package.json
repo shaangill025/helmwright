@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "devDependencies": {
     "ajv": "^8.20.0",
     "json-schema-to-typescript": "^16.0.0"

@@ -29,6 +29,7 @@ const schema31 = {
         "Position in the session log: starts at 0, gap-free and strictly increasing.",
       type: "integer",
       minimum: 0,
+      maximum: 9007199254740991,
     },
     graphId: { $ref: "#/$defs/id" },
     runId: { $ref: "#/$defs/id" },
@@ -39,10 +40,11 @@ const schema31 = {
       pattern: "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
     },
     at: {
-      description: "UTC timestamp, RFC 3339 with a `Z` designator.",
+      description:
+        "UTC timestamp exactly as Date.prototype.toISOString() writes it (millisecond precision, `Z`), so string order is time order. No leap seconds.",
       type: "string",
       pattern:
-        "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+        "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
     },
     payload: {
       description:
@@ -70,7 +72,7 @@ const func1 = Object.prototype.hasOwnProperty;
 const pattern4 = new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", "u");
 const pattern8 = new RegExp("^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$", "u");
 const pattern9 = new RegExp(
-  "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+  "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
   "u",
 );
 function validate20(
@@ -323,8 +325,23 @@ function validate20(
         errors++;
       }
       if (typeof data2 == "number" && isFinite(data2)) {
-        if (data2 < 0 || isNaN(data2)) {
+        if (data2 > 9007199254740991 || isNaN(data2)) {
           const err14 = {
+            instancePath: instancePath + "/seq",
+            schemaPath: "#/properties/seq/maximum",
+            keyword: "maximum",
+            params: { comparison: "<=", limit: 9007199254740991 },
+            message: "must be <= 9007199254740991",
+          };
+          if (vErrors === null) {
+            vErrors = [err14];
+          } else {
+            vErrors.push(err14);
+          }
+          errors++;
+        }
+        if (data2 < 0 || isNaN(data2)) {
+          const err15 = {
             instancePath: instancePath + "/seq",
             schemaPath: "#/properties/seq/minimum",
             keyword: "minimum",
@@ -332,9 +349,9 @@ function validate20(
             message: "must be >= 0",
           };
           if (vErrors === null) {
-            vErrors = [err14];
+            vErrors = [err15];
           } else {
-            vErrors.push(err14);
+            vErrors.push(err15);
           }
           errors++;
         }
@@ -344,7 +361,7 @@ function validate20(
       let data3 = data.graphId;
       if (typeof data3 === "string") {
         if (!pattern4.test(data3)) {
-          const err15 = {
+          const err16 = {
             instancePath: instancePath + "/graphId",
             schemaPath: "#/$defs/id/pattern",
             keyword: "pattern",
@@ -355,14 +372,14 @@ function validate20(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err15];
+            vErrors = [err16];
           } else {
-            vErrors.push(err15);
+            vErrors.push(err16);
           }
           errors++;
         }
       } else {
-        const err16 = {
+        const err17 = {
           instancePath: instancePath + "/graphId",
           schemaPath: "#/$defs/id/type",
           keyword: "type",
@@ -370,9 +387,9 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err16];
+          vErrors = [err17];
         } else {
-          vErrors.push(err16);
+          vErrors.push(err17);
         }
         errors++;
       }
@@ -381,7 +398,7 @@ function validate20(
       let data4 = data.runId;
       if (typeof data4 === "string") {
         if (!pattern4.test(data4)) {
-          const err17 = {
+          const err18 = {
             instancePath: instancePath + "/runId",
             schemaPath: "#/$defs/id/pattern",
             keyword: "pattern",
@@ -392,14 +409,14 @@ function validate20(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err17];
+            vErrors = [err18];
           } else {
-            vErrors.push(err17);
+            vErrors.push(err18);
           }
           errors++;
         }
       } else {
-        const err18 = {
+        const err19 = {
           instancePath: instancePath + "/runId",
           schemaPath: "#/$defs/id/type",
           keyword: "type",
@@ -407,9 +424,9 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err18];
+          vErrors = [err19];
         } else {
-          vErrors.push(err18);
+          vErrors.push(err19);
         }
         errors++;
       }
@@ -418,7 +435,7 @@ function validate20(
       let data5 = data.nodeId;
       if (typeof data5 === "string") {
         if (!pattern4.test(data5)) {
-          const err19 = {
+          const err20 = {
             instancePath: instancePath + "/nodeId",
             schemaPath: "#/$defs/id/pattern",
             keyword: "pattern",
@@ -429,14 +446,14 @@ function validate20(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err19];
+            vErrors = [err20];
           } else {
-            vErrors.push(err19);
+            vErrors.push(err20);
           }
           errors++;
         }
       } else {
-        const err20 = {
+        const err21 = {
           instancePath: instancePath + "/nodeId",
           schemaPath: "#/$defs/id/type",
           keyword: "type",
@@ -444,9 +461,9 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err20];
+          vErrors = [err21];
         } else {
-          vErrors.push(err20);
+          vErrors.push(err21);
         }
         errors++;
       }
@@ -455,7 +472,7 @@ function validate20(
       let data6 = data.type;
       if (typeof data6 === "string") {
         if (!pattern8.test(data6)) {
-          const err21 = {
+          const err22 = {
             instancePath: instancePath + "/type",
             schemaPath: "#/properties/type/pattern",
             keyword: "pattern",
@@ -466,14 +483,14 @@ function validate20(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err21];
+            vErrors = [err22];
           } else {
-            vErrors.push(err21);
+            vErrors.push(err22);
           }
           errors++;
         }
       } else {
-        const err22 = {
+        const err23 = {
           instancePath: instancePath + "/type",
           schemaPath: "#/properties/type/type",
           keyword: "type",
@@ -481,9 +498,9 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err22];
+          vErrors = [err23];
         } else {
-          vErrors.push(err22);
+          vErrors.push(err23);
         }
         errors++;
       }
@@ -492,52 +509,33 @@ function validate20(
       let data7 = data.at;
       if (typeof data7 === "string") {
         if (!pattern9.test(data7)) {
-          const err23 = {
+          const err24 = {
             instancePath: instancePath + "/at",
             schemaPath: "#/properties/at/pattern",
             keyword: "pattern",
             params: {
               pattern:
-                "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$",
+                "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
             },
             message:
               'must match pattern "' +
-              "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$" +
+              "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$" +
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err23];
+            vErrors = [err24];
           } else {
-            vErrors.push(err23);
+            vErrors.push(err24);
           }
           errors++;
         }
       } else {
-        const err24 = {
+        const err25 = {
           instancePath: instancePath + "/at",
           schemaPath: "#/properties/at/type",
           keyword: "type",
           params: { type: "string" },
           message: "must be string",
-        };
-        if (vErrors === null) {
-          vErrors = [err24];
-        } else {
-          vErrors.push(err24);
-        }
-        errors++;
-      }
-    }
-    if (data.payload !== undefined) {
-      let data8 = data.payload;
-      if (data8 && typeof data8 == "object" && !Array.isArray(data8)) {
-      } else {
-        const err25 = {
-          instancePath: instancePath + "/payload",
-          schemaPath: "#/properties/payload/type",
-          keyword: "type",
-          params: { type: "object" },
-          message: "must be object",
         };
         if (vErrors === null) {
           vErrors = [err25];
@@ -547,8 +545,27 @@ function validate20(
         errors++;
       }
     }
+    if (data.payload !== undefined) {
+      let data8 = data.payload;
+      if (data8 && typeof data8 == "object" && !Array.isArray(data8)) {
+      } else {
+        const err26 = {
+          instancePath: instancePath + "/payload",
+          schemaPath: "#/properties/payload/type",
+          keyword: "type",
+          params: { type: "object" },
+          message: "must be object",
+        };
+        if (vErrors === null) {
+          vErrors = [err26];
+        } else {
+          vErrors.push(err26);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err26 = {
+    const err27 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -556,9 +573,9 @@ function validate20(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err26];
+      vErrors = [err27];
     } else {
-      vErrors.push(err26);
+      vErrors.push(err27);
     }
     errors++;
   }

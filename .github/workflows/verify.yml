@@ -34,7 +34,8 @@ jobs:
       - name: Generated code matches the schemas
         run: |
           node packages/schema/scripts/generate.ts
-          changes=$(git status --porcelain --untracked-files=all)
+          # --ignored for generated/, so a PR's .gitignore can't hide a new generated file.
+          changes=$(git status --porcelain --untracked-files=all; git status --porcelain --ignored -- packages/schema/generated)
           if [ -n "$changes" ]; then
             echo "::error::Regenerating from the schemas changed these files; commit the generator's output:"
             echo "$changes"
