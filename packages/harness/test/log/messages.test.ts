@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DesyncError,
+  EventValidationError,
   MESSAGE_APPENDED,
   assertNoDesync,
   deriveMessages,
@@ -86,46 +87,72 @@ describe("deriveMessages", () => {
       "bad status",
       { message: { role: "tool", toolCallId: "c", status: "maybe", text: "" } },
     ],
-  ])("throws on a malformed payload: %s", (_name, payload) => {
-    append("run-1", MESSAGE_APPENDED, { message: MESSAGES[0] });
-    const bad = append("run-1", MESSAGE_APPENDED, payload);
-    expect(() => deriveMessages(log.events(), "run-1")).toThrow(
-      `malformed ${MESSAGE_APPENDED} event at seq ${String(bad.seq)}`,
+  ])("rejects a malformed payload at append and derivation: %s", (_, bad) => {
+    const ok = append("run-1", MESSAGE_APPENDED, { message: MESSAGES[0] });
+    expect(() => append("run-1", MESSAGE_APPENDED, bad)).toThrow(
+      EventValidationError,
     );
+    expect(log.lastSeq()).toBe(0);
+    // A raw writer bypasses append; derivation still refuses the event.
+    const smuggled = { ...ok, seq: 1, payload: bad };
+    expect(() => deriveMessages([ok, smuggled], "run-1")).toThrow(
+      `malformed ${MESSAGE_APPENDED} event at seq 1`,
+    );
+  });
+
+  it.each([
+    ["undefined", undefined],
+    ["NaN", { n: NaN }],
+    ["Date", new Date(0)],
+  ])("rejects a tool input of %s that JSON cannot round-trip", (_, input) => {
+    const message = {
+      role: "assistant",
+      text: "",
+      toolCalls: [{ id: "c", name: "t", input }],
+    };
+    expect(() => append("run-1", MESSAGE_APPENDED, { message })).toThrow(
+      /payload\/message.*JSON round trip/,
+    );
+    expect(log.lastSeq()).toBeUndefined();
   });
 });
 
 describe("assertNoDesync", () => {
   it("passes on an equal context and names the first differing index", () => {
+    append("run-1", "run.started", {});
     for (const message of MESSAGES)
       append("run-1", MESSAGE_APPENDED, { message });
-    const derived = deriveMessages(log.events(), "run-1");
+    const events = log.events();
     expect(() => {
-      assertNoDesync(MESSAGES, derived);
+      assertNoDesync(MESSAGES, events, "run-1");
     }).not.toThrow();
 
     const edited = MESSAGES.map((m, i) =>
       i === 2 ? { ...m, text: "Reading!" } : m,
     );
-    const cases: [readonly Message[], number][] = [
-      [edited, 2],
-      [MESSAGES.slice(0, 4), 4],
-      [[...MESSAGES, { role: "user", text: "more" }], 6],
+    // The log holds run.started at seq 0, so message i came from seq i + 1.
+    const cases: [readonly Message[], number, number | undefined][] = [
+      [edited, 2, 3],
+      [MESSAGES.slice(0, 4), 4, 5],
+      [[...MESSAGES, { role: "user", text: "more" }], 6, undefined],
       [
         [MESSAGES[1] as Message, MESSAGES[0] as Message, ...MESSAGES.slice(2)],
         0,
+        1,
       ],
     ];
-    for (const [sent, index] of cases) {
+    for (const [sent, index, seq] of cases) {
       let caught: unknown;
       try {
-        assertNoDesync(sent, derived);
+        assertNoDesync(sent, events, "run-1");
       } catch (error) {
         caught = error;
       }
       expect(caught).toBeInstanceOf(DesyncError);
-      expect(caught).toMatchObject({ index });
+      expect(caught).toMatchObject({ index, seq });
       expect(String(caught)).toContain(`index ${String(index)}`);
+      if (seq !== undefined)
+        expect(String(caught)).toContain(`seq ${String(seq)}`);
     }
   });
 });

@@ -1,16 +1,20 @@
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { validateEvent, type Event } from "@helmwright/schema";
+import { MESSAGE_APPENDED, isStorableMessagePayload } from "./messages.ts";
 
 /** `PRAGMA user_version` of a session log this code can read and write. */
-export const SESSION_LOG_SCHEMA_VERSION = 1;
+export const SESSION_LOG_SCHEMA_VERSION = 2;
+/** `schemaVersion` written into each new event row. */
+const EVENT_SCHEMA_VERSION = 1;
 const BUSY_TIMEOUT_MS = 5_000;
 
 // Ring 0: the events table is append-only and gap-free even for a raw connection.
 const SCHEMA = `
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY CHECK (seq >= 0),
+  schema_version INTEGER NOT NULL,
   event_id TEXT NOT NULL UNIQUE,
   graph_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
@@ -34,7 +38,8 @@ CREATE TRIGGER events_no_delete BEFORE DELETE ON events BEGIN
 END;
 PRAGMA user_version = ${String(SESSION_LOG_SCHEMA_VERSION)};
 `;
-const COLUMNS = "seq, event_id, graph_id, run_id, node_id, type, at, payload";
+const COLUMNS =
+  "seq, schema_version, event_id, graph_id, run_id, node_id, type, at, payload";
 
 /** An event as supplied by a writer: the store assigns `seq` and `schemaVersion`. */
 export type AppendInput = Omit<Event, "seq" | "schemaVersion">;
@@ -58,25 +63,51 @@ export class EventValidationError extends Error {
   }
 }
 
+// deriveMessages would refuse (or silently change) such a message once stored.
+const LOSSY_MESSAGE: EventIssue = {
+  instancePath: "/payload/message",
+  schemaPath: "#",
+  keyword: "message",
+  params: {},
+  message: "must be a message that survives a JSON round trip unchanged",
+};
+
 export interface SessionLog {
   /** Validates, assigns the next gap-free seq and stores the event atomically. */
   append(input: AppendInput): Event;
-  /** Runs `fn` in one write transaction: all its appends commit or none do. */
-  transaction<T>(fn: () => T): T;
+  /**
+   * Runs `fn` in one write transaction: all its appends commit or none do.
+   * `fn` must be synchronous: a SQLite transaction cannot span an `await`.
+   * A Promise-returning `fn` is a type error; at runtime its transaction is
+   * rolled back, its rejection is marked handled, and a TypeError is thrown.
+   * Anything it does after its first `await` runs outside the transaction.
+   */
+  transaction<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T;
   events(query?: EventsQuery): Event[];
   /** The highest stored seq, or `undefined` for an empty log. */
   lastSeq(): number | undefined;
   close(): void;
 }
 
-/** Opens (creating 0600 if missing) the session log database at `path`. */
+/**
+ * Opens the session log database at `path`, creating it if missing.
+ *
+ * Permissions: the directory of `path` is treated as private to the log. It is
+ * created 0700, or tightened to 0700 if it exists with group/other bits set;
+ * the database and any existing `-wal`/`-shm` files are likewise created or
+ * tightened to 0600. A directory the caller cannot chmod makes the open fail.
+ *
+ * Contention: M1 supports one writer process per log. A second process may
+ * append concurrently, but SQLite's busy handler is not fair, so a writer that
+ * waits longer than the 5 s busy timeout fails with SQLITE_BUSY.
+ */
 export function openSessionLog(path: string): SessionLog {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  try {
-    closeSync(openSync(path, "wx", 0o600));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-  }
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  restrict(dir, 0o700);
+  closeSync(openSync(path, "a", 0o600));
+  for (const file of [path, `${path}-wal`, `${path}-shm`])
+    restrict(file, 0o600);
   const db = new DatabaseSync(path);
   try {
     db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
@@ -91,6 +122,15 @@ export function openSessionLog(path: string): SessionLog {
     throw error;
   }
   return createLog(db);
+}
+
+/** Sets `mode` on `path` if it exists with any group/other permission bit. */
+function restrict(path: string, mode: number): void {
+  try {
+    if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, mode);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 function userVersion(db: DatabaseSync): number {
@@ -123,6 +163,7 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
   try {
     const result = fn();
     if (result instanceof Promise) {
+      result.catch(() => undefined);
       throw new TypeError(
         "SessionLog.transaction callback must be synchronous",
       );
@@ -138,7 +179,7 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
 
 function createLog(db: DatabaseSync): SessionLog {
   const insert = db.prepare(
-    `INSERT INTO events (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const maxSeq = db.prepare("SELECT MAX(seq) AS seq FROM events");
   const all = db.prepare(
@@ -156,14 +197,22 @@ function createLog(db: DatabaseSync): SessionLog {
     append(input) {
       return inTransaction(db, () => {
         const seq = (lastSeq() ?? -1) + 1;
-        const candidate: unknown = { ...input, schemaVersion: 1, seq };
+        const schemaVersion = EVENT_SCHEMA_VERSION;
+        const candidate: unknown = { ...input, schemaVersion, seq };
         if (!validateEvent(candidate)) {
           throw new EventValidationError(validateEvent.errors ?? []);
         }
         const e = candidate;
+        if (
+          e.type === MESSAGE_APPENDED &&
+          !isStorableMessagePayload(e.payload)
+        ) {
+          throw new EventValidationError([LOSSY_MESSAGE]);
+        }
         const payload = JSON.stringify(e.payload);
         insert.run(
           seq,
+          schemaVersion,
           e.eventId,
           e.graphId,
           e.runId,
@@ -174,6 +223,7 @@ function createLog(db: DatabaseSync): SessionLog {
         );
         return toEvent({
           seq,
+          schema_version: schemaVersion,
           event_id: e.eventId,
           graph_id: e.graphId,
           run_id: e.runId,
@@ -213,7 +263,7 @@ function toEvent(row: Record<string, SQLOutputValue>): Event {
   const text = row["payload"];
   const payload: unknown = typeof text === "string" ? JSON.parse(text) : text;
   const candidate: unknown = {
-    schemaVersion: 1,
+    schemaVersion: row["schema_version"],
     eventId: row["event_id"],
     seq: row["seq"],
     graphId: row["graph_id"],

@@ -1,12 +1,20 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EventValidationError,
+  SESSION_LOG_SCHEMA_VERSION,
   openSessionLog,
   type AppendInput,
   type SessionLog,
@@ -54,6 +62,32 @@ function input(overrides: Partial<AppendInput> = {}): AppendInput {
   };
 }
 const seqs = (log: SessionLog): number[] => log.events().map((e) => e.seq);
+function rawInsert(
+  raw: DatabaseSync,
+  [verb, seq, eventId, version]: [string, number | null, string, number?],
+): void {
+  raw
+    .prepare(
+      `${verb} INTO events (seq, event_id, graph_id, run_id, node_id, type, at,
+        payload, schema_version) VALUES (?, ?, 'g', 'r', 'n', 'x.y', ?, '{}', ?)`,
+    )
+    .run(seq, eventId, new Date().toISOString(), version ?? 1);
+}
+function runNode(script: string) {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  const done = new Promise<{ code: number | null; stderr: string }>((res) => {
+    child.on("close", (code) => {
+      res({ code, stderr });
+    });
+  });
+  return { child, done };
+}
 
 describe("openSessionLog", () => {
   it("creates the file 0600 in WAL mode, empty", () => {
@@ -77,12 +111,30 @@ describe("openSessionLog", () => {
     raw.exec("PRAGMA user_version = 99");
     raw.close();
     expect(() => openSessionLog(file)).toThrow(/schema version 99/);
+    const v1 = new DatabaseSync(file);
+    v1.exec("PRAGMA user_version = 1");
+    v1.close();
+    expect(() => openSessionLog(file)).toThrow(/schema version 1\b/);
 
     const foreign = join(dir, "foreign.db");
     const other = new DatabaseSync(foreign);
     other.exec("CREATE TABLE t (x)");
     other.close();
     expect(() => openSessionLog(foreign)).toThrow(/not a session log/);
+  });
+
+  it("tightens a pre-existing group/other-readable file and directory", () => {
+    mkdirSync(dirname(file));
+    chmodSync(dirname(file), 0o755);
+    for (const path of [file, `${file}-wal`]) {
+      writeFileSync(path, "");
+      chmodSync(path, 0o644);
+    }
+    openLog().append(input());
+    expect(statSync(dirname(file)).mode & 0o777).toBe(0o700);
+    for (const path of [file, `${file}-wal`, `${file}-shm`]) {
+      expect(statSync(path).mode & 0o077).toBe(0);
+    }
   });
 });
 
@@ -126,23 +178,49 @@ describe("append and read", () => {
     expect(() => log.append(input({ eventId: "same" }))).toThrow(/event_id/);
     expect(log.append(input()).seq).toBe(1);
   });
+
+  it("stores schema_version per row and reads it back", () => {
+    const log = openLog();
+    log.append(input());
+    const raw = new DatabaseSync(file);
+    expect(raw.prepare("PRAGMA user_version").get()).toEqual({
+      user_version: SESSION_LOG_SCHEMA_VERSION,
+    });
+    expect(raw.prepare("SELECT schema_version FROM events").all()).toEqual([
+      { schema_version: 1 },
+    ]);
+    rawInsert(raw, ["INSERT", 1, "future", 2]);
+    raw.close();
+    expect(() => log.events()).toThrow(/corrupt event at seq 1.*schemaVersion/);
+  });
 });
 
 describe("append-only enforcement", () => {
-  it("rejects raw UPDATE and DELETE from another connection", () => {
+  it("rejects raw UPDATE, DELETE and bad INSERTs from another connection", () => {
     const log = openLog();
-    const stored = log.append(input());
+    const stored = log.append(input({ eventId: "first" }));
     const raw = new DatabaseSync(file);
     const rawExec = (sql: string) => () => {
       raw.exec(sql);
     };
     expect(rawExec("UPDATE events SET type = 'x.y'")).toThrow(/append-only/);
     expect(rawExec("DELETE FROM events")).toThrow(/append-only/);
-    expect(
-      rawExec(
-        `INSERT INTO events VALUES (5, 'gap', 'g', 'r', 'n', 'x.y', 'a', '{}')`,
-      ),
-    ).toThrow(/gap-free/);
+    const inserts: [[string, number | null, string], RegExp][] = [
+      [["INSERT", 5, "gap"], /gap-free/],
+      [["INSERT", 0, "behind"], /gap-free/],
+      [["INSERT OR REPLACE", 0, "replace"], /gap-free/],
+      [["INSERT", null, "null-seq"], /gap-free/],
+      [["INSERT", 1, "first"], /duplicate event_id/],
+      [["INSERT OR REPLACE", 1, "first"], /duplicate event_id/],
+    ];
+    for (const [row, error] of inserts) {
+      expect(() => {
+        rawInsert(raw, row);
+      }).toThrow(error);
+    }
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM events").get()).toEqual({
+      n: 1,
+    });
     raw.close();
     expect(log.events()).toEqual([stored]);
   });
@@ -178,13 +256,33 @@ describe("transaction", () => {
         log.transaction(() => 1);
       });
     }).toThrow(/nested/);
-    expect(() =>
-      log.transaction(() => {
-        log.append(input());
-        return Promise.resolve();
-      }),
-    ).toThrow(/synchronous/);
+    const asyncFn = async () => {
+      log.append(input());
+      await Promise.resolve();
+    };
+    // Checked by tsc: a Promise-returning callback is not a valid argument.
+    type Arg = Parameters<
+      typeof log.transaction<ReturnType<typeof asyncFn>>
+    >[0];
+    const accepted: typeof asyncFn extends Arg ? true : false = false;
+    expect(accepted).toBe(false);
+    expect(() => log.transaction(asyncFn as () => never)).toThrow(
+      /synchronous/,
+    );
     expect(log.lastSeq()).toBeUndefined();
+  });
+
+  it("leaves no unhandled rejection when an async callback rejects", async () => {
+    openLog();
+    const { done } = runNode(`
+      const { openSessionLog } = await import(${JSON.stringify(MODULE)});
+      const log = openSessionLog(${JSON.stringify(file)});
+      try {
+        log.transaction(() => Promise.reject(new Error("late failure")));
+      } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      log.close();`);
+    expect(await done).toEqual({ code: 0, stderr: "" });
   });
 });
 
@@ -206,27 +304,14 @@ describe("cross-process", () => {
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       log.close();`;
-    const child = spawn(
-      process.execPath,
-      ["--input-type=module", "-e", script],
-      {
-        stdio: ["ignore", "ignore", "pipe"],
-      },
-    );
-    let stderr = "";
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    const exited = new Promise<number | null>((resolve) => {
-      child.on("close", resolve);
-    });
+    const { child, done } = runNode(script);
     let parentEvents = 1;
     while (child.exitCode === null && child.signalCode === null) {
       log.append(input({ runId: "parent" }));
       parentEvents += 1;
       await tick();
     }
-    expect({ code: await exited, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(await done).toEqual({ code: 0, stderr: "" });
 
     const all = log.events();
     expect(all.map((e) => e.seq)).toEqual([...all.keys()]);
