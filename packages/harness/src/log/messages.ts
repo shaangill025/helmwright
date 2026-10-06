@@ -9,10 +9,14 @@ const STATUSES: readonly unknown[] = ["ok", "denied", "error"];
 /** The outgoing context differs from a fresh derivation from the log. */
 export class DesyncError extends Error {
   readonly index: number;
-  constructor(index: number) {
-    super(`context desync at message index ${String(index)}`);
+  /** Seq of the logged message at `index`; `undefined` if the log has none there. */
+  readonly seq: number | undefined;
+  constructor(index: number, seq: number | undefined) {
+    const at = seq === undefined ? "" : ` (log seq ${String(seq)})`;
+    super(`context desync at message index ${String(index)}${at}`);
     this.name = "DesyncError";
     this.index = index;
+    this.seq = seq;
   }
 }
 
@@ -56,33 +60,52 @@ export function isMessage(v: unknown): v is Message {
   }
 }
 
+const isMessagePayload = (p: Fields): p is { message: Message } =>
+  keysAre(p, ["message"]) && isMessage(p["message"]);
+
+/** True if `payload` is a valid `{ message }` that a JSON round trip leaves unchanged. */
+export function isStorableMessagePayload(payload: Fields): boolean {
+  const stored: unknown = JSON.parse(JSON.stringify(payload));
+  return (
+    isRecord(stored) &&
+    isMessagePayload(stored) &&
+    isDeepStrictEqual(stored, payload)
+  );
+}
+
+function deriveEntries(events: readonly Event[], runId: string) {
+  const entries: { message: Message; seq: number }[] = [];
+  for (const { runId: run, type, payload, seq } of events) {
+    if (run !== runId || type !== MESSAGE_APPENDED) continue;
+    if (!isMessagePayload(payload)) {
+      throw new TypeError(
+        `malformed ${MESSAGE_APPENDED} event at seq ${String(seq)}`,
+      );
+    }
+    entries.push({ message: payload.message, seq });
+  }
+  return entries;
+}
+
 /** Derives a run's model context from its `message.appended` events, in the order given. */
 export function deriveMessages(
   events: readonly Event[],
   runId: string,
 ): Message[] {
-  const messages: Message[] = [];
-  for (const event of events) {
-    if (event.runId !== runId || event.type !== MESSAGE_APPENDED) continue;
-    const { payload } = event;
-    const message = payload["message"];
-    if (!keysAre(payload, ["message"]) || !isMessage(message)) {
-      throw new TypeError(
-        `malformed ${MESSAGE_APPENDED} event at seq ${String(event.seq)}`,
-      );
-    }
-    messages.push(message);
-  }
-  return messages;
+  return deriveEntries(events, runId).map((e) => e.message);
 }
 
-/** Dev-mode check: throws a DesyncError at the first index where `sent` and `derived` differ. */
+/** Dev-mode check: throws a DesyncError where `sent` first differs from the run's derived context. */
 export function assertNoDesync(
   sent: readonly Message[],
-  derived: readonly Message[],
+  events: readonly Event[],
+  runId: string,
 ): void {
+  const derived = deriveEntries(events, runId);
   const length = Math.max(sent.length, derived.length);
   for (let i = 0; i < length; i += 1) {
-    if (!isDeepStrictEqual(sent[i], derived[i])) throw new DesyncError(i);
+    if (!isDeepStrictEqual(sent[i], derived[i]?.message)) {
+      throw new DesyncError(i, derived[i]?.seq);
+    }
   }
 }
