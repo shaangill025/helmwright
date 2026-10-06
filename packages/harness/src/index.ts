@@ -22,3 +22,16 @@ export {
   createCallCounters,
   reminderFor,
 } from "./loop/reminders.ts";
+export type {
+  LoopDeps,
+  LoopOptions,
+  LoopResult,
+  Transcript,
+} from "./loop/loop.ts";
+export {
+  DEFAULT_HANDOFF_TIMEOUT_MS,
+  MAX_LIMIT,
+  SKIPPED_CALL_TEXT,
+  runLoop,
+  validateLimits,
+} from "./loop/loop.ts";
