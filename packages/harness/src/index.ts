@@ -56,3 +56,21 @@ export {
   resolveDockerEndpoint,
   runInSandbox,
 } from "./sandbox/docker.ts";
+export type {
+  AppendInput,
+  EventIssue,
+  EventsQuery,
+  SessionLog,
+} from "./log/session-log.ts";
+export {
+  EventValidationError,
+  SESSION_LOG_SCHEMA_VERSION,
+  openSessionLog,
+} from "./log/session-log.ts";
+export {
+  DesyncError,
+  MESSAGE_APPENDED,
+  assertNoDesync,
+  deriveMessages,
+  isMessage,
+} from "./log/messages.ts";
