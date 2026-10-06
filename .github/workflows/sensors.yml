@@ -233,7 +233,9 @@ jobs:
         run: docker build --quiet --tag helmwright-sandbox:ci packages/harness/sandbox
       # Owner decision: fail on any fixable high or critical; unfixed findings are reported only.
       # The vulnerability database is fetched at scan time and is not pinned.
-      - name: Scan
+      - name: Report all findings, including unfixed ones
         run: |
           : > "$RUNNER_TEMP/grype.yaml"
-          "$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml" --only-fixed --fail-on high
+          "$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml"
+      - name: Fail on fixable high or critical
+        run: '"$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml" --only-fixed --fail-on high'

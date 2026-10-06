@@ -75,6 +75,8 @@ describe("dockerRunArgs", () => {
     }
     expectPair(args, "--name", NAME);
     expectPair(args, "--network", "none");
+    expectPair(args, "--pull", "never");
+    expectPair(args, "--entrypoint", "");
     expectPair(args, "--cap-drop", "ALL");
     expectPair(args, "--security-opt", "no-new-privileges");
     expectPair(args, "--user", "1000:1000");
@@ -132,6 +134,12 @@ describe("dockerRunArgs", () => {
     ["empty image", { image: "" }],
     ["image with whitespace", { image: "node:26 --privileged" }],
     ["image as a flag", { image: "--privileged" }],
+    ["image tag instead of an ID", { image: "alpine" }],
+    [
+      "stock base image by digest",
+      { image: "node:26-slim@sha256:" + "a".repeat(64) },
+    ],
+    ["short image ID", { image: "sha256:abc" }],
     ["relative workspace", { workspace: "rel/dir" }],
     ["missing workspace", { workspace: "/nonexistent/hw-sandbox" }],
     ["root workspace", { workspace: "/" }],
