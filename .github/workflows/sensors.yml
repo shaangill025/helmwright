@@ -90,7 +90,8 @@ jobs:
                     or ((.key | startswith("@helmwright/")) and (.value | test("^workspace:[*^~]?$")))
                     | not)
                 | "dependency \(.key)@\(.value) is neither registry semver nor an @helmwright workspace package"),
-              (if $root == "yes" and .packageManager != $pm then "packageManager must be \($pm)" else empty end)
+              (if $root == "yes" and .packageManager != $pm then "packageManager must be \($pm)" else empty end),
+              (if $root == "no" and has("bin") then "workspace packages may not declare bin (could shadow a checker)" else empty end)
             ' "$manifest")
             if [ -n "$problems" ]; then
               error "$manifest: $(printf '%s' "$problems" | tr '\n' ';')"
@@ -99,13 +100,15 @@ jobs:
 
           # Lockfile: --frozen-lockfile only compares specifiers, so the resolutions themselves must be
           # registry tarballs (integrity only), and links may only point at sibling @helmwright packages.
+          test -s pnpm-lock.yaml || error "pnpm-lock.yaml is missing or empty"
           bad_resolutions=$(grep -nE 'resolution:' pnpm-lock.yaml | grep -vE '^[0-9]+:\s+resolution: \{integrity: sha512-[A-Za-z0-9+/=]+\}$' || [ $? -eq 1 ])
           if [ -n "$bad_resolutions" ]; then
             error "pnpm-lock.yaml has non-registry resolutions: $(printf '%s' "$bad_resolutions" | head -3 | tr '\n' ';')"
           fi
           bad_links=$(awk '
-            /^      [^ ]/ { helmwright = ($0 ~ /^      '"'"'?@helmwright\/[a-z0-9-]+'"'"'?:$/) }
-            /link:/ && !(helmwright && $0 ~ /^        version: link:\.\.\/[a-z0-9-]+$/) { print NR ": " $0 }
+            { match($0, /^ */); indent = RLENGTH }
+            /:$/ && indent < 8 { parent = $0 }
+            /link:/ && !(parent ~ /^      '"'"'?@helmwright\/[a-z0-9-]+'"'"'?:$/ && $0 ~ /^        version: link:\.\.\/[a-z0-9-]+$/) { print NR ": " $0 }
           ' pnpm-lock.yaml)
           if [ -n "$bad_links" ]; then
             error "pnpm-lock.yaml links outside @helmwright packages: $(printf '%s' "$bad_links" | head -3 | tr '\n' ';')"
