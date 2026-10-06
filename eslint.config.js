@@ -13,6 +13,24 @@ export default defineConfig(
   eslint.configs.recommended,
   tseslint.configs.strictTypeChecked,
   {
+    // X1: generated Ajv validators are covered by the drift check and tests, not lint.
+    ignores: ["packages/*/generated/*.validate.js"],
+  },
+  {
+    rules: {
+      // Ring 0: TypeScript directive comments are candidate suppressions too.
+      "@typescript-eslint/ban-ts-comment": [
+        "error",
+        {
+          "ts-expect-error": true,
+          "ts-ignore": true,
+          "ts-nocheck": true,
+          "ts-check": false,
+        },
+      ],
+    },
+  },
+  {
     languageOptions: {
       parserOptions: {
         projectService: true,
