@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+
+# Fail install on the wrong Node major instead of warning.
+engineStrict: true
+# Refuse versions published less than 3 days ago (supply-chain floor).
+minimumReleaseAge: 4320
