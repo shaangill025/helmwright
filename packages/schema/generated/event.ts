@@ -19,7 +19,7 @@ export interface Event {
   runId: Id;
   nodeId: Id;
   /**
-   * Dotted event type, e.g. `run.started`.
+   * Dotted lowercase event type, e.g. `run.started`: two or more segments, each starting with a letter, at most 64 characters. Split into simple patterns so no regex nests quantifiers (ReDoS).
    */
   type: string;
   /**

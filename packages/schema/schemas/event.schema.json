@@ -29,9 +29,13 @@
     "runId": { "$ref": "#/$defs/id" },
     "nodeId": { "$ref": "#/$defs/id" },
     "type": {
-      "description": "Dotted event type, e.g. `run.started`.",
+      "description": "Dotted lowercase event type, e.g. `run.started`: two or more segments, each starting with a letter, at most 64 characters. Split into simple patterns so no regex nests quantifiers (ReDoS).",
       "type": "string",
-      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+      "allOf": [
+        { "pattern": "^[a-z][a-z0-9.]{0,62}[a-z0-9]$" },
+        { "pattern": "\\." },
+        { "not": { "pattern": "\\.\\.|\\.[0-9]" } }
+      ]
     },
     "at": {
       "description": "UTC timestamp exactly as Date.prototype.toISOString() writes it (millisecond precision, `Z`), so string order is time order. No leap seconds.",

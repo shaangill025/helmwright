@@ -35,9 +35,14 @@ const schema31 = {
     runId: { $ref: "#/$defs/id" },
     nodeId: { $ref: "#/$defs/id" },
     type: {
-      description: "Dotted event type, e.g. `run.started`.",
+      description:
+        "Dotted lowercase event type, e.g. `run.started`: two or more segments, each starting with a letter, at most 64 characters. Split into simple patterns so no regex nests quantifiers (ReDoS).",
       type: "string",
-      pattern: "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$",
+      allOf: [
+        { pattern: "^[a-z][a-z0-9.]{0,62}[a-z0-9]$" },
+        { pattern: "\\." },
+        { not: { pattern: "\\.\\.|\\.[0-9]" } },
+      ],
     },
     at: {
       description:
@@ -70,8 +75,10 @@ const schema32 = {
 };
 const func1 = Object.prototype.hasOwnProperty;
 const pattern4 = new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", "u");
-const pattern8 = new RegExp("^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$", "u");
-const pattern9 = new RegExp(
+const pattern8 = new RegExp("^[a-z][a-z0-9.]{0,62}[a-z0-9]$", "u");
+const pattern9 = new RegExp("\\.", "u");
+const pattern10 = new RegExp("\\.\\.|\\.[0-9]", "u");
+const pattern11 = new RegExp(
   "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$",
   "u",
 );
@@ -470,27 +477,8 @@ function validate20(
     }
     if (data.type !== undefined) {
       let data6 = data.type;
-      if (typeof data6 === "string") {
-        if (!pattern8.test(data6)) {
-          const err22 = {
-            instancePath: instancePath + "/type",
-            schemaPath: "#/properties/type/pattern",
-            keyword: "pattern",
-            params: { pattern: "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$" },
-            message:
-              'must match pattern "' +
-              "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$" +
-              '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err22];
-          } else {
-            vErrors.push(err22);
-          }
-          errors++;
-        }
-      } else {
-        const err23 = {
+      if (typeof data6 !== "string") {
+        const err22 = {
           instancePath: instancePath + "/type",
           schemaPath: "#/properties/type/type",
           keyword: "type",
@@ -498,18 +486,91 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err23];
+          vErrors = [err22];
         } else {
-          vErrors.push(err23);
+          vErrors.push(err22);
         }
         errors++;
+      }
+      if (typeof data6 === "string") {
+        if (!pattern8.test(data6)) {
+          const err23 = {
+            instancePath: instancePath + "/type",
+            schemaPath: "#/properties/type/allOf/0/pattern",
+            keyword: "pattern",
+            params: { pattern: "^[a-z][a-z0-9.]{0,62}[a-z0-9]$" },
+            message:
+              'must match pattern "' + "^[a-z][a-z0-9.]{0,62}[a-z0-9]$" + '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err23];
+          } else {
+            vErrors.push(err23);
+          }
+          errors++;
+        }
+      }
+      if (typeof data6 === "string") {
+        if (!pattern9.test(data6)) {
+          const err24 = {
+            instancePath: instancePath + "/type",
+            schemaPath: "#/properties/type/allOf/1/pattern",
+            keyword: "pattern",
+            params: { pattern: "\\." },
+            message: 'must match pattern "' + "\\." + '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err24];
+          } else {
+            vErrors.push(err24);
+          }
+          errors++;
+        }
+      }
+      const _errs22 = errors;
+      const _errs23 = errors;
+      if (typeof data6 === "string") {
+        if (!pattern10.test(data6)) {
+          const err25 = {};
+          if (vErrors === null) {
+            vErrors = [err25];
+          } else {
+            vErrors.push(err25);
+          }
+          errors++;
+        }
+      }
+      var valid6 = _errs23 === errors;
+      if (valid6) {
+        const err26 = {
+          instancePath: instancePath + "/type",
+          schemaPath: "#/properties/type/allOf/2/not",
+          keyword: "not",
+          params: {},
+          message: "must NOT be valid",
+        };
+        if (vErrors === null) {
+          vErrors = [err26];
+        } else {
+          vErrors.push(err26);
+        }
+        errors++;
+      } else {
+        errors = _errs22;
+        if (vErrors !== null) {
+          if (_errs22) {
+            vErrors.length = _errs22;
+          } else {
+            vErrors = null;
+          }
+        }
       }
     }
     if (data.at !== undefined) {
       let data7 = data.at;
       if (typeof data7 === "string") {
-        if (!pattern9.test(data7)) {
-          const err24 = {
+        if (!pattern11.test(data7)) {
+          const err27 = {
             instancePath: instancePath + "/at",
             schemaPath: "#/properties/at/pattern",
             keyword: "pattern",
@@ -523,14 +584,14 @@ function validate20(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err24];
+            vErrors = [err27];
           } else {
-            vErrors.push(err24);
+            vErrors.push(err27);
           }
           errors++;
         }
       } else {
-        const err25 = {
+        const err28 = {
           instancePath: instancePath + "/at",
           schemaPath: "#/properties/at/type",
           keyword: "type",
@@ -538,9 +599,9 @@ function validate20(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err25];
+          vErrors = [err28];
         } else {
-          vErrors.push(err25);
+          vErrors.push(err28);
         }
         errors++;
       }
@@ -549,7 +610,7 @@ function validate20(
       let data8 = data.payload;
       if (data8 && typeof data8 == "object" && !Array.isArray(data8)) {
       } else {
-        const err26 = {
+        const err29 = {
           instancePath: instancePath + "/payload",
           schemaPath: "#/properties/payload/type",
           keyword: "type",
@@ -557,15 +618,15 @@ function validate20(
           message: "must be object",
         };
         if (vErrors === null) {
-          vErrors = [err26];
+          vErrors = [err29];
         } else {
-          vErrors.push(err26);
+          vErrors.push(err29);
         }
         errors++;
       }
     }
   } else {
-    const err27 = {
+    const err30 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -573,9 +634,9 @@ function validate20(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err27];
+      vErrors = [err30];
     } else {
-      vErrors.push(err27);
+      vErrors.push(err30);
     }
     errors++;
   }
