@@ -34,7 +34,10 @@ export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
 
 export interface SandboxRequest {
   readonly argv: readonly string[];
-  /** Image to run, e.g. the ID from `buildSandboxImage`. Never built or pulled here. */
+  /**
+   * ID of the hardened image from `buildSandboxImage` (`sha256:<64 hex>`). Tags and registry
+   * references are rejected, and `--pull=never` keeps Docker from fetching anything.
+   */
   readonly image: string;
   /** Absolute host directory; its realpath is mounted read-write at /workspace. */
   readonly workspace: string;
@@ -163,8 +166,11 @@ export function dockerRunArgs(
 ): string[] {
   checkArgv(request.argv);
   const { image } = request;
-  if (typeof image !== "string" || !/^[^\s\0-]\S*$/.test(image)) {
-    throw fail("image", "must be non-empty, without whitespace or leading -");
+  if (typeof image !== "string" || !/^sha256:[0-9a-f]{64}$/.test(image)) {
+    throw fail(
+      "image",
+      "must be an image ID (sha256:<64 hex>) from buildSandboxImage",
+    );
   }
   const workspace = resolveWorkspace(request.workspace);
   checkInteger("timeoutMs", request.timeoutMs, 1);
@@ -181,6 +187,9 @@ export function dockerRunArgs(
   }
   const options: (readonly [string, string])[] = [
     ["--name", containerName],
+    // Never fetch an image, and never run an image-defined entrypoint before argv.
+    ["--pull", "never"],
+    ["--entrypoint", ""],
     ["--network", "none"],
     ["--cap-drop", "ALL"],
     ["--security-opt", "no-new-privileges"],
