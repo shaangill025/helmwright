@@ -594,7 +594,14 @@ export async function reapSandboxContainers(
   deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
 ): Promise<number> {
   const docker = await dockerContext(deps);
-  const format = `{{.ID}}\t{{.Names}}\t{{.Label "${SANDBOX_LABEL}"}}\t{{.Label "${SANDBOX_LABEL}.owner-pid"}}`;
+  // Docker Go template, built by concatenation so its braces aren't read as JS placeholders.
+  const label = (key: string) => '{{.Label "' + key + '"}}';
+  const format = [
+    "{{.ID}}",
+    "{{.Names}}",
+    label(SANDBOX_LABEL),
+    label(SANDBOX_LABEL + ".owner-pid"),
+  ].join("\t");
   const out = await dockerOutput(docker, [
     ...["ps", "-a", "--filter", `label=${SANDBOX_LABEL}`],
     ...["--format", format],
