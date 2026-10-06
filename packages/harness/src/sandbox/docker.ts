@@ -519,7 +519,7 @@ async function stopContainer(
     await within(client.exited, KILL_SETTLE_MS);
   }
   client.destroy();
-  const filter = `name=^/${name.replaceAll(".", "\\.")}$`;
+  const filter = `name=^/${name.replace(/\./g, "\\.")}$`;
   return dockerOutput(docker, ["ps", "-a", "-q", "--filter", filter]).then(
     (out) => out.trim() === "",
     () => false,
