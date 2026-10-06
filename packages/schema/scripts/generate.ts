@@ -70,10 +70,12 @@ for (const file of files) {
 
   const declaration = [
     banner(file),
-    `import type { ErrorObject } from "ajv";`,
+    'import type { ErrorObject } from "ajv";',
     `import type { ${typeName} } from "./${name}.ts";`,
-    `export declare const validate: ((data: unknown) => data is ${typeName}) & { errors?: ErrorObject[] | null };`,
-    `export default validate;`,
+    "export declare const validate: ((data: unknown) => data is " +
+      typeName +
+      ") & { errors?: ErrorObject[] | null };",
+    "export default validate;",
   ].join("\n");
 
   await write(join(outDir, `${name}.ts`), types, "typescript");
