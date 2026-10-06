@@ -2,3 +2,5 @@ node_modules/
 coverage/
 dist/
 *.tsbuildinfo
+# Local state (session logs, databases): never committed.
+.helmwright/

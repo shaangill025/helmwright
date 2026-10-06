@@ -30,7 +30,11 @@ importers:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@26.6.4)(vite@8.3.2(@types/node@26.6.4))
 
-  packages/harness: {}
+  packages/harness:
+    dependencies:
+      '@helmwright/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/schema:
     devDependencies:

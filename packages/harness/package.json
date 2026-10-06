@@ -2,5 +2,8 @@
   "name": "@helmwright/harness",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "@helmwright/schema": "workspace:*"
+  }
 }
