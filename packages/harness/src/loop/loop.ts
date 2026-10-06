@@ -99,11 +99,39 @@ function settle<T>(
   });
 }
 
-/** @throws RangeError unless every limit is an integer in [1, MAX_LIMIT]. */
+const REQUIRED_LIMITS = [
+  "maxIterations",
+  "maxToolCallsPerIteration",
+  "timeoutMs",
+  "noProgressIterations",
+] as const;
+const KNOWN_LIMITS: readonly string[] = [
+  ...REQUIRED_LIMITS,
+  "handoffTimeoutMs",
+];
+
+/**
+ * @throws RangeError unless every required limit is present and every limit is an integer in
+ * [1, MAX_LIMIT]; unknown keys are rejected too (limits may come from untyped config).
+ */
 export function validateLimits(limits: LoopLimits): void {
-  const { handoffTimeoutMs = DEFAULT_HANDOFF_TIMEOUT_MS, ...caps } = limits;
-  for (const [name, value] of Object.entries({ ...caps, handoffTimeoutMs })) {
-    if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
+  const given = new Map<string, unknown>(Object.entries(limits));
+  for (const name of given.keys()) {
+    if (!KNOWN_LIMITS.includes(name)) {
+      throw new RangeError(`LoopLimits.${name} is not a known limit`);
+    }
+  }
+  if (!given.has("handoffTimeoutMs")) {
+    given.set("handoffTimeoutMs", DEFAULT_HANDOFF_TIMEOUT_MS);
+  }
+  for (const name of KNOWN_LIMITS) {
+    const value = given.get(name);
+    if (
+      typeof value !== "number" ||
+      !Number.isInteger(value) ||
+      value < 1 ||
+      value > MAX_LIMIT
+    ) {
       throw new RangeError(
         `LoopLimits.${name} must be an integer in [1, ${String(MAX_LIMIT)}], got ${String(value)}`,
       );

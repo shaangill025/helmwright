@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   FALLBACK_SUMMARY,
+  MAX_LIMIT,
   createCallCounters,
   runLoop,
+  validateLimits,
   type CallCounters,
   type Engine,
   type EngineTurn,
@@ -484,6 +486,42 @@ describe("runLoop", () => {
           runLoop({ agentId: "a", messages: [], tools: TOOLS, limits }, deps),
         ).toThrow(RangeError);
       }
+    }
+    for (const required of keys.slice(0, 4)) {
+      const limits = Object.fromEntries(
+        Object.entries(LIMITS).filter(([name]) => name !== required),
+      );
+      expect(() =>
+        runLoop(
+          { agentId: "a", messages: [], tools: TOOLS, limits: limits as never },
+          deps,
+        ),
+      ).toThrow(RangeError);
+    }
+    expect(() =>
+      runLoop(
+        {
+          agentId: "a",
+          messages: [],
+          tools: TOOLS,
+          limits: { ...LIMITS, maxIteration: 5 } as never,
+        },
+        deps,
+      ),
+    ).toThrow(RangeError);
+  });
+
+  it("accepts the boundary limits 1 and MAX_LIMIT", () => {
+    for (const value of [1, MAX_LIMIT]) {
+      expect(() => {
+        validateLimits({
+          maxIterations: value,
+          maxToolCallsPerIteration: value,
+          timeoutMs: value,
+          noProgressIterations: value,
+          handoffTimeoutMs: value,
+        });
+      }).not.toThrow();
     }
   });
 });
