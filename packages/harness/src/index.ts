@@ -35,3 +35,20 @@ export {
   runLoop,
   validateLimits,
 } from "./loop/loop.ts";
+export type {
+  SandboxDeps,
+  SandboxLimits,
+  SandboxRequest,
+  SandboxResult,
+} from "./sandbox/docker.ts";
+export {
+  DEFAULT_MAX_OUTPUT_BYTES,
+  DEFAULT_SANDBOX_LIMITS,
+  MAX_SANDBOX_VALUE,
+  SANDBOX_BASE_IMAGE,
+  SANDBOX_DOCKERFILE_DIR,
+  buildSandboxImage,
+  dockerClientEnv,
+  dockerRunArgs,
+  runInSandbox,
+} from "./sandbox/docker.ts";
