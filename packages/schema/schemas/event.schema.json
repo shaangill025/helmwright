@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/event.schema.json",
+  "title": "Event",
+  "description": "Envelope of every session-log event. Graph, run and node identity are required from the first event (design 06, Ring 0).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "seq",
+    "graphId",
+    "runId",
+    "nodeId",
+    "type",
+    "at",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "eventId": { "$ref": "#/$defs/id" },
+    "seq": {
+      "description": "Position in the session log: starts at 0, gap-free and strictly increasing.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "graphId": { "$ref": "#/$defs/id" },
+    "runId": { "$ref": "#/$defs/id" },
+    "nodeId": { "$ref": "#/$defs/id" },
+    "type": {
+      "description": "Dotted event type, e.g. `run.started`.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9]*)+$"
+    },
+    "at": {
+      "description": "UTC timestamp, RFC 3339 with a `Z` designator.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+    },
+    "payload": {
+      "description": "Event-type-specific body; typed per event kind by the object-model schemas.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "id": {
+      "description": "Opaque identifier. A pattern rather than minLength keeps generated validators free of runtime imports.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    }
+  }
+}

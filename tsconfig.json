@@ -3,7 +3,8 @@
   "compilerOptions": {
     "noEmit": true,
     "allowJs": true,
-    "checkJs": true
+    "checkJs": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["*.js", "*.ts", "packages/*/**/*"],
   "exclude": [
