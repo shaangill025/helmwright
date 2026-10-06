@@ -23,7 +23,7 @@ export interface Event {
    */
   type: string;
   /**
-   * UTC timestamp, RFC 3339 with a `Z` designator.
+   * UTC timestamp exactly as Date.prototype.toISOString() writes it (millisecond precision, `Z`), so string order is time order. No leap seconds.
    */
   at: string;
   /**
