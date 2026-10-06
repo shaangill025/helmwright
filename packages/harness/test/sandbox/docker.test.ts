@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -118,7 +118,11 @@ describe("dockerRunArgs", () => {
       expect(flags).toContain(flag);
     }
     expectPair(args, "--name", NAME);
-    expectPair(args, "--label", "helmwright.sandbox=1");
+    const labels = args.filter((_, i) => args[i - 1] === "--label");
+    expect(labels).toEqual([
+      expect.stringMatching(/^helmwright\.sandbox=[0-9a-f-]{36}$/),
+      `helmwright.sandbox.owner-pid=${String(process.pid)}`,
+    ]);
     expectPair(args, "--network", "none");
     expectPair(args, "--ipc", "none");
     expectPair(args, "--pull", "never");
@@ -147,6 +151,23 @@ describe("dockerRunArgs", () => {
   it("refuses to run the container as root", () => {
     vi.spyOn(process, "getuid").mockReturnValue(0);
     expect(() => dockerRunArgs(request(), NAME)).toThrow(/root/);
+  });
+
+  it("refuses to run the container with gid 0", () => {
+    vi.spyOn(process, "getgid").mockReturnValue(0);
+    expect(() => dockerRunArgs(request(), NAME)).toThrow(/root/);
+  });
+
+  it.each([
+    ["/", "/"],
+    ["home", homedir()],
+    ["an ancestor of home", dirname(homedir())],
+    // A case-insensitive volume resolves this to home; elsewhere it does not exist.
+    ["home in other case", homedir().toUpperCase()],
+  ])("rejects %s as workspaceRoot", (_label, workspaceRoot) => {
+    expect(() => dockerRunArgs(request({ workspaceRoot }), NAME)).toThrow(
+      /^SandboxRequest\.workspaceRoot /,
+    );
   });
 
   it("applies explicit limits", () => {
@@ -369,11 +390,11 @@ describe("runInSandbox", () => {
     }
   });
 
-  it("rejects when docker itself fails to start the container (125)", async () => {
+  it("rejects on 125, marking stderr as untrusted", async () => {
     const fake = fakeDocker("start-fail");
     const run = runInSandbox(request(), fake.deps);
     await expect(run).rejects.toThrow(
-      /^sandbox failed to start: docker: Error response from daemon/,
+      /^sandbox failed to start or the program exited 125; untrusted stderr: docker: Error/,
     );
     const error = await run.catch((e: unknown) => e);
     expect(String(error).length).toBeLessThan(5_000);
@@ -428,6 +449,30 @@ describe("runInSandbox", () => {
     );
   }, 15_000);
 
+  it("rejects a workspace containing the endpoint's socket, without running", async () => {
+    const fake = fakeDocker("ok");
+    mkdirSync(join(workspace, "run"));
+    writeFileSync(join(workspace, "run", "docker.sock"), "");
+    const host = `unix://${join(workspace, "run", "docker.sock")}`;
+    const deps = { ...fake.deps, resolveEndpoint: () => Promise.resolve(host) };
+    await expect(runInSandbox(request(), deps)).rejects.toThrow(
+      /^SandboxRequest\.workspace must not contain the docker endpoint socket/,
+    );
+    expect(commands(fake.calls())).not.toContain("run");
+  });
+
+  it("stops, verifies and reports a client killed by a signal", async () => {
+    const fake = fakeDocker("signal");
+    const result = await runInSandbox(request(), fake.deps);
+    expect(result).toMatchObject({
+      exitCode: null,
+      timedOut: false,
+      cancelled: false,
+      cleanupFailed: true,
+    });
+    expect(commands(fake.calls())).toEqual(["run", "kill", "rm", "ps"]);
+  }, 10_000);
+
   it("returns cancelled without running anything if already aborted", async () => {
     const fake = fakeDocker("ok");
     const result = await runInSandbox(
@@ -440,13 +485,18 @@ describe("runInSandbox", () => {
 });
 
 describe("reapSandboxContainers", () => {
-  it("force-removes every labelled container", async () => {
+  it("removes only sandbox-named containers whose owner is gone", async () => {
     const fake = fakeDocker("ok");
-    await expect(reapSandboxContainers(fake.deps)).resolves.toBe(2);
-    expect(fake.calls().map((call) => call.args)).toEqual([
-      ["ps", "-a", "-q", "--filter", "label=helmwright.sandbox=1"],
-      ["rm", "-f", "aaa111", "bbb222"],
+    await expect(reapSandboxContainers(fake.deps)).resolves.toBe(1);
+    const [ps, rm, ...rest] = fake.calls().map((call) => call.args);
+    expect(ps?.slice(0, 4)).toEqual([
+      "ps",
+      "-a",
+      "--filter",
+      "label=helmwright.sandbox",
     ]);
+    expect(rm).toEqual(["rm", "-f", "aaa111"]);
+    expect(rest).toEqual([]);
   });
 });
 

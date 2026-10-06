@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
-  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -12,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, sep } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -23,8 +22,13 @@ export const SANDBOX_BASE_IMAGE =
 export const SANDBOX_DOCKERFILE_DIR = fileURLToPath(
   new URL("../../sandbox", import.meta.url),
 );
-/** Every sandbox container carries this label; `reapSandboxContainers` removes them. */
-export const SANDBOX_LABEL = "helmwright.sandbox=1";
+/**
+ * Label key on every sandbox container; its value is this process's instance ID, and
+ * `${SANDBOX_LABEL}.owner-pid` holds the owner's pid (see `reapSandboxContainers`).
+ */
+export const SANDBOX_LABEL = "helmwright.sandbox";
+const INSTANCE = randomUUID();
+const NAME_PREFIX = "helmwright-sandbox-";
 const BUILD_TIMEOUT_MS = 600_000;
 export const MAX_SANDBOX_VALUE = 2_147_483_647;
 export const DEFAULT_MAX_OUTPUT_BYTES = 1_048_576;
@@ -71,7 +75,7 @@ export interface SandboxRequest {
 }
 
 export interface SandboxResult {
-  /** Null when the run timed out or was cancelled. */
+  /** Null when the run timed out, was cancelled, or the docker client died by a signal. */
   readonly exitCode: number | null;
   readonly stdout: string;
   readonly stderr: string;
@@ -83,7 +87,7 @@ export interface SandboxResult {
   readonly cancelled: boolean;
   /** Exit 126/127: the program could not be executed (or itself exited so). */
   readonly startFailed: boolean;
-  /** After a timeout/cancel, the container could not be confirmed removed. */
+  /** After a timeout, cancel or client signal, the container was not confirmed removed. */
   readonly cleanupFailed: boolean;
   readonly containerName: string;
   readonly durationMs: number;
@@ -152,6 +156,10 @@ function checkArgv(argv: readonly string[]): void {
   });
 }
 
+/** True if `path` is `dir` or inside it (both realpaths). */
+const contains = (dir: string, path: string): boolean =>
+  path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+
 /** Returns the realpath of an existing absolute directory, or throws. */
 function realDirectory(field: string, path: string): string {
   if (typeof path !== "string" || path.includes("\0")) {
@@ -160,7 +168,7 @@ function realDirectory(field: string, path: string): string {
   if (!isAbsolute(path)) throw fail(field, "must be absolute");
   let real: string;
   try {
-    real = realpathSync(path);
+    real = realpathSync.native(path);
   } catch {
     throw fail(field, `does not exist: ${path}`);
   }
@@ -177,13 +185,17 @@ function resolveWorkspace(workspace: string, workspaceRoot: string): string {
     throw fail("workspace", `must not be a symlink: ${workspace}`);
   }
   const root = realDirectory("workspaceRoot", workspaceRoot);
-  if (!real.startsWith(root.endsWith(sep) ? root : root + sep)) {
-    throw fail("workspace", `must be strictly inside ${root}: ${real}`);
+  let home = homedir();
+  try {
+    home = realpathSync.native(home);
+  } catch {
+    // A missing home still compares as given.
   }
-  const home = homedir();
-  const realHome = existsSync(home) ? realpathSync(home) : home;
-  if (real === "/" || real === home || real === realHome) {
-    throw fail("workspace", `must not be / or the home directory: ${real}`);
+  if (root === "/" || contains(root, home)) {
+    throw fail("workspaceRoot", `must not be /, home or its ancestor: ${root}`);
+  }
+  if (real === root || !contains(root, real)) {
+    throw fail("workspace", `must be strictly inside ${root}: ${real}`);
   }
   // --mount is CSV-parsed: these characters could inject mount options.
   if (/[,"'\n\r]/.test(real)) {
@@ -224,8 +236,8 @@ function hostUser(): string {
   const uid = process.getuid?.();
   const gid = process.getgid?.();
   if (uid === undefined || gid === undefined) return "1000:1000";
-  if (uid === 0) {
-    throw new Error("sandbox refuses to run as root (uid 0); run unprivileged");
+  if (uid === 0 || gid === 0) {
+    throw new Error("sandbox refuses to run as root (uid or gid 0)");
   }
   return `${String(uid)}:${String(gid)}`;
 }
@@ -240,6 +252,10 @@ export function dockerRunArgs(
   request: SandboxRequest,
   containerName: string,
 ): string[] {
+  return runArgs(request, containerName).args;
+}
+
+function runArgs(request: SandboxRequest, containerName: string) {
   checkArgv(request.argv);
   const { image } = request;
   if (typeof image !== "string" || !/^sha256:[0-9a-f]{64}$/.test(image)) {
@@ -265,7 +281,8 @@ export function dockerRunArgs(
   const memory = `${String(limits.memoryMb)}m`;
   const options: (readonly [string, string])[] = [
     ["--name", containerName],
-    ["--label", SANDBOX_LABEL],
+    ["--label", `${SANDBOX_LABEL}=${INSTANCE}`],
+    ["--label", `${SANDBOX_LABEL}.owner-pid=${String(process.pid)}`],
     // Never fetch an image, and never run an image-defined entrypoint before argv.
     ["--pull", "never"],
     ["--entrypoint", ""],
@@ -286,12 +303,43 @@ export function dockerRunArgs(
     ["--workdir", CONTAINER_PATH],
     ...env.map(([key, value]) => ["--env", `${key}=${value}`] as const),
   ];
-  return [
+  const args = [
     ...["run", "--rm", "--init", "--read-only"],
     ...options.flat(),
     image,
     ...request.argv,
   ];
+  return { args, workspace };
+}
+
+/**
+ * Just before `docker run`: the workspace must still resolve to the mounted path, and must
+ * not contain the endpoint's socket (or a container could drive the daemon).
+ */
+function recheckWorkspace(
+  request: SandboxRequest,
+  mounted: string,
+  endpoint: string,
+): void {
+  const now = resolveWorkspace(request.workspace, request.workspaceRoot);
+  if (now !== mounted || realpathSync.native(mounted) !== mounted) {
+    throw fail("workspace", `changed before the run: ${mounted} -> ${now}`);
+  }
+  const socket = endpoint.slice("unix://".length);
+  const dirs = [dirname(socket)];
+  for (const resolve of [
+    () => dirname(realpathSync.native(socket)),
+    () => realpathSync.native(dirname(socket)),
+  ]) {
+    try {
+      dirs.push(resolve());
+    } catch {
+      // Unresolvable: the literal path is still compared.
+    }
+  }
+  if (dirs.some((dir) => contains(mounted, dir))) {
+    throw fail("workspace", `must not contain the docker endpoint socket`);
+  }
 }
 
 function checkEndpoint(endpoint: string): string {
@@ -526,24 +574,40 @@ async function stopContainer(
   );
 }
 
+/** True unless `pid` is certainly not a running process. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 /**
- * Force-removes every container labelled SANDBOX_LABEL (call at harness startup, when no
- * sandbox runs). Resolves with how many were removed.
+ * Force-removes containers named `helmwright-sandbox-…` and labelled SANDBOX_LABEL that
+ * belong to this process's instance or to an owner pid that no longer runs. Resolves
+ * with how many were removed.
  * @throws Error if docker cannot list or remove them.
  */
 export async function reapSandboxContainers(
   deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
 ): Promise<number> {
   const docker = await dockerContext(deps);
-  const filter = `label=${SANDBOX_LABEL}`;
+  const format = `{{.ID}}\t{{.Names}}\t{{.Label "${SANDBOX_LABEL}"}}\t{{.Label "${SANDBOX_LABEL}.owner-pid"}}`;
   const out = await dockerOutput(docker, [
-    "ps",
-    "-a",
-    "-q",
-    "--filter",
-    filter,
+    ...["ps", "-a", "--filter", `label=${SANDBOX_LABEL}`],
+    ...["--format", format],
   ]);
-  const ids = out.split("\n").filter((id) => /^[0-9a-f]+$/.test(id));
+  const ids = out.split("\n").flatMap((line) => {
+    const [id = "", name = "", instance, pid = ""] = line.split("\t");
+    const orphan =
+      instance === INSTANCE ||
+      (/^[1-9]\d{0,9}$/.test(pid) && !alive(Number(pid)));
+    return /^[0-9a-f]+$/.test(id) && name.startsWith(NAME_PREFIX) && orphan
+      ? [id]
+      : [];
+  });
   if (ids.length > 0) await dockerOutput(docker, ["rm", "-f", ...ids]);
   return ids.length;
 }
@@ -555,26 +619,26 @@ export async function reapSandboxContainers(
  *
  * @throws RangeError | TypeError synchronously, before spawning, for an
  * invalid request. Rejects if the endpoint is not `unix://`, if the docker CLI
- * cannot be started, or if docker fails to start the container (exit 125:
- * "sandbox failed to start: …").
+ * cannot be started, if the workspace changed or contains the endpoint socket, or on
+ * exit 125 ("sandbox failed to start or the program exited 125; untrusted stderr: …").
  */
 export function runInSandbox(
   request: SandboxRequest,
   deps: SandboxDeps = {},
 ): Promise<SandboxResult> {
-  const name = deps.containerName ?? `helmwright-sandbox-${randomUUID()}`;
-  const args = dockerRunArgs(request, name);
-  return execute(request, args, name, deps);
+  const name = deps.containerName ?? `${NAME_PREFIX}${randomUUID()}`;
+  return execute(request, runArgs(request, name), name, deps);
 }
 
 async function execute(
   request: SandboxRequest,
-  args: readonly string[],
+  { args, workspace }: ReturnType<typeof runArgs>,
   name: string,
   deps: SandboxDeps,
 ): Promise<SandboxResult> {
   const started = performance.now();
   const docker = await dockerContext(deps);
+  recheckWorkspace(request, workspace, docker.env["DOCKER_HOST"] ?? "");
   const base = {
     containerName: name,
     startFailed: false,
@@ -596,7 +660,7 @@ async function execute(
   }
   const max = request.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const client = startDocker(docker, args, max);
-  let reason: "timeout" | "cancelled" | undefined;
+  let reason: "timeout" | "cancelled" | "signal" | undefined;
   const { promise: interrupted, resolve: interrupt } =
     Promise.withResolvers<null>();
   const stop = (why: "timeout" | "cancelled") => {
@@ -612,13 +676,17 @@ async function execute(
   request.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const code = await Promise.race([client.closed, interrupted]);
+    // Killed by a signal: docker may still be running the container.
+    if (code === null) reason ??= "signal";
     let cleanupFailed = false;
     if (reason !== undefined) {
       cleanupFailed = !(await stopContainer(docker, name, client));
     } else if (code === 125) {
       await dockerQuiet(docker, ["rm", "-f", name]);
       const stderr = bounded(client.stderr.text());
-      throw new Error(`sandbox failed to start: ${stderr}`);
+      throw new Error(
+        `sandbox failed to start or the program exited 125; untrusted stderr: ${stderr}`,
+      );
     }
     const stdoutTruncated = client.stdout.truncated();
     const stderrTruncated = client.stderr.truncated();

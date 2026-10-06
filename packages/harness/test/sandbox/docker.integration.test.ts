@@ -5,12 +5,13 @@ import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   afterEach,
   beforeAll,
@@ -24,6 +25,7 @@ import {
   SANDBOX_BASE_IMAGE,
   buildSandboxImage,
   reapSandboxContainers,
+  resolveDockerEndpoint,
   runInSandbox,
   type SandboxRequest,
   type SandboxResult,
@@ -219,17 +221,86 @@ describe("runInSandbox (docker)", () => {
     expectNoContainer(name);
   });
 
-  it("reaps leftover sandbox containers", { timeout: T }, async () => {
-    const name = `hw-it-${randomUUID()}`;
-    const create = spawnSync(
-      "docker",
-      ["create", "--name", name, "--label", "helmwright.sandbox=1", image],
-      { encoding: "utf8" },
-    );
-    expect(create.status).toBe(0);
-    expect(await reapSandboxContainers()).toBeGreaterThanOrEqual(1);
-    expectNoContainer(name);
-  });
+  it(
+    "rejects a workspace swapped for a symlink before docker runs",
+    { timeout: T },
+    async () => {
+      const parent = join(root, "p");
+      mkdirSync(join(parent, "ws"), { recursive: true });
+      mkdirSync(join(outside, "ws"));
+      const name = `hw-it-${randomUUID()}`;
+      const resolveEndpoint = async () => {
+        const endpoint = await resolveDockerEndpoint();
+        renameSync(parent, join(root, "old"));
+        symlinkSync(outside, parent);
+        return endpoint;
+      };
+      const request = {
+        argv: ["touch", "/workspace/escaped"],
+        image,
+        workspace: join(parent, "ws"),
+        workspaceRoot: root,
+        timeoutMs: 30_000,
+      };
+      await expect(
+        runInSandbox(request, { containerName: name, resolveEndpoint }),
+      ).rejects.toThrow(/^SandboxRequest\.workspace /);
+      expect(existsSync(join(outside, "ws", "escaped"))).toBe(false);
+      expectNoContainer(name);
+    },
+  );
+
+  it(
+    "rejects a workspace containing the docker socket",
+    { timeout: T },
+    async () => {
+      const host = await resolveDockerEndpoint();
+      const socketDir = dirname(realpathSync(host.slice("unix://".length)));
+      const name = `hw-it-${randomUUID()}`;
+      const request = {
+        argv: ["true"],
+        image,
+        workspace: socketDir,
+        workspaceRoot: dirname(socketDir),
+        timeoutMs: 30_000,
+      };
+      // Synchronous (root is / or home) or asynchronous (socket) rejection.
+      await expect(
+        (async () => runInSandbox(request, { containerName: name }))(),
+      ).rejects.toThrow(/^SandboxRequest\.workspace/);
+      expectNoContainer(name);
+    },
+  );
+
+  it(
+    "reaps containers of exited owners, not of live ones",
+    { timeout: T },
+    async () => {
+      const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+      const create = (owner: number) => {
+        const name = `helmwright-sandbox-it-${randomUUID()}`;
+        const labels = [
+          ...["--label", "helmwright.sandbox=it-other-instance"],
+          ...["--label", `helmwright.sandbox.owner-pid=${String(owner)}`],
+        ];
+        const args = ["create", "--name", name, ...labels, image];
+        expect(spawnSync("docker", args).status).toBe(0);
+        return name;
+      };
+      const orphan = create(dead);
+      const live = create(process.ppid);
+      try {
+        expect(await reapSandboxContainers()).toBeGreaterThanOrEqual(1);
+        expectNoContainer(orphan);
+        const ps = ["ps", "-aq", "--filter", `name=${live}`];
+        expect(spawnSync("docker", ps, { encoding: "utf8" }).stdout).not.toBe(
+          "",
+        );
+      } finally {
+        spawnSync("docker", ["rm", "-f", live]);
+      }
+    },
+  );
 
   it("bounds captured output", { timeout: T }, async () => {
     const result = await run(

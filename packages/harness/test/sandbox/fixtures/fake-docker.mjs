@@ -39,6 +39,8 @@ switch (args[0]) {
       process.exitCode = 125;
     } else if (mode === "not-found") {
       process.exitCode = 127;
+    } else if (mode === "signal") {
+      process.kill(process.pid, "SIGKILL");
     } else if (mode === "stderr") {
       process.stderr.write("y".repeat(4_096));
       process.stdout.write("ok");
@@ -51,9 +53,14 @@ switch (args[0]) {
     if (mode === "hang") hang();
     break;
   case "ps":
-    if ((args.at(-1) ?? "").startsWith("label=")) {
-      process.stdout.write("aaa111\nbbb222\n");
-    } else if (mode === "hang") {
+    if (args.includes("label=helmwright.sandbox")) {
+      // ID, name, instance label, owner-pid label: dead owner, live owner (pid 1), foreign name.
+      process.stdout.write(
+        "aaa111\thelmwright-sandbox-a\tother\t2147483646\n" +
+          "bbb222\thelmwright-sandbox-b\tother\t1\n" +
+          "ccc333\tsomeone-else\tother\t2147483646\n",
+      );
+    } else if (mode === "hang" || mode === "signal") {
       process.stdout.write("aaa111\n");
     }
     break;
