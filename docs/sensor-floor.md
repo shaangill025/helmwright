@@ -16,7 +16,10 @@ which runs trusted, pinned tools on candidate trees outside the candidate's cont
   scripts, pnpm settings, `devEngines`, `resolutions`/`overrides`; dependency specifiers other than
   registry semver or `@helmwright/*` workspace packages; non-registry lockfile resolutions and
   foreign `link:` entries; a `pnpm-workspace.yaml` that differs from the owner's content; a pnpm or
-  Node version other than the workflow's.
+  Node version other than the workflow's. The lockfile text checks are best-effort (YAML can spell the
+  same value many ways); the authoritative check runs after install: each checker (`eslint`,
+  `typescript`, `prettier`, `vitest` and the ESLint plugins) must resolve to the registry package of the
+  same name in the pnpm store, and each checker binary must run from that package.
 - **main ruleset**: PRs only; all of the above required and up to date; linear history.
 
 ## Known gaps

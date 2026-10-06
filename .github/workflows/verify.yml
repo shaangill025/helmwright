@@ -34,6 +34,34 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       # No lifecycle scripts or pnpmfile: nothing from the PR runs before the checks.
       - run: pnpm install --frozen-lockfile --ignore-scripts --ignore-pnpmfile
+      # Whatever the lockfile says, the checkers must be the registry packages of the same name
+      # (catches aliasing, link: and tarball swaps however the YAML is spelled), and the pins hold.
+      - name: Checkers resolve to their registry packages
+        run: |
+          test "$(cat .node-version)" = "$NODE_VERSION"
+          test "$(jq -r .packageManager package.json)" = "pnpm@$PNPM_VERSION"
+          node --input-type=module -e '
+          import { readFileSync, realpathSync } from "node:fs";
+          import { relative } from "node:path";
+          const checkers = { eslint: ["eslint"], typescript: ["tsc"], prettier: ["prettier"], vitest: ["vitest"], "typescript-eslint": [], "@eslint/js": [] };
+          const bad = [];
+          for (const [name, bins] of Object.entries(checkers)) {
+            const store = `.pnpm/${name.replace("/", "+")}@`;
+            const real = relative("node_modules", realpathSync(`node_modules/${name}`));
+            const match = real.startsWith(store) ? /^([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)(?:_[^/]+)?\/node_modules\/(.+)$/.exec(real.slice(store.length)) : null;
+            const pkg = JSON.parse(readFileSync(`node_modules/${name}/package.json`, "utf8"));
+            if (!match || match[2] !== name || pkg.name !== name || pkg.version !== match[1]) {
+              bad.push(`${name} resolves to ${real} (${pkg.name}@${pkg.version})`);
+              continue;
+            }
+            for (const bin of bins) {
+              const targets = [...readFileSync(`node_modules/.bin/${bin}`, "utf8").matchAll(/"\$basedir\/\.\.\/([^"]+)"/g)].map((t) => t[1]);
+              if (targets.length === 0 || targets.some((t) => !t.startsWith(`${real}/`))) bad.push(`.bin/${bin} runs ${targets.join(", ") || "nothing recognisable"}`);
+            }
+          }
+          for (const problem of bad) console.log(`::error::${problem}`);
+          process.exit(bad.length === 0 ? 0 : 1);
+          '
       # Owner style and ignore list: a PR's prettier config could run plugins or narrow the scope.
       - run: |
           printf 'pnpm-lock.yaml\nnode_modules/\n' > "$RUNNER_TEMP/prettierignore"
