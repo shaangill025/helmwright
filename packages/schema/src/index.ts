@@ -24,3 +24,10 @@ export type {
   PermissionRejectedRuleId,
 } from "../generated/permission-event.ts";
 export { validate as validatePermissionEvent } from "../generated/permission-event.validate.js";
+export type {
+  RotRegister,
+  RotRegisterDate,
+  RotRegisterEntry,
+  RotReviewTrigger,
+} from "../generated/rot-register.ts";
+export { validate as validateRotRegister } from "../generated/rot-register.validate.js";
