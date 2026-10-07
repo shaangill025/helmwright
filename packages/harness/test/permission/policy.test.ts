@@ -12,7 +12,11 @@ import {
   validatePermissionPolicy,
   type PermissionPolicy,
 } from "@helmwright/schema";
-import type { PermissionVerdict } from "../../src/index.ts";
+import type {
+  PermissionRequest,
+  PermissionVerdict,
+  RunRing0,
+} from "../../src/index.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ALWAYS_ASK_ACTIONS,
@@ -24,9 +28,12 @@ import {
   isRing0Path,
   resolvePolicy,
   ring0LinkTargets,
+  runRing0,
 } from "../../src/index.ts";
 
 let worktree: string;
+/** The run's Ring 0 links of a worktree with none. */
+let NONE: RunRing0;
 beforeAll(() => {
   worktree = join(mkdtempSync(join(tmpdir(), "helmwright-policy-")), "wt");
   mkdirSync(join(worktree, "src", "gh", "workflows"), { recursive: true });
@@ -48,6 +55,9 @@ beforeAll(() => {
   // A link outside the worktree that leads into it.
   symlinkSync("wt", join(worktree, "..", "alias"));
   symlinkSync("src/esc\u001b[2Kname.ts", join(worktree, "to-esc"));
+  const empty = join(worktree, "..", "empty");
+  mkdirSync(empty);
+  NONE = runRing0(empty, BASE);
 });
 afterAll(() => {
   rmSync(join(worktree, ".."), { recursive: true, force: true });
@@ -59,9 +69,13 @@ const x = (...argv: string[]) => ({ argv });
 const to = (destination: string, ref = branch) => ({ destination, ref });
 const set = (setting: string, value: unknown = 1) => ({ setting, value });
 const commit = (ref: string, ...paths: string[]) => ({ ref, paths });
+/** A request in the shared worktree, with no extra Ring 0 links. */
+const req = (action: string, input: unknown, runId = "r") => {
+  return { action, input, worktree, runId, extraRing0Paths: NONE };
+};
 // Policies are unknown on purpose: evaluate re-validates the policy it is given.
 const verdict = (action: string, input: unknown, policy: unknown = BASE) => {
-  const request = { action, input, worktree, runId: "run_01" };
+  const request = req(action, input, "run_01");
   const { tier, ruleId } = evaluate(policy as PermissionPolicy, request);
   return { tier, ruleId };
 };
@@ -166,8 +180,8 @@ describe("evaluate with the default policy", () => {
   });
 
   it("returns the normalized target", () => {
-    const request = { action: "fs.edit", input: p("/workspace/./src/a.ts") };
-    const { target } = evaluate(BASE, { ...request, worktree, runId: "r" });
+    const request = req("fs.edit", p("/workspace/./src/a.ts"));
+    const { target } = evaluate(BASE, request);
     expect(target?.kind).toBe("path");
     expect(target?.value).toMatch(/\/wt\/src\/a\.ts$/);
   });
@@ -248,12 +262,15 @@ describe("evaluate with the default policy", () => {
   });
 
   it("denies, without throwing, a path that resolves to a control character", () => {
-    const request = { action: "fs.edit", input: p("to-esc"), runId: "run_01" };
-    expect(evaluate(BASE, { ...request, worktree })).toEqual({
+    const request = req("fs.edit", p("to-esc"), "run_01");
+    expect(evaluate(BASE, request)).toEqual({
+      kind: "rejected",
       tier: "deny",
       ruleId: "schema.invalid-input",
       reason:
         "fs.edit path rejected: resolved path has control or invisible characters",
+      guard: "schema",
+      requestedName: "fs.edit",
     });
   });
 
@@ -268,12 +285,15 @@ describe("evaluate with the default policy", () => {
       tier: "deny",
       ruleId: "policy.invalid",
     });
-    const request = { action: "fs.read", input: p("a"), runId: "r" };
+    const request = req("fs.read", p("a"));
     const missing = join(worktree, "missing");
     expect(evaluate(BASE, { ...request, worktree: missing })).toEqual({
+      kind: "rejected",
       tier: "deny",
       ruleId: "schema.invalid-input",
       reason: "fs.read path rejected: ENOENT",
+      guard: "schema",
+      requestedName: "fs.read",
     });
   });
 
@@ -467,13 +487,7 @@ describe("resolvePolicy", () => {
 
 describe("evaluate on hostile requests (B9a-4)", () => {
   const rule = (input: unknown, extra: Record<string, unknown> = {}) =>
-    evaluate(BASE, {
-      action: "fs.edit",
-      input,
-      worktree,
-      runId: "run_01",
-      ...extra,
-    });
+    evaluate(BASE, { ...req("fs.edit", input, "run_01"), ...extra });
   const hostile = {
     toString(): string {
       throw new Error("hostile toString");
@@ -506,8 +520,8 @@ describe("evaluate on hostile requests (B9a-4)", () => {
       () => {
         const paths = ["src/a.ts"];
         paths[2] = "src/a.ts";
-        const request = { action: "commit", input: { ref: branch, paths } };
-        return evaluate(BASE, { ...request, worktree, runId: "run_01" });
+        const input = { ref: branch, paths };
+        return evaluate(BASE, req("commit", input, "run_01"));
       },
     ],
     [
@@ -518,6 +532,7 @@ describe("evaluate on hostile requests (B9a-4)", () => {
           action: "fs.edit",
           input: p("src/a.ts"),
           worktree,
+          extraRing0Paths: NONE,
           get runId(): string {
             throw hostile as unknown as Error;
           },
@@ -532,8 +547,7 @@ describe("evaluate on hostile requests (B9a-4)", () => {
       "an input over 256 KiB (N4)",
       () => {
         const argv = ["echo", ...Array<string>(5).fill("a".repeat(60_000))];
-        const request = { action: "execute", input: { argv }, runId: "r" };
-        return evaluate(BASE, { ...request, worktree });
+        return evaluate(BASE, req("execute", { argv }));
       },
     ],
   ])("denies %s without throwing", (_, run) => {
@@ -560,16 +574,18 @@ describe("evaluate on hostile requests (B9a-4)", () => {
   });
 
   it("escapes an unknown action name and never returns its raw characters", () => {
-    const request = { action: "dep\u202eloy\u0007", input: {}, runId: "r" };
-    const { tier, reason } = evaluate(BASE, { ...request, worktree });
-    expect(tier).toBe("deny");
-    expect(reason).not.toContain("\u202e");
-    expect(reason).not.toContain("\u0007");
-    expect(reason).toContain("\\u{202e}");
+    const result = evaluate(BASE, req("dep\u202eloy\u0007", {}));
+    expect(result).toMatchObject({ kind: "rejected", tier: "deny" });
+    const { reason, requestedName } = result;
+    expect(requestedName).toBe("dep\\u{202e}loy\\u{7}");
+    for (const text of [reason, requestedName]) {
+      expect(text).not.toContain("\u202e");
+      expect(text).not.toContain("\u0007");
+    }
   });
 
   it("keeps fs error text, which may name the worktree, out of the reason (N3)", () => {
-    const request = { action: "fs.read", input: p("a"), runId: "r" };
+    const request = req("fs.read", p("a"));
     const bad = join(worktree, "x\0y");
     const { tier, reason } = evaluate(BASE, { ...request, worktree: bad });
     expect(tier).toBe("deny");
@@ -603,8 +619,7 @@ describe("push refs (SF-C)", () => {
     "asks to push %j and shows refs/heads/main",
     (ref) => {
       const input = to("origin", ref);
-      const request = { action: "push", input, worktree, runId: "r" };
-      const { tier, target } = evaluate(BASE, request);
+      const { tier, target } = evaluate(BASE, req("push", input));
       expect(tier).toBe("alwaysAsk");
       expect(target?.value).toBe("origin refs/heads/main");
     },
@@ -613,11 +628,11 @@ describe("push refs (SF-C)", () => {
 
 describe("targets show the payload (S3)", () => {
   const target = (action: string, input: unknown) =>
-    evaluate(BASE, { action, input, worktree, runId: "r" }).target;
+    evaluate(BASE, req(action, input)).target;
 
   it("shows the spend cap", () => {
     expect(target("spend.raiseCap", { capUsd: 50 })).toEqual({
-      kind: "setting",
+      kind: "amount",
       value: "spend.cap",
       detail: "50 USD",
     });
@@ -707,7 +722,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
     expect(extraRing0Paths).toEqual(
       expect.arrayContaining(["hsrc/**", "foo/**"]),
     );
-    const run = { worktree, runId: "run_01" };
+    const run = { worktree, runId: "run_01", extraRing0Paths: NONE };
     for (const [action, input] of [
       ["fs.edit", p("hsrc/loop/x.ts")],
       ["commit", commit(branch, "hsrc/loop/x.ts")],
@@ -734,7 +749,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
     "a/**b",
   ])("denies an invalid extra Ring 0 glob %j", (glob) => {
     const request = { action: "fs.read", input: p("src/a.ts"), worktree };
-    const extraRing0Paths = [glob];
+    const extraRing0Paths = [glob] as unknown as RunRing0;
     expect(
       evaluate(BASE, { ...request, runId: "r", extraRing0Paths }).tier,
     ).toBe("deny");
@@ -742,7 +757,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
 
   it("accepts a 128-character extra Ring 0 glob", () => {
     const request = { action: "fs.read", input: p("src/a.ts"), worktree };
-    const extraRing0Paths = ["a".repeat(128), "**"];
+    const extraRing0Paths = ["a".repeat(128), "**"] as unknown as RunRing0;
     expect(
       evaluate(BASE, { ...request, runId: "r", extraRing0Paths }).tier,
     ).toBe("allow");
@@ -751,7 +766,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
   it("treats the run's extra Ring 0 paths as Ring 0", () => {
     const extraRing0Paths = ring0LinkTargets(worktree, RING0_PATHS);
     const input = commit(branch, "src/pkg.json");
-    const request = { action: "commit", input, worktree, runId: "run_01" };
+    const request = req("commit", input, "run_01");
     expect(evaluate(BASE, request).tier).toBe("allow");
     expect(evaluate(BASE, { ...request, extraRing0Paths })).toMatchObject({
       tier: "alwaysAsk",
@@ -821,8 +836,8 @@ describe("Ring 0 link chains (SF2)", () => {
     expect([...extraRing0Paths].sort()).toEqual(["a/**", "config/pkg.json/**"]);
     rmSync(join(wt, "a"));
     writeFileSync(join(wt, "a"), "");
-    const request = { action: "commit", input: commit(branch, "a") };
-    const run = { ...request, worktree: wt, runId: "run_01" };
+    const request = req("commit", commit(branch, "a"), "run_01");
+    const run = { ...request, worktree: wt };
     expect(evaluate(BASE, run).tier).toBe("allow");
     expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
       tier: "alwaysAsk",
@@ -868,7 +883,7 @@ describe("Ring 0 link chains (SF2)", () => {
       "d/**",
       "sub/config/pkg.json/**",
     ]);
-    const run = { worktree: wt, runId: "run_01" };
+    const run = { worktree: wt, runId: "run_01", extraRing0Paths: NONE };
     for (const [action, input] of [
       ["fs.edit", p("sub/config/pkg.json")],
       ["commit", commit(branch, "sub/config/pkg.json")],
@@ -893,7 +908,13 @@ describe("Ring 0 link chains (SF2)", () => {
     const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
     expect(extraRing0Paths).toEqual(["hsrc/**"]);
     const input = p("hsrc/loop/x.ts");
-    const run = { action: "fs.edit", input, worktree: wt, runId: "run_01" };
+    const run = {
+      action: "fs.edit",
+      input,
+      worktree: wt,
+      runId: "run_01",
+      extraRing0Paths: NONE,
+    };
     expect(evaluate(BASE, run).tier).toBe("allow");
     expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
       tier: "alwaysAsk",
@@ -909,6 +930,22 @@ describe("Ring 0 link chains (SF2)", () => {
     ]);
   });
 
+  it("finds the links of the policy's Ring 0 paths and the floor's (SF3)", () => {
+    const wt = tree("own", [
+      ["custom.json", "config/own.json"],
+      ["package.json", "config/pkg.json"],
+    ]);
+    const ring0Paths: [string] = ["custom.json"];
+    const policy = { ...BASE, version: "own-1", ring0Paths };
+    expect([...runRing0(wt, policy)].sort()).toEqual([
+      "config/own.json/**",
+      "config/pkg.json/**",
+    ]);
+    expect(runRing0(wt, BASE)).toEqual(["config/pkg.json/**"]);
+    const invalid = { ...BASE, ring0Paths: ["../x"] } as PermissionPolicy;
+    expect(() => runRing0(wt, invalid)).toThrow(TypeError);
+  });
+
   it("throws on a link loop rather than walking it", () => {
     const wt = tree("d", [
       ["package.json", "l1"],
@@ -916,5 +953,85 @@ describe("Ring 0 link chains (SF2)", () => {
       ["l2", "l1"],
     ]);
     expect(() => ring0LinkTargets(wt, RING0_PATHS)).toThrow();
+  });
+});
+
+describe("verdicts carry what the event writer needs (B9b-2a)", () => {
+  const rule = (action: string, input: unknown, policy: unknown = BASE) =>
+    evaluate(policy as PermissionPolicy, req(action, input, "run_01"));
+
+  it("rules an install through execute as deps.add (S1)", () => {
+    expect(rule("execute", x("pnpm", "add", "x"))).toMatchObject({
+      kind: "evaluated",
+      tier: "ask",
+      ruleId: "deps.add",
+      action: "deps.add",
+      requested: "execute",
+      guard: "policy",
+      policyVersion: "default-1",
+    });
+  });
+
+  it("takes the policy version from the checked snapshot", () => {
+    let reads = 0;
+    const policy = {
+      ...BASE,
+      get version() {
+        reads += 1;
+        return reads === 1 ? "v-1" : "v-2";
+      },
+    };
+    expect(rule("fs.read", p("src/a.ts"), policy)).toMatchObject({
+      kind: "evaluated",
+      policyVersion: "v-1",
+    });
+  });
+
+  it.each([
+    ["an unknown action", "shell", x("ls"), BASE, "schema.unknown-action"],
+    ["invalid input", "fs.edit", { path: 1 }, BASE, "schema.invalid-input"],
+    ["a bad policy", "fs.read", p("a"), { governance: "x" }, "policy.invalid"],
+    // N7: a policy that cannot be snapshot is a policy failure, not a schema one.
+    ["a non-JSON policy", "fs.read", p("a"), { version: 1n }, "policy.invalid"],
+  ])("rejects %s and names the guard", (_, action, input, change, ruleId) => {
+    const result = rule(action, input, { ...BASE, ...change });
+    expect(result).toMatchObject({
+      kind: "rejected",
+      tier: "deny",
+      guard: ruleId.startsWith("policy.") ? "policy" : "schema",
+      ruleId,
+      requestedName: action,
+    });
+    expect(result.target).toBeUndefined();
+    expect(result.input).toBeUndefined();
+  });
+
+  it("shows a rejected name cut to 64 code points, then escaped", () => {
+    const name = "\u202e" + "\u{1f600}".repeat(70);
+    expect(rule(name, {})).toMatchObject({
+      kind: "rejected",
+      requestedName: "\\u{202e}" + "\u{1f600}".repeat(63) + "…[truncated]",
+    });
+  });
+
+  it("carries the unescaped resolved path; target.value is display only (SF4)", () => {
+    const real = join(realpathSync.native(worktree), "src", "back\\slash.ts");
+    expect(rule("fs.edit", p("src/back\\slash.ts"))).toMatchObject({
+      kind: "evaluated",
+      tier: "allow",
+      path: real,
+      target: { kind: "path", value: real.replace("\\", "\\\\") },
+    });
+    expect(rule("execute", x("ls")).path).toBeUndefined();
+  });
+
+  it("denies a request without the run's Ring 0 links (SF3)", () => {
+    const request = { action: "fs.read", input: p("src/a.ts"), worktree };
+    const missing = { ...request, runId: "r" } as unknown as PermissionRequest;
+    expect(evaluate(BASE, missing)).toMatchObject({
+      kind: "rejected",
+      guard: "schema",
+      ruleId: "schema.invalid-input",
+    });
   });
 });
