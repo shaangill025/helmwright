@@ -215,15 +215,37 @@ function shownValues(verdict: EvaluatedVerdict): readonly Shown[] | undefined {
   return [value, detail];
 }
 
+/** SF2: a literal ␠ (shown escaped) and each run of more than two spaces. */
+const SPACE_RUN = /␠| {3,}/g;
+/** N6: one shown unit: a policy escape, an escaped backslash, or a code point. */
+const UNIT = /\\u\{[0-9a-f]{1,6}\}|\\\\|[\s\S]/gu;
+
 /**
  * B9b-3c: the full-value view of an ask with a long value: for each, a label line
- * and the whole value as a JSON string literal. The presence wraps and pages it;
- * `permission.asked` holds its SHA-256. Undefined if no value is long.
+ * and the whole value as a JSON string literal, each run of more than two spaces
+ * shown as ␠×<count> (SF2). The presence wraps and pages it; `permission.asked`
+ * holds its SHA-256. Undefined if no value is long.
  */
 function askView(values: readonly Shown[]): string | undefined {
   const long = values.filter((v) => v.long);
   if (long.length === 0) return undefined;
-  return long.map((v) => "full " + v.label + ":\n" + quoted(v.text)).join("\n");
+  const marked = (text: string) =>
+    quoted(text).replace(SPACE_RUN, (run) =>
+      run === "␠" ? "\\\\u{2420}" : "␠×" + String(run.length),
+    );
+  return long.map((v) => "full " + v.label + ":\n" + marked(v.text)).join("\n");
+}
+
+/** N6: the first SUMMARY_HEAD code points of `text`, less an escape they would split. */
+function head(text: string): string {
+  let kept = "";
+  let count = 0;
+  for (const [unit] of text.matchAll(UNIT)) {
+    count += Array.from(unit).length;
+    if (count > SUMMARY_HEAD) break;
+    kept += unit;
+  }
+  return kept;
 }
 
 /**
@@ -247,10 +269,9 @@ function askPrompt(
   const show = (v: Shown) => {
     if (!v.long) return "  " + v.label + ": " + quoted(v.text);
     const points = Array.from(v.text);
-    const head = quoted(points.slice(0, SUMMARY_HEAD).join(""));
     const hash = sha256(view ?? "").slice(0, 16);
     const size = String(points.length) + " code points, sha256 " + hash;
-    return "  " + v.label + ": " + head + " … [" + size + "]";
+    return "  " + v.label + ": " + quoted(head(v.text)) + " … [" + size + "]";
   };
   const [value, detail] = values;
   const why = Array.from(reason);

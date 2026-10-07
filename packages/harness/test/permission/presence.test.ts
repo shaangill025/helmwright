@@ -401,11 +401,17 @@ describe("TTY presence", () => {
   // B9b-3c: an ask with a full-value view approves only after the view was shown to its end.
   describe("full-value view", () => {
     const LAST = "Approve call-1? [v=view, y/N] ";
+    const TAIL = "  target: x\n" + LAST;
     const HINT = "(view the full value first: v)\n";
-    const MORE = "-- more: space/Enter next, q stop --";
-    /** 5 lines at 10 columns: a label, then 40 code points wrapped to 4 lines. */
-    const view = 'label\n"' + "a".repeat(38) + '"';
-    const viewAsk = { toolCallId: "call-1", prompt: "call-1?\n" + LAST, view };
+    const MORE = "-- more (page ";
+    const END = "-- end of view: Enter --";
+    /** 1 + ceil(n / 18) rows at 20 columns (2 are the gutter). */
+    const viewOf = (n: number) => 'label\n"' + "a".repeat(n - 2) + '"';
+    const ask1 = (view: string) => ({
+      toolCallId: "call-1",
+      prompt: "call-1?\n" + TAIL,
+      view,
+    });
     const count = (text: string, part: string) => text.split(part).length - 1;
     const pending = (answer: Promise<unknown>) =>
       Promise.race([answer, sleep(100).then(() => "pending")]);
@@ -422,10 +428,15 @@ describe("TTY presence", () => {
       input.write(PROBE);
       await until(() => count(shown(), DISCARDED) > before);
     }
+    /** Waits until `marker` is shown and page keys are taken (SF1: 150 ms). */
+    async function at(shown: () => string, marker: string) {
+      await until(() => shown().includes(marker));
+      await sleep(200);
+    }
 
     it("does not approve y before the view; it says so and waits", async () => {
       const { input, presence, shown, type } = terminal();
-      const answer = presence.ask(viewAsk, never());
+      const answer = presence.ask(ask1(viewOf(40)), never());
       await type("y\n");
       await until(() => shown().includes(HINT));
       expect(shown().endsWith(HINT + LAST)).toBe(true);
@@ -439,14 +450,15 @@ describe("TTY presence", () => {
       });
     });
 
+    // N7: without raw mode the whole view is written at once and counts as viewed.
     it("shows the whole view on a v line, then asks again", async () => {
       const { input, presence, shown, type } = terminal();
-      const answer = presence.ask(viewAsk, never());
+      const answer = presence.ask(ask1(viewOf(40)), never());
       await type("v\n");
       // Typed ahead of the prompt shown again: a new window discards it.
       input.write("y\n");
       await until(() => count(shown(), LAST) === 2);
-      expect(shown()).toContain(view + "\n" + viewAsk.prompt);
+      expect(shown()).toContain('│ label\n│ "' + "a".repeat(38) + '"\n' + TAIL);
       // One notice for the probe before "v", one for the discarded "y".
       await until(() => count(shown(), DISCARDED) === 2);
       expect(await pending(answer)).toBe("pending");
@@ -459,22 +471,31 @@ describe("TTY presence", () => {
     });
 
     describe("at a TTY", () => {
-      /** A TTY presence whose output has `rows` rows of 10 columns. */
-      function tty(rows: number) {
+      /** A TTY presence whose output has `rows` rows of 20 columns. */
+      function tty(rows: number, columns = 20) {
         const { input } = ttyInput();
-        return { ...terminal(GRACE_MS, input, { rows, columns: 10 }), input };
+        return { ...terminal(GRACE_MS, input, { rows, columns }), input };
       }
 
+      // B1: viewed only once the end marker was answered; then only two lines return.
       it("pages the view and approves y only after its end", async () => {
-        const { input, presence, shown, type } = tty(5);
-        const answer = presence.ask(viewAsk, never());
+        const { input, presence, shown, type } = tty(10);
+        const answer = presence.ask(ask1(viewOf(200)), never());
         await type("v\r");
-        await until(() => shown().includes(MORE));
-        // Pages of rows - 2 = 3 lines, wrapped at 10 columns.
-        expect(shown()).toContain('v\nlabel\n"aaaaaaaaa\naaaaaaaaaa\n' + MORE);
+        await at(shown, MORE);
+        // Pages of rows - 2 = 8 rows, each behind the gutter.
+        const rows = shown().split("\n").slice(4, 12);
+        expect(rows.every((r) => r.startsWith("│ "))).toBe(true);
+        expect(shown()).toContain(MORE + "1/2)");
         input.write(" ");
+        await at(shown, END);
+        expect(count(shown(), LAST)).toBe(1);
+        input.write("\r");
         await until(() => count(shown(), LAST) === 2);
-        expect(shown()).toContain('aaaaaaaaaa\naaaaaaaaa"\n' + viewAsk.prompt);
+        expect(count(shown(), "call-1?\n")).toBe(1);
+        expect(shown().endsWith(" ".repeat(END.length) + "\r" + TAIL)).toBe(
+          true,
+        );
         await type("y\r");
         expect(await answer).toEqual({
           answer: "approved",
@@ -483,39 +504,78 @@ describe("TTY presence", () => {
         });
       });
 
-      it("does not count a view stopped with q", async () => {
-        const { input, presence, shown, type } = tty(5);
-        const answer = presence.ask(viewAsk, never());
-        await type("v\r");
-        await until(() => shown().includes(MORE));
-        input.write("q");
-        await until(() => count(shown(), LAST) === 2);
-        await opened(input, shown);
-        input.write("y\r");
-        await until(() => shown().includes(HINT));
-        await opened(input, shown);
-        expect(await pending(answer)).toBe("pending");
-        input.write("n\r");
-        expect(await answer).toEqual({
-          answer: "denied",
-          by: "tty",
-          viewed: false,
-        });
-      });
+      // N4: Ctrl-D while paging stops the view, as q does.
+      it.each(["q", "\u0004"])(
+        "does not count a view stopped with %j",
+        async (key) => {
+          const { input, presence, shown, type } = tty(10);
+          const answer = presence.ask(ask1(viewOf(200)), never());
+          await type("v\r");
+          await at(shown, MORE);
+          input.write(key);
+          await until(() => count(shown(), LAST) === 2);
+          await opened(input, shown);
+          input.write("y\r");
+          await until(() => shown().includes(HINT));
+          await opened(input, shown);
+          expect(await pending(answer)).toBe("pending");
+          input.write("n\r");
+          expect(await answer).toEqual({
+            answer: "denied",
+            by: "tty",
+            viewed: false,
+          });
+        },
+      );
 
-      it("cancels on Ctrl-C while paging, then re-raises SIGINT", async () => {
+      it("waits at the end of a one-page view; Ctrl-C there cancels", async () => {
         const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
         try {
-          const { input, presence, shown, type } = tty(5);
-          const answer = presence.ask(viewAsk, never());
+          const { input, presence, shown, type } = tty(24);
+          const answer = presence.ask(ask1(viewOf(40)), never());
           await type("v\r");
-          await until(() => shown().includes(MORE));
+          await at(shown, END);
+          expect(await pending(answer)).toBe("pending");
+          expect(count(shown(), LAST)).toBe(1);
           input.write("\u0003");
           expect(await answer).toEqual({ ...CANCELLED, viewed: false });
           expect(kill).toHaveBeenCalledWith(process.pid, "SIGINT");
         } finally {
           kill.mockRestore();
         }
+      });
+
+      // SF1: keys typed within 150 ms of a page do not turn it; N2: rows at least 6.
+      it("drops page keys typed right after a page", async () => {
+        const { input, presence, shown, type } = tty(2, 5);
+        const answer = presence.ask(ask1(viewOf(200)), never());
+        await type("v\r");
+        for (const key of [" ", " ", " "]) input.write(key);
+        await sleep(300);
+        expect(shown()).toContain(MORE + "1/");
+        expect(shown()).not.toContain(MORE + "2/");
+        // N2: clamped to 6 rows of 20 columns: 4 rows of 18 code points a page.
+        expect(shown()).toContain("│ label\n" + '│ "' + "a".repeat(17) + "\n");
+        expect(shown()).toContain(MORE + "1/4)");
+        input.end();
+        expect(await answer).toEqual({ ...CANCELLED, viewed: false });
+      });
+
+      // SF4: a value's row cannot pose as a marker: every view row has a gutter.
+      it("never shows a view row at column 0", async () => {
+        const { input, presence, shown, type } = tty(6);
+        const fake = "-- end of view: Enter --\n-- more (page 1/2):";
+        const answer = presence.ask(ask1(fake + "\n" + viewOf(200)), never());
+        await type("v\r");
+        await at(shown, MORE);
+        input.write("q");
+        await until(() => count(shown(), LAST) === 2);
+        const lines = shown().split(/[\r\n]/);
+        expect(lines.filter((l) => l.startsWith("-- "))).toEqual([
+          "-- more (page 1/5): space/Enter next, q stop --",
+        ]);
+        input.end();
+        await answer;
       });
     });
   });

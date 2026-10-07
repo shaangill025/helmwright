@@ -79,11 +79,19 @@ const CTRL_D = "\u0004";
 const CONTROL = /\p{Cc}/u;
 const DISCARDED = "(input discarded; answer again)\n";
 const VIEW_FIRST = "(view the full value first: v)\n";
-const MORE = "-- more: space/Enter next, q stop --";
+const more = (page: number, pages: number) =>
+  `-- more (page ${String(page)}/${String(pages)}): space/Enter next, q stop --`;
+const END = "-- end of view: Enter --";
+/** SF4: starts every view row, so no value can pose as a marker or a prompt. */
+const GUTTER = "│ ";
+/** SF1: page keys typed this many ms after a page is shown are dropped. */
+const PAGE_KEY_MS = 150;
 
-/** A terminal size from the output, if it is a positive integer, else `fallback`. */
-const sized = (n: unknown, fallback: number) =>
-  typeof n === "number" && Number.isInteger(n) && n > 0 ? n : fallback;
+/** N2: a terminal size from the output in [min, max], or `fallback` if unknown. */
+const sized = (n: unknown, min: number, max: number, fallback: number) =>
+  typeof n === "number" && Number.isInteger(n) && n > 0
+    ? Math.min(max, Math.max(min, n))
+    : fallback;
 
 /**
  * `text` split at LF and wrapped hard to rows of at most `width` columns. Each code
@@ -135,11 +143,13 @@ function wrap(text: string, width: number): string[] {
  *
  * B9b-3c: for a request with a view, the line "v" shows the view, and "y" approves
  * only once the view was shown to its end in this ask; before that it says so and
- * waits. At a TTY the view is paged on `output` (rows - 2 rows a page, wrapped at
- * its columns; else 24 and 80): space or Enter shows the next page, q stops (the
- * view does not count), Ctrl-C cancels as above; other keys are ignored. Elsewhere
- * the whole view is written at once. After the view, or the "view first" note, the
- * prompt's last line or the whole prompt is shown again and a new window starts.
+ * waits. At a TTY the view is paged on `output` (rows - 2 rows a page, each behind
+ * a gutter, wrapped at its columns; 24 by 80 if unknown, clamped to 6..200 by
+ * 20..512): space or Enter, taken only 150 ms after a page is shown, turns the
+ * page; at the end marker it completes the view. q or Ctrl-D stops (the view does
+ * not count), Ctrl-C cancels as above; other keys are ignored. Elsewhere the whole
+ * view is written at once. After the view the prompt's last two lines, after the
+ * "view first" note its last line, are shown again and a new window starts.
  * Only this module writes the view: no external pager ($PAGER) ever runs.
  *
  * N-5: presence is a TTY, not proof of a human: a program that drives a pty
@@ -192,7 +202,10 @@ export function createTtyPresence(
       };
       const key = (c: string): Read | undefined => {
         if (raw && c === CTRL_C) return { kind: "interrupt" };
-        if (pageKey) return { kind: "line", text: c };
+        if (pageKey) {
+          const early = performance.now() - shownAt < PAGE_KEY_MS;
+          return early ? undefined : { kind: "line", text: c };
+        }
         if (!open) {
           // Type-ahead: never an answer, nor the start of one.
           discarded = true;
@@ -263,8 +276,10 @@ export function createTtyPresence(
     });
 
   /**
-   * Shows `view` (paged in raw mode): true if it was shown to its end, false if
-   * stopped with q, or how input ended.
+   * Shows `view`, each row behind GUTTER: true if it was shown to its end, false if
+   * stopped (q or Ctrl-D), or how input ended. In raw mode it is paged, and only a
+   * key at the end marker completes it (B1); N7: otherwise it is written at once and
+   * counts as viewed (library use: the CLI asks only at a TTY).
    */
   const showView = async (
     view: string,
@@ -272,23 +287,26 @@ export function createTtyPresence(
     raw: boolean,
   ): Promise<boolean | Read> => {
     const size = output as Writable & { columns?: unknown; rows?: unknown };
-    const rows = wrap(view, sized(size.columns, 80));
+    const width = sized(size.columns, 20, 512, 80) - GUTTER.length;
+    const rows = wrap(view, width).map((row) => GUTTER + row);
     if (!raw) {
       output.write(rows.join("\n") + "\n");
       return true;
     }
-    const page = Math.max(1, sized(size.rows, 24) - 2);
-    for (let at = 0; ; at += page) {
-      output.write(rows.slice(at, at + page).join("\n") + "\n");
-      if (at + page >= rows.length) return true;
-      output.write(MORE);
+    const page = sized(size.rows, 6, 200, 24) - 2;
+    const pages = Math.ceil(rows.length / page);
+    for (let at = 1; ; at += 1) {
+      output.write(rows.slice((at - 1) * page, at * page).join("\n") + "\n");
+      const marker = at < pages ? more(at, pages) : END;
+      output.write(marker);
       let key: Read;
       do {
         key = await readLine(signal, true, true);
         if (key.kind !== "line") return key;
-      } while (![" ", "\r", "\n", "q"].includes(key.text));
-      output.write("\r" + " ".repeat(MORE.length) + "\r");
-      if (key.text === "q") return false;
+      } while (![" ", "\r", "\n", "q", CTRL_D].includes(key.text));
+      output.write("\r" + " ".repeat(Array.from(marker).length) + "\r");
+      if (key.text === "q" || key.text === CTRL_D) return false;
+      if (at === pages) return true;
     }
   };
 
@@ -333,7 +351,8 @@ export function createTtyPresence(
           break;
         }
         viewed ||= shown;
-        output.write(prompt);
+        // B1: the target summary and Approve lines, so they fit below the last page.
+        output.write(prompt.split("\n").slice(-2).join("\n"));
       }
     } finally {
       process.off("exit", restore);
