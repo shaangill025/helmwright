@@ -31,6 +31,14 @@ beforeAll(() => {
   // Harmless names whose resolved targets carry an escape sequence or a bidi override.
   link("src/esc\u001b[2Kname.ts", "to-esc");
   link("src/‮evil.ts", "to-bidi");
+  // SF-A: `..` after a symlinked directory; SF-B: absolute targets in the sandbox.
+  mkdirSync(join(worktree, "sub", "inner"), { recursive: true });
+  mkdirSync(join(worktree, "config"));
+  link("sub/inner", "d");
+  link("d/../config/pkg.json", "dotdot");
+  link("missing/../src", "dangling-dotdot");
+  link("/workspace/src/x.ts", "ws-file");
+  link("/workspace", "ws-root");
 });
 
 afterAll(() => {
@@ -62,6 +70,9 @@ describe("normalizePath", () => {
     [".GIT/hooks/pre-commit", false, ".GIT/hooks/pre-commit"],
     ["src/.git/HEAD", false, "src/.git/HEAD"],
     ["to-ring0", true, ".github/workflows/new.yml"],
+    ["dotdot", true, "sub/config/pkg.json"],
+    ["ws-file", true, "src/x.ts"],
+    ["ws-root", false, ""],
   ])("maps %j to inside %s, relative %j", (input, inside, relative) => {
     const n = normalizePath(input, worktree);
     expect({ inside: n.inside, relative: n.relative }).toEqual({
@@ -104,8 +115,9 @@ describe("normalizePath", () => {
     }
   }, 1000);
 
-  it("rejects a symlink loop", () => {
+  it("rejects a symlink loop, and `..` after a missing component", () => {
     expect(() => normalizePath("loop-a/x", worktree)).toThrow(TypeError);
+    expect(() => normalizePath("dangling-dotdot", worktree)).toThrow(TypeError);
   });
 });
 

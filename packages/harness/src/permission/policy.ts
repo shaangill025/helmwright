@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
-import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { join, posix, resolve } from "node:path";
 import {
   validatePermissionPolicy,
   type PermissionAction,
@@ -15,6 +15,7 @@ import {
   isDependencyInstall,
   isRing0Path,
   normalizePath,
+  walkPath,
   type NormalizedPath,
 } from "./normalize.ts";
 import { CONTAINER_PATH, contains } from "../sandbox/docker.ts";
@@ -139,7 +140,7 @@ function bounded(text: string): string {
 /**
  * Text fields bar control and invisible characters; `word` and `ref` also whitespace;
  * `body` allows tab and newlines; `args` only bars NUL. `destination` and `names` bar
- * a leading `-` (an option); `pushRef` also bars remote-tracking refs and tags.
+ * a leading `-` (an option); `pushRef` is a branch (see `pushBranch`).
  */
 type Field =
   | "text"
@@ -314,6 +315,26 @@ const isRef = (v: unknown): v is string =>
         !part.startsWith(".") &&
         !part.endsWith(".lock"),
     );
+/** First components that name a ref namespace rather than a branch (case-folded). */
+const NOT_BRANCH = new Set(["refs", "tags", "remotes", "heads"]);
+/**
+ * The ref a push names, as `refs/heads/<name>`: `ref` is `refs/heads/<name>` or a short
+ * branch name. Undefined for any other ref namespace (`refs/...`, `tags/`, `remotes/`,
+ * `heads/`), git's special-ref form (`^[A-Z_]+$`, such as REBASE_HEAD) and `stash`.
+ * Push contract for the B9b handler: it pushes exactly `refs/heads/<name>:refs/heads/<name>`,
+ * with `--` before the destination (`git push -- <destination> <refspec>`), never the input.
+ */
+function pushBranch(ref: unknown): string | undefined {
+  if (!isRef(ref)) return undefined;
+  const heads = "refs/heads/";
+  const name = ref.startsWith(heads) ? ref.slice(heads.length) : ref;
+  const first = caseFold(name.split("/")[0] ?? "");
+  const special = !name.includes("/") && /^[A-Z_]+$/.test(name);
+  if (NOT_BRANCH.has(first) || special || caseFold(name) === "stash") {
+    return undefined;
+  }
+  return heads + name;
+}
 const isList = (v: unknown, item: (x: unknown) => boolean) =>
   Array.isArray(v) && v.length > 0 && v.length <= 1024 && v.every(item);
 /** True if `v` is a valid value of the field kind (a switch, not a dynamic lookup). */
@@ -328,7 +349,7 @@ function isField(kind: Field, v: unknown): boolean {
     case "ref":
       return isRef(v);
     case "pushRef":
-      return isRef(v) && !/^refs\/(?:remotes|tags)\//i.test(v);
+      return pushBranch(v) !== undefined;
     case "texts":
       return isList(v, isPlain);
     case "names":
@@ -514,10 +535,12 @@ function factsFor(
   }
   const install = Array.isArray(argv) && isDependencyInstall(argv as string[]);
   const list = argv ?? fields["packages"];
+  // A push shows the ref it pushes.
+  const shownRef = requested === "push" ? pushBranch(ref) : ref;
   const value =
     resolved?.real ??
     (list === undefined
-      ? [setting, fields["destination"], ref]
+      ? [setting, fields["destination"], shownRef]
           .filter((s) => typeof s === "string")
           .join(" ")
       : JSON.stringify(list));
@@ -731,32 +754,21 @@ const canonical = (value: unknown): string =>
   );
 
 /**
- * The worktree-relative paths of the links met while resolving `relative` as the
- * kernel does, one component at a time: each link in a chain and each symlinked
- * directory along the way, even if the last hop leaves the worktree.
- * @throws TypeError past 40 links (Linux's limit); an fs error.
+ * Resolves `relative` from `root` with `walkPath`: the worktree-relative paths of the
+ * links met (each link in a chain and each symlinked directory along the way, even if
+ * the last hop leaves the worktree), and the final path reached.
+ * @throws TypeError past 40 links or on `..` after a missing component; an fs error.
  */
-function linksOnTheWay(root: string, relative: string): string[] {
-  const pending = relative.split("/");
-  const links: string[] = [];
-  let current = root;
-  for (let part = pending.shift(); part !== undefined; part = pending.shift()) {
-    const next = part === ".." ? dirname(current) : join(current, part);
-    const stat = lstatSync(next, { throwIfNoEntry: false });
-    if (stat === undefined) break;
-    if (!stat.isSymbolicLink()) {
-      current = next;
-      continue;
-    }
-    if (links.length >= 40) throw new TypeError("too many symlinks");
-    links.push(next);
-    const target = readlinkSync(next);
-    pending.unshift(...target.split("/").filter((s) => s !== "" && s !== "."));
-    if (isAbsolute(target)) current = "/";
-  }
-  return links
+function linksOnTheWay(
+  root: string,
+  relative: string,
+): { links: string[]; final: string } {
+  const walked = walkPath(root, relative.split("/"), root);
+  if (walked === undefined) throw new TypeError("link does not resolve");
+  const links = walked.links
     .filter((link) => link !== root && contains(root, link))
     .map((link) => posix.relative(root, link));
+  return { links, final: walked.final };
 }
 
 /**
@@ -769,7 +781,9 @@ function linksOnTheWay(root: string, relative: string): string[] {
  * B9b computes them at run start and passes them as `extraRing0Paths`, so a commit of
  * the link's target asks. Only directories that a Ring 0 glob or a leading part of
  * one matches are walked; symlinked directories are not followed.
- * @throws on an fs error, over 40 links, a link that normalizePath rejects, or a target
+ * Targets are resolved one component at a time, as the kernel does; an absolute target
+ * under `/workspace` is in the worktree.
+ * @throws on an fs error, over 40 links, `..` after a missing component, or a target
  * whose name is not a valid Ring 0 glob (RangeError); refuse the run then.
  */
 export function ring0LinkTargets(
@@ -786,10 +800,12 @@ export function ring0LinkTargets(
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       const relative = dir === "" ? entry.name : `${dir}/${entry.name}`;
       if (entry.isSymbolicLink() && isRing0Path(relative, prefixes)) {
-        const target = normalizePath(relative, root).relative;
-        if (target !== undefined)
+        const { links, final } = linksOnTheWay(root, relative);
+        if (contains(root, final)) {
+          const target = posix.relative(root, final);
           found.add(target === "" ? "**" : `${target}/**`);
-        for (const link of linksOnTheWay(root, relative)) {
+        }
+        for (const link of links) {
           if (link !== relative) found.add(`${link}/**`);
         }
       } else if (entry.isDirectory() && isRing0Path(relative, prefixes)) {

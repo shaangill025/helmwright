@@ -1,11 +1,12 @@
-import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import { domainToASCII } from "node:url";
 import { CONTAINER_PATH, contains, futureRealpath } from "../sandbox/docker.ts";
 
 /**
- * A permission target path. Not kernel-equivalent: `..` is collapsed lexically before
- * symlinks are followed, so `link/..` is the worktree, not the link target's parent.
+ * A permission target path. Not kernel-equivalent: the input's `..` is collapsed
+ * lexically before symlinks are followed, so `link/..` is the worktree, not the link
+ * target's parent (a link target's `..` is resolved as the kernel does).
  * Callers MUST act on `real`, never on the input.
  */
 export interface NormalizedPath {
@@ -39,25 +40,53 @@ export const caseFold = (text: string): string =>
 export const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
 
 /**
- * `futureRealpath`, except that a dangling symlink is followed (a write would follow
- * it), up to Linux's 40 links. Undefined on a symlink loop.
+ * Resolves `parts` from the directory `start` as the kernel does, one component at a
+ * time: each symlink is followed (even dangling: a write would follow it), a link
+ * target's `..` applies to the directory reached, and an absolute link target equal
+ * to or under the sandbox's `/workspace` continues from `worktreeReal`. It stops at
+ * the first missing or non-directory component and appends the remaining parts.
+ * @returns the links followed and the final path (its existing part a realpath), or
+ * undefined past 40 links (Linux's limit) or if `..` follows a missing or
+ * non-directory component.
+ * @throws an fs error.
  */
-function resolveTarget(path: string): string | undefined {
-  for (let hop = 0; hop <= 40; hop++) {
-    const rest: string[] = [];
-    let existing = futureRealpath(path);
-    while (!existsSync(existing) && dirname(existing) !== existing) {
-      rest.unshift(basename(existing));
-      existing = dirname(existing);
+export function walkPath(
+  start: string,
+  parts: readonly string[],
+  worktreeReal: string,
+): { links: string[]; final: string } | undefined {
+  const pending = [...parts];
+  const links: string[] = [];
+  let current = start;
+  // Set by an absolute link target until its first named component.
+  let sandboxRoot = false;
+  for (let part = pending.shift(); part !== undefined; part = pending.shift()) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      current = dirname(current);
+      continue;
     }
-    const link = join(existing, rest[0] ?? "");
-    const stat = lstatSync(link, { throwIfNoEntry: false });
-    if (rest.length === 0 || stat?.isSymbolicLink() !== true) {
-      return join(existing, ...rest);
+    if (sandboxRoot && part === CONTAINER_PATH.slice(1)) {
+      [current, sandboxRoot] = [worktreeReal, false];
+      continue;
     }
-    path = join(resolve(existing, readlinkSync(link)), ...rest.slice(1));
+    sandboxRoot = false;
+    const next = join(current, part);
+    const stat = lstatSync(next, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink() === true) {
+      if (links.length >= 40) return undefined;
+      links.push(next);
+      const target = readlinkSync(next);
+      pending.unshift(...target.split("/"));
+      if (isAbsolute(target)) [current, sandboxRoot] = ["/", true];
+    } else if (stat?.isDirectory() === true) {
+      current = next;
+    } else {
+      if (pending.includes("..")) return undefined;
+      return { links, final: futureRealpath(join(next, ...pending)) };
+    }
   }
-  return undefined;
+  return { links, final: futureRealpath(current) };
 }
 
 /** Strictly inside the worktree realpath, and not in a `.git` directory or file. */
@@ -73,7 +102,8 @@ export function isInsideWorktree(real: string, worktreeReal: string): boolean {
  * worktree (relative paths are worktree-relative), then resolves symlinks as above.
  * Callers must act on `real`, not on the input.
  * @throws TypeError on an empty or invalid path (control or format characters, over
- * 4096 characters or a segment over 255) or a symlink loop. It may also throw a
+ * 4096 characters or a segment over 255), a symlink loop, or a link target's `..`
+ * after a missing component. It may also throw a
  * filesystem error (EACCES, ENAMETOOLONG, or a race); callers must treat any throw
  * as deny. The worktree must exist.
  */
@@ -94,11 +124,10 @@ export function normalizePath(input: string, worktree: string): NormalizedPath {
   const path = posix.normalize(input.normalize("NFC"));
   const mapped =
     path === CONTAINER_PATH || path.startsWith(CONTAINER_PATH + "/");
-  const real = resolveTarget(
-    mapped
-      ? join(worktreeReal, path.slice(CONTAINER_PATH.length))
-      : resolve(worktreeReal, path),
-  );
+  const host = mapped
+    ? join(worktreeReal, path.slice(CONTAINER_PATH.length))
+    : resolve(worktreeReal, path);
+  const real = walkPath("/", host.split("/"), worktreeReal)?.final;
   if (real === undefined) throw new TypeError("path does not resolve");
   // A harmless input can resolve through a symlink to a name that spoofs the prompt.
   if (hasControl(real) || INVISIBLE.test(real)) {
