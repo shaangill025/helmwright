@@ -423,6 +423,25 @@ describe("broker with the run's log", () => {
     },
   );
 
+  // R2: U+2800 looks blank: it is escaped, and its runs are counted in the view.
+  it("never shows a braille blank raw", { timeout: T }, async () => {
+    const requests: PresenceRequest[] = [];
+    const presence: Presence = {
+      ask(request) {
+        requests.push(request);
+        return Promise.resolve({ answer: "denied", by: "tty" });
+      },
+    };
+    const body = "a" + "⠀".repeat(5000) + "×b";
+    const input = { destination: "github.com", body };
+    await run(engineOf([call("comment", input)]), log, undefined, presence);
+    const { prompt, view } = requests[0] ?? { prompt: "" };
+    expect(view).toBe(
+      "full detail:\n" + JSON.stringify("a\\u{2800}×5000\\u{d7}b"),
+    );
+    expect(prompt + (view ?? "")).not.toContain("⠀");
+  });
+
   // S-3: past 64 KiB of code points there is no full form to view: no ask.
   it(
     "denies a target over 64 KiB without asking (S-3)",
