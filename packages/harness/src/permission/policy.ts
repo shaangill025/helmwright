@@ -97,6 +97,12 @@ export interface PermissionTarget {
   readonly truncated?: true;
 }
 
+/** A cut target's whole value and detail, escaped and uncut, for the prompt's view only. */
+export interface FullTarget {
+  readonly value: string;
+  readonly detail?: string;
+}
+
 /** A known action with valid input, ruled on under a valid policy. */
 export interface EvaluatedVerdict {
   readonly kind: "evaluated";
@@ -112,6 +118,11 @@ export interface EvaluatedVerdict {
   /** The `version` of the policy snapshot that was checked. */
   readonly policyVersion: string;
   readonly target: PermissionTarget;
+  /**
+   * B9b-3c: present when `target.truncated` and the escaped value and detail together
+   * are at most MAX_FULL_SHOWN code points. Never logged; `inputSha256` binds the input.
+   */
+  readonly fullTarget?: FullTarget;
   /** A path target's resolved host path, unescaped (SF4). Handlers act on it, never on `target.value`. */
   readonly path?: string;
   /**
@@ -138,6 +149,7 @@ export interface RejectedVerdict {
   /** The requested action name as shown: cut to 64 code points, escaped, then a marker if cut. */
   readonly requestedName?: string;
   readonly target?: undefined;
+  readonly fullTarget?: undefined;
   readonly path?: undefined;
   readonly paths?: undefined;
   readonly input?: undefined;
@@ -179,6 +191,15 @@ const TRUNCATED = "…[truncated]";
 const MAX_SHOWN = 8192;
 /** Raw code points that always fit MAX_SHOWN once escaped (at most 10 each, `\u{10fffd}`) with the marker. */
 const MAX_SHOWN_RAW = Math.floor((MAX_SHOWN - TRUNCATED.length) / 10);
+/** B9b-3c: the most code points a cut target's full form may have, value and detail together. */
+export const MAX_FULL_SHOWN = 65_536;
+/** Escaped `text`, or undefined if that would exceed `max` code points. */
+function whole(text: string, max: number): string | undefined {
+  // Each code point is at most 2 UTF-16 units, so a longer text has too many.
+  if (text.length > 2 * max) return undefined;
+  const shown = escape(text);
+  return Array.from(shown).length <= max ? shown : undefined;
+}
 /** The raw text cut to `max` code points (so no escape is split), escaped, then a marker if cut; and if it was. */
 function bounded(text: string, max: number): readonly [string, boolean] {
   let kept = "";
@@ -534,6 +555,7 @@ interface Run {
 interface Derived {
   readonly facts: Facts;
   readonly target: PermissionTarget;
+  readonly fullTarget: FullTarget | undefined;
   readonly path: string | undefined;
   readonly paths: readonly string[] | undefined;
 }
@@ -639,11 +661,11 @@ function factsFor(
     (list === undefined
       ? [setting, fields["destination"], shownRef]
           .filter((s) => typeof s === "string")
-          .join(" ")
+          .join(" ") || "spend.cap"
       : canonical(list));
   // N5: an argv is cut like a detail; any other value only if it cannot fit (N4).
   const [value, valueCut] =
-    list === undefined ? fitted(raw || "spend.cap") : bounded(raw, MAX_DETAIL);
+    list === undefined ? fitted(raw) : bounded(raw, MAX_DETAIL);
   // SF6a: a commit shows what it stages (sorted, so the shown list is canonical).
   const detail =
     requested === "config.set"
@@ -657,7 +679,22 @@ function factsFor(
             : undefined;
   const [shown, cut] =
     detail === undefined ? [undefined, false] : bounded(detail, MAX_DETAIL);
+  // B9b-3c: a cut target's full form, for the prompt's view; absent past the bound.
+  const wholeValue = cut || valueCut ? whole(raw, MAX_FULL_SHOWN) : undefined;
+  const wholeDetail =
+    wholeValue === undefined || detail === undefined
+      ? undefined
+      : whole(detail, MAX_FULL_SHOWN - Array.from(wholeValue).length);
+  const fullTarget =
+    wholeValue === undefined ||
+    (detail !== undefined && wholeDetail === undefined)
+      ? undefined
+      : {
+          value: wholeValue,
+          ...(wholeDetail === undefined ? {} : { detail: wholeDetail }),
+        };
   return {
+    fullTarget,
     path: resolved?.real,
     paths: requested === "commit" ? staged : undefined,
     facts: {
@@ -827,7 +864,7 @@ export function evaluate(
     }
     const run = { worktree, runId, extraRing0Paths: extra };
     const derived = factsFor(checked, requested, fields, run);
-    const { facts, target, path, paths } = derived;
+    const { facts, target, fullTarget, path, paths } = derived;
     const { tier, ruleId, reason } = decide(checked, facts);
     // N1: frozen through, so no caller can change what was ruled on.
     return deepFreeze({
@@ -840,6 +877,7 @@ export function evaluate(
       guard: "policy",
       policyVersion: checked.version,
       target,
+      ...(fullTarget === undefined ? {} : { fullTarget }),
       ...(path === undefined ? {} : { path }),
       ...(paths === undefined ? {} : { paths }),
       input: fields,

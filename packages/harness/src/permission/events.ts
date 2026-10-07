@@ -25,8 +25,8 @@ export type PermissionLogEntry<P extends PermissionEvent = PermissionEvent> =
 
 /** How an ask ended; only the owner at the TTY approves. */
 export type PermissionAnswer =
-  | Pick<PermissionAnsweredApproved, "answer" | "by">
-  | Pick<PermissionAnsweredDenied, "answer" | "by">;
+  | Pick<PermissionAnsweredApproved, "answer" | "by" | "viewed">
+  | Pick<PermissionAnsweredDenied, "answer" | "by" | "viewed">;
 
 export type PermissionLogIssue = NonNullable<
   typeof validatePermissionEvent.errors
@@ -161,13 +161,15 @@ function events(
 }
 
 /**
- * `permission.asked`, binding the ask to the exact prompt shown by its SHA-256.
+ * `permission.asked`, binding the ask to the exact prompt shown by its SHA-256, and
+ * to its full-value view, if any (B9b-3c).
  * @throws PermissionLogError as `permissionEvents`.
  */
 export function permissionAsked(
   toolCallId: string,
   presence: PermissionAsked["presence"],
   prompt: string,
+  view?: string,
 ): PermissionLogEntry<PermissionAsked> {
   return guarded("permission ask", () => {
     checkToolCallId(toolCallId);
@@ -177,13 +179,15 @@ export function permissionAsked(
       toolCallId,
       presence,
       promptSha256,
+      ...(view === undefined ? {} : { viewSha256: sha256(view) }),
     });
   });
 }
 
 /**
  * `permission.answered`, with no attestation until slice SIG. `waitMs` is a whole
- * number of milliseconds. Only `answer.answer` and `answer.by` are read (SF-2).
+ * number of milliseconds. Only `answer.answer`, `answer.by` and `answer.viewed` are
+ * read (SF-2).
  * @throws PermissionLogError as `permissionEvents`.
  */
 export function permissionAnswered(
@@ -199,6 +203,7 @@ export function permissionAnswered(
       toolCallId,
       answer: answer.answer,
       by: answer.by,
+      ...(answer.viewed === undefined ? {} : { viewed: answer.viewed }),
       waitMs,
       attestation,
     } as PermissionAnswered;

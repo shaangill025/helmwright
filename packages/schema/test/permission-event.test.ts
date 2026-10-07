@@ -310,13 +310,18 @@ describe("PermissionEvent", () => {
   });
 
   describe("permission.asked", () => {
-    it.each([{ presence: "none" }])("accepts the change %j", (change) => {
-      expect(validate({ ...asked, ...change })).toBe(true);
-    });
+    it.each([{ presence: "none" }, { viewSha256: "c".repeat(64) }])(
+      "accepts the change %j",
+      (change) => {
+        expect(validate({ ...asked, ...change })).toBe(true);
+      },
+    );
 
     it.each([
       { presence: "gui" },
       ...badHashes.map((h) => ({ promptSha256: h })),
+      ...badHashes.map((h) => ({ viewSha256: h })),
+      { viewSha256: null },
     ])("rejects the change %j", (change) => {
       expect(validate({ ...asked, ...change })).toBe(false);
     });
@@ -336,6 +341,20 @@ describe("PermissionEvent", () => {
         expect(validate({ ...approved, by })).toBe(false);
       },
     );
+
+    // B9b-3c: an approval of an ask with a full-value view is bound to the view.
+    it("accepts viewed true on an approval and a boolean on a denial", () => {
+      expect(validate({ ...approved, viewed: true })).toBe(true);
+      expect(validate({ ...denied, viewed: true })).toBe(true);
+      expect(validate({ ...denied, viewed: false })).toBe(true);
+    });
+
+    it.each([false, "true", 1, null])("rejects viewed %j", (viewed) => {
+      expect(validate({ ...approved, viewed })).toBe(false);
+      if (typeof viewed !== "boolean") {
+        expect(validate({ ...denied, viewed })).toBe(false);
+      }
+    });
 
     it.each(["timeout", "owner"])("rejects a denial by %s", (by) => {
       expect(validate({ ...denied, by })).toBe(false);

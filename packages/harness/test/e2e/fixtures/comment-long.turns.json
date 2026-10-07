@@ -1,0 +1,21 @@
+[
+  {
+    "text": "Commenting.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "comment",
+        "input": {
+          "destination": "github.com",
+          "body": "Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. Long comment body. "
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "The comment has no handler.",
+    "toolCalls": [],
+    "claimsDone": false
+  }
+]

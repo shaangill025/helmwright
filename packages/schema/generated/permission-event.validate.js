@@ -92,7 +92,7 @@ const schema31 = {
     asked: {
       title: "PermissionAsked",
       description:
-        "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.",
+        "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen. `viewSha256` is present when a target or detail was too long for the prompt: the SHA-256 of the full-value view the owner must page through before an approval counts.",
       type: "object",
       additionalProperties: false,
       required: ["kind", "toolCallId", "presence", "promptSha256"],
@@ -105,6 +105,7 @@ const schema31 = {
           enum: ["tty", "none"],
         },
         promptSha256: { $ref: "#/$defs/sha256" },
+        viewSha256: { $ref: "#/$defs/sha256" },
       },
     },
     answered: {
@@ -126,6 +127,11 @@ const schema31 = {
         toolCallId: { $ref: "#/$defs/toolCallId" },
         answer: { const: "approved" },
         by: { const: "tty" },
+        viewed: {
+          description:
+            "Present when the ask had a full-value view: an approval counts only after the view was shown to its end.",
+          const: true,
+        },
         waitMs: { $ref: "#/$defs/waitMs" },
         attestation: { $ref: "#/$defs/attestation" },
       },
@@ -143,6 +149,11 @@ const schema31 = {
           description:
             "`tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.",
           enum: ["tty", "noPresence", "cancelled"],
+        },
+        viewed: {
+          description:
+            "Present when the ask had a full-value view: whether it was shown to its end.",
+          type: "boolean",
         },
         waitMs: { $ref: "#/$defs/waitMs" },
         attestation: { $ref: "#/$defs/attestation" },
@@ -1630,7 +1641,7 @@ validate25.evaluated = {
 const schema49 = {
   title: "PermissionAsked",
   description:
-    "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.",
+    "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen. `viewSha256` is present when a target or detail was too long for the prompt: the SHA-256 of the full-value view the owner must page through before an approval counts.",
   type: "object",
   additionalProperties: false,
   required: ["kind", "toolCallId", "presence", "promptSha256"],
@@ -1643,6 +1654,7 @@ const schema49 = {
       enum: ["tty", "none"],
     },
     promptSha256: { $ref: "#/$defs/sha256" },
+    viewSha256: { $ref: "#/$defs/sha256" },
   },
 };
 function validate27(
@@ -1730,7 +1742,8 @@ function validate27(
         key0 === "kind" ||
         key0 === "toolCallId" ||
         key0 === "presence" ||
-        key0 === "promptSha256"
+        key0 === "promptSha256" ||
+        key0 === "viewSha256"
       )) {
         const err4 = {
           instancePath,
@@ -1850,8 +1863,42 @@ function validate27(
         errors++;
       }
     }
+    if (data.viewSha256 !== undefined) {
+      let data4 = data.viewSha256;
+      if (typeof data4 === "string") {
+        if (!pattern6.test(data4)) {
+          const err11 = {
+            instancePath: instancePath + "/viewSha256",
+            schemaPath: "#/$defs/sha256/pattern",
+            keyword: "pattern",
+            params: { pattern: "^[0-9a-f]{64}$" },
+            message: 'must match pattern "' + "^[0-9a-f]{64}$" + '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err11];
+          } else {
+            vErrors.push(err11);
+          }
+          errors++;
+        }
+      } else {
+        const err12 = {
+          instancePath: instancePath + "/viewSha256",
+          schemaPath: "#/$defs/sha256/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err12];
+        } else {
+          vErrors.push(err12);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err11 = {
+    const err13 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -1859,9 +1906,9 @@ function validate27(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err11];
+      vErrors = [err13];
     } else {
-      vErrors.push(err11);
+      vErrors.push(err13);
     }
     errors++;
   }
@@ -1873,7 +1920,7 @@ validate27.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema52 = {
+const schema53 = {
   title: "PermissionAnswered",
   description:
     "How an ask ended: an approval, which only the owner at the TTY can give, or a denial.",
@@ -1882,7 +1929,7 @@ const schema52 = {
     { $ref: "#/$defs/answeredDenied" },
   ],
 };
-const schema53 = {
+const schema54 = {
   title: "PermissionAnsweredApproved",
   type: "object",
   additionalProperties: false,
@@ -1892,23 +1939,28 @@ const schema53 = {
     toolCallId: { $ref: "#/$defs/toolCallId" },
     answer: { const: "approved" },
     by: { const: "tty" },
+    viewed: {
+      description:
+        "Present when the ask had a full-value view: an approval counts only after the view was shown to its end.",
+      const: true,
+    },
     waitMs: { $ref: "#/$defs/waitMs" },
     attestation: { $ref: "#/$defs/attestation" },
   },
 };
-const schema55 = {
+const schema56 = {
   description: "Milliseconds between the ask and the answer.",
   type: "integer",
   minimum: 0,
   maximum: 9007199254740991,
 };
-const schema56 = {
+const schema57 = {
   title: "PermissionAttestation",
   description:
     'Proof of who approved. Until slice SIG only `none` exists; SIG adds `{kind: "presence", …}`, a signed owner-presence attestation.',
   oneOf: [{ $ref: "#/$defs/attestationNone" }],
 };
-const schema57 = {
+const schema58 = {
   title: "PermissionAttestationNone",
   type: "object",
   additionalProperties: false,
@@ -2154,6 +2206,7 @@ function validate30(
         key0 === "toolCallId" ||
         key0 === "answer" ||
         key0 === "by" ||
+        key0 === "viewed" ||
         key0 === "waitMs" ||
         key0 === "attestation"
       )) {
@@ -2257,20 +2310,14 @@ function validate30(
         errors++;
       }
     }
-    if (data.waitMs !== undefined) {
-      let data4 = data.waitMs;
-      if (!(
-        typeof data4 == "number" &&
-        !(data4 % 1) &&
-        !isNaN(data4) &&
-        isFinite(data4)
-      )) {
+    if (data.viewed !== undefined) {
+      if (true !== data.viewed) {
         const err12 = {
-          instancePath: instancePath + "/waitMs",
-          schemaPath: "#/$defs/waitMs/type",
-          keyword: "type",
-          params: { type: "integer" },
-          message: "must be integer",
+          instancePath: instancePath + "/viewed",
+          schemaPath: "#/properties/viewed/const",
+          keyword: "const",
+          params: { allowedValue: true },
+          message: "must be equal to constant",
         };
         if (vErrors === null) {
           vErrors = [err12];
@@ -2279,9 +2326,32 @@ function validate30(
         }
         errors++;
       }
-      if (typeof data4 == "number" && isFinite(data4)) {
-        if (data4 > 9007199254740991 || isNaN(data4)) {
-          const err13 = {
+    }
+    if (data.waitMs !== undefined) {
+      let data5 = data.waitMs;
+      if (!(
+        typeof data5 == "number" &&
+        !(data5 % 1) &&
+        !isNaN(data5) &&
+        isFinite(data5)
+      )) {
+        const err13 = {
+          instancePath: instancePath + "/waitMs",
+          schemaPath: "#/$defs/waitMs/type",
+          keyword: "type",
+          params: { type: "integer" },
+          message: "must be integer",
+        };
+        if (vErrors === null) {
+          vErrors = [err13];
+        } else {
+          vErrors.push(err13);
+        }
+        errors++;
+      }
+      if (typeof data5 == "number" && isFinite(data5)) {
+        if (data5 > 9007199254740991 || isNaN(data5)) {
+          const err14 = {
             instancePath: instancePath + "/waitMs",
             schemaPath: "#/$defs/waitMs/maximum",
             keyword: "maximum",
@@ -2289,14 +2359,14 @@ function validate30(
             message: "must be <= 9007199254740991",
           };
           if (vErrors === null) {
-            vErrors = [err13];
+            vErrors = [err14];
           } else {
-            vErrors.push(err13);
+            vErrors.push(err14);
           }
           errors++;
         }
-        if (data4 < 0 || isNaN(data4)) {
-          const err14 = {
+        if (data5 < 0 || isNaN(data5)) {
+          const err15 = {
             instancePath: instancePath + "/waitMs",
             schemaPath: "#/$defs/waitMs/minimum",
             keyword: "minimum",
@@ -2304,9 +2374,9 @@ function validate30(
             message: "must be >= 0",
           };
           if (vErrors === null) {
-            vErrors = [err14];
+            vErrors = [err15];
           } else {
-            vErrors.push(err14);
+            vErrors.push(err15);
           }
           errors++;
         }
@@ -2330,7 +2400,7 @@ function validate30(
       }
     }
   } else {
-    const err15 = {
+    const err16 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -2338,9 +2408,9 @@ function validate30(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err15];
+      vErrors = [err16];
     } else {
-      vErrors.push(err15);
+      vErrors.push(err16);
     }
     errors++;
   }
@@ -2352,7 +2422,7 @@ validate30.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema58 = {
+const schema59 = {
   title: "PermissionAnsweredDenied",
   type: "object",
   additionalProperties: false,
@@ -2365,6 +2435,11 @@ const schema58 = {
       description:
         "`tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.",
       enum: ["tty", "noPresence", "cancelled"],
+    },
+    viewed: {
+      description:
+        "Present when the ask had a full-value view: whether it was shown to its end.",
+      type: "boolean",
     },
     waitMs: { $ref: "#/$defs/waitMs" },
     attestation: { $ref: "#/$defs/attestation" },
@@ -2486,6 +2561,7 @@ function validate34(
         key0 === "toolCallId" ||
         key0 === "answer" ||
         key0 === "by" ||
+        key0 === "viewed" ||
         key0 === "waitMs" ||
         key0 === "attestation"
       )) {
@@ -2583,7 +2659,7 @@ function validate34(
           instancePath: instancePath + "/by",
           schemaPath: "#/properties/by/enum",
           keyword: "enum",
-          params: { allowedValues: schema58.properties.by.enum },
+          params: { allowedValues: schema59.properties.by.enum },
           message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {
@@ -2594,20 +2670,14 @@ function validate34(
         errors++;
       }
     }
-    if (data.waitMs !== undefined) {
-      let data4 = data.waitMs;
-      if (!(
-        typeof data4 == "number" &&
-        !(data4 % 1) &&
-        !isNaN(data4) &&
-        isFinite(data4)
-      )) {
+    if (data.viewed !== undefined) {
+      if (typeof data.viewed !== "boolean") {
         const err12 = {
-          instancePath: instancePath + "/waitMs",
-          schemaPath: "#/$defs/waitMs/type",
+          instancePath: instancePath + "/viewed",
+          schemaPath: "#/properties/viewed/type",
           keyword: "type",
-          params: { type: "integer" },
-          message: "must be integer",
+          params: { type: "boolean" },
+          message: "must be boolean",
         };
         if (vErrors === null) {
           vErrors = [err12];
@@ -2616,9 +2686,32 @@ function validate34(
         }
         errors++;
       }
-      if (typeof data4 == "number" && isFinite(data4)) {
-        if (data4 > 9007199254740991 || isNaN(data4)) {
-          const err13 = {
+    }
+    if (data.waitMs !== undefined) {
+      let data5 = data.waitMs;
+      if (!(
+        typeof data5 == "number" &&
+        !(data5 % 1) &&
+        !isNaN(data5) &&
+        isFinite(data5)
+      )) {
+        const err13 = {
+          instancePath: instancePath + "/waitMs",
+          schemaPath: "#/$defs/waitMs/type",
+          keyword: "type",
+          params: { type: "integer" },
+          message: "must be integer",
+        };
+        if (vErrors === null) {
+          vErrors = [err13];
+        } else {
+          vErrors.push(err13);
+        }
+        errors++;
+      }
+      if (typeof data5 == "number" && isFinite(data5)) {
+        if (data5 > 9007199254740991 || isNaN(data5)) {
+          const err14 = {
             instancePath: instancePath + "/waitMs",
             schemaPath: "#/$defs/waitMs/maximum",
             keyword: "maximum",
@@ -2626,14 +2719,14 @@ function validate34(
             message: "must be <= 9007199254740991",
           };
           if (vErrors === null) {
-            vErrors = [err13];
+            vErrors = [err14];
           } else {
-            vErrors.push(err13);
+            vErrors.push(err14);
           }
           errors++;
         }
-        if (data4 < 0 || isNaN(data4)) {
-          const err14 = {
+        if (data5 < 0 || isNaN(data5)) {
+          const err15 = {
             instancePath: instancePath + "/waitMs",
             schemaPath: "#/$defs/waitMs/minimum",
             keyword: "minimum",
@@ -2641,9 +2734,9 @@ function validate34(
             message: "must be >= 0",
           };
           if (vErrors === null) {
-            vErrors = [err14];
+            vErrors = [err15];
           } else {
-            vErrors.push(err14);
+            vErrors.push(err15);
           }
           errors++;
         }
@@ -2667,7 +2760,7 @@ function validate34(
       }
     }
   } else {
-    const err15 = {
+    const err16 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -2675,9 +2768,9 @@ function validate34(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err15];
+      vErrors = [err16];
     } else {
-      vErrors.push(err15);
+      vErrors.push(err16);
     }
     errors++;
   }

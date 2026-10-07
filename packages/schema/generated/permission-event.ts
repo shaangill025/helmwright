@@ -113,7 +113,7 @@ export interface PermissionRejected {
   requestedName?: string;
 }
 /**
- * The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.
+ * The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen. `viewSha256` is present when a target or detail was too long for the prompt: the SHA-256 of the full-value view the owner must page through before an approval counts.
  */
 export interface PermissionAsked {
   kind: "permission.asked";
@@ -123,12 +123,17 @@ export interface PermissionAsked {
    */
   presence: "tty" | "none";
   promptSha256: Sha256;
+  viewSha256?: Sha256;
 }
 export interface PermissionAnsweredApproved {
   kind: "permission.answered";
   toolCallId: ToolCallId;
   answer: "approved";
   by: "tty";
+  /**
+   * Present when the ask had a full-value view: an approval counts only after the view was shown to its end.
+   */
+  viewed?: true;
   waitMs: WaitMs;
   attestation: PermissionAttestation;
 }
@@ -143,6 +148,10 @@ export interface PermissionAnsweredDenied {
    * `tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.
    */
   by: "tty" | "noPresence" | "cancelled";
+  /**
+   * Present when the ask had a full-value view: whether it was shown to its end.
+   */
+  viewed?: boolean;
   waitMs: WaitMs;
   attestation: PermissionAttestation;
 }

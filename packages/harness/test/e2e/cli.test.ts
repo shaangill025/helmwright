@@ -196,12 +196,45 @@ const PTY_ARGV =
 const PROMPT_END = "Approve deploy (always-ask.deploy, alwaysAsk)? [y/N] ";
 const DISCARDED = "(input discarded; answer again)";
 
+const count = (text: string, part: string) => text.split(part).length - 1;
+
+/** Sees what the pty showed so far, on each poll, and may type keys. */
+type Driver = (shown: string, type: (keys: string) => void) => void;
+
+/**
+ * True once `promptEnd` was shown `n` times and the window that prompt opened has
+ * observably opened: typed-ahead keys made the CLI's `n`th discard notice. The
+ * fallback (no notice 3 s after the prompt) only lets a broken build fail on its
+ * answer rather than time out.
+ */
+function windowOpen(promptEnd: string, n: number) {
+  let promptAt: number | undefined;
+  return (text: string) => {
+    if (count(text, promptEnd) >= n) promptAt ??= performance.now();
+    if (promptAt === undefined) return false;
+    return count(text, DISCARDED) >= n || performance.now() - promptAt > 3000;
+  };
+}
+
+/** Types `answer` and Enter (CR) once the first ask's window has opened. */
+function answerOnce(answer: string, promptEnd = PROMPT_END): Driver {
+  const open = windowOpen(promptEnd, 1);
+  let answered = false;
+  return (text, type) => {
+    if (!answered && open(text)) {
+      answered = true;
+      type(answer + "\r");
+    }
+  };
+}
+
 /**
  * Runs the CLI on a pty, types `early` at once (before any prompt), and types
  * `answer` and Enter (CR) once the ask's window has observably opened: `early`
- * is type-ahead, so the CLI says it was discarded as the window opens.
+ * is type-ahead, so the CLI says it was discarded as the window opens. A driver
+ * instead types whatever it decides on each poll.
  */
-async function runAtTty(turns: string, answer: string, early = "x") {
+async function runAtTty(turns: string, answer: string | Driver, early = "x") {
   if (SCRIPT === undefined) throw new Error("script(1) not found");
   // A fresh directory per call: a result left by an earlier call in the same test
   // would look like this run's result and end input before the prompt is shown.
@@ -226,22 +259,10 @@ async function runAtTty(turns: string, answer: string, early = "x") {
   // Types the answer only once the prompt is shown and the CLI said the early keys
   // were discarded (its grace window has opened, however late); ends input only once
   // the CLI has written its result, so the answer never races end of input.
-  let answered = false;
-  let promptAt: number | undefined;
+  const drive = typeof answer === "string" ? answerOnce(answer) : answer;
+  const type = (keys: string) => stdin.write(keys);
   const timer = setInterval(() => {
-    const text = readFileSync(terminal, "utf8");
-    if (text.includes(PROMPT_END)) promptAt ??= performance.now();
-    // The fallback (no notice 3 s after the prompt) only lets a broken build fail
-    // on its answer rather than time out.
-    const late = promptAt !== undefined && performance.now() - promptAt > 3000;
-    if (
-      !answered &&
-      promptAt !== undefined &&
-      (text.includes(DISCARDED) || late)
-    ) {
-      answered = true;
-      stdin.write(answer + "\r");
-    }
+    drive(readFileSync(terminal, "utf8"), type);
     if (existsSync(stdoutFile) && readFileSync(stdoutFile, "utf8") !== "") {
       clearInterval(timer);
       stdin.end();
@@ -516,6 +537,81 @@ describe("helmwright CLI (e2e)", () => {
         "denied: always asks (always-ask.deploy); the owner did not approve",
       );
       expect(shown).toContain("(input discarded; answer again)");
+    },
+  );
+
+  // B9b-3c: a detail too long for the screen is approved only after its full view.
+  it.skipIf(NO_PTY)(
+    "approves a long comment only after its full view at a TTY" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      const end =
+        "Approve comment (always-ask.comment, alwaysAsk)? [v=view, y/N] ";
+      const more = "-- more: space/Enter next, q stop --";
+      const first = windowOpen(end, 1);
+      const second = windowOpen(end, 2);
+      let step = 0;
+      let pages = 0;
+      const drive: Driver = (text, type) => {
+        if (step === 0 && first(text)) {
+          step = 1;
+          type("v\r");
+        } else if (step === 1 && count(text, end) < 2) {
+          if (count(text, more) > pages) {
+            pages += 1;
+            type(" ");
+            // Type-ahead for the window after the view (a paging key otherwise).
+            type("x");
+          }
+        } else if (step === 1 && second(text)) {
+          step = 2;
+          // DEL erases the "x" in case it arrived after that window opened.
+          type("\u007fy\r");
+        }
+      };
+      const { status, shown, out } = await runAtTty(
+        "comment-long.turns.json",
+        drive,
+      );
+      expect(status, shown).toBe(0);
+      expect(pages, shown).toBeGreaterThan(0);
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      const payload = (type: string) =>
+        events.find((e) => e.type === type)?.payload;
+      const fixture = JSON.parse(
+        readFileSync(join(FIXTURES, "comment-long.turns.json"), "utf8"),
+      ) as { toolCalls: { input: { body: string } }[] }[];
+      const body = fixture[0]?.toolCalls[0]?.input.body ?? "";
+      const sha = (text: string) =>
+        createHash("sha256").update(text, "utf8").digest("hex");
+      const view = "full detail:\n" + JSON.stringify(body);
+      const from = shown.indexOf("helmwright: allow comment?");
+      const prompt = shown.slice(from, shown.indexOf(end) + end.length);
+      expect(prompt).toContain(
+        "  detail: " +
+          JSON.stringify(body.slice(0, 120)) +
+          " … [" +
+          String(body.length) +
+          " code points, sha256 " +
+          sha(view).slice(0, 16) +
+          "]",
+      );
+      expect(payload("permission.asked")).toMatchObject({
+        presence: "tty",
+        promptSha256: sha(prompt),
+        viewSha256: sha(view),
+      });
+      expect(payload("permission.answered")).toMatchObject({
+        answer: "approved",
+        by: "tty",
+        viewed: true,
+      });
+      const tool = deriveMessages(events, out.runId).find(
+        (m) => m.role === "tool",
+      );
+      expect(tool?.text).toBe("denied: no M1 handler for comment");
+      expectReplayMatches(out.runId, expectWellFormedLog(out.runId));
     },
   );
 

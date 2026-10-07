@@ -27,6 +27,7 @@ import {
   type EngineTurn,
   type Presence,
   type PresenceAnswer,
+  type PresenceRequest,
   type RunSetup,
   type SessionLog,
   type ToolCall,
@@ -285,37 +286,132 @@ describe("broker with the run's log", () => {
     },
   );
 
-  // S-3, SF-A: the prompt shows the whole target, on its second-last line, so a
-  // target or detail it cannot show in full is never asked. Each value here is
-  // under the policy's cut (512 raw code points) but over its shown cap.
+  // B9b-3c: a target or detail over its shown cap (SF-A) or cut by the policy (512
+  // raw code points) is asked with a full-value view; the prompt shows a summary.
   const cases: [string, ToolCall, string][] = [
     [
-      "an argv cut by the policy (S-3)",
+      "an argv cut by the policy",
       call("execute", { argv: ["npm", "install", "x", "a".repeat(600)] }),
       "asks (deps.add)",
     ],
     [
-      "an argv with 200 tabs (SF-A)",
+      "an argv with 200 tabs",
       call("execute", { argv: ["npm", "install", "x" + "\t".repeat(200)] }),
       "asks (deps.add)",
     ],
     [
-      "a body with 300 newlines (SF-A)",
+      "a body with 300 newlines",
       call("comment", { destination: "github.com", body: "\n".repeat(300) }),
       "always asks (always-ask.comment)",
     ],
     [
-      "a target one over its cap (SF-A)",
+      "a target one over its cap",
       call("deploy", { destination: "a".repeat(TARGET_CAP - 1) }),
       "always asks (always-ask.deploy)",
     ],
   ];
   it.each(cases)(
-    "denies %s without asking",
+    "asks with a view for %s; an approval without it denies",
     { timeout: T },
     async (_, toolCall, rule) => {
       const { presence, prompts } = owner({ answer: "approved", by: "tty" });
       await run(engineOf([toolCall]), log, undefined, presence);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatch(/\? \[v=view, y\/N\] $/);
+      expect(types().filter((t) => t.startsWith("permission."))).toEqual([
+        ...["permission.evaluated", "permission.asked", "permission.answered"],
+      ]);
+      const answered = log
+        .events({ runId: "run-1" })
+        .find((e) => e.type === "permission.answered");
+      expect(answered?.payload).toMatchObject({
+        answer: "denied",
+        viewed: false,
+      });
+      const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools).toEqual(["denied: " + rule + "; the ask was cancelled"]);
+    },
+  );
+
+  it(
+    "runs the handler once the owner viewed the full value and approved",
+    { timeout: T },
+    async () => {
+      const requests: PresenceRequest[] = [];
+      const presence: Presence = {
+        ask(request) {
+          requests.push(request);
+          return Promise.resolve({
+            answer: "approved",
+            by: "tty",
+            viewed: true,
+          });
+        },
+      };
+      const command =
+        "echo hi > a.txt; npm install left-pad" + "\t".repeat(200);
+      const longArgv = ["sh", "-c", command];
+      const outcome = await run(
+        engineOf([call("execute", { argv: longArgv })]),
+        log,
+        undefined,
+        presence,
+      );
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("hi\n");
+      const { prompt, view } = requests[0] ?? { prompt: "" };
+      // Canonical JSON writes each tab as \t; the policy shows each \ as \\.
+      const escaped = Array.from(
+        JSON.stringify(longArgv).split("\\").join("\\\\"),
+      );
+      expect(view).toBe(
+        "full target (argv):\n" + JSON.stringify(escaped.join("")),
+      );
+      const sha = (text: string) =>
+        createHash("sha256").update(text, "utf8").digest("hex");
+      const viewSha = sha(view ?? "");
+      const lines = prompt.split("\n");
+      const summary =
+        JSON.stringify(escaped.slice(0, 120).join("")) +
+        " … [" +
+        String(escaped.length) +
+        " code points, sha256 " +
+        viewSha.slice(0, 16) +
+        "]";
+      expect(lines.slice(-2)).toEqual([
+        "  target (argv): " + summary,
+        "Approve deps.add (requested as execute) (deps.add, ask)? [v=view, y/N] ",
+      ]);
+      const events = log.events({ runId: "run-1" });
+      const payload = (type: string) =>
+        events.find((e) => e.type === type)?.payload;
+      expect(payload("permission.asked")).toMatchObject({
+        promptSha256: sha(prompt),
+        viewSha256: viewSha,
+      });
+      expect(payload("permission.answered")).toMatchObject({
+        answer: "approved",
+        by: "tty",
+        viewed: true,
+      });
+    },
+  );
+
+  // S-3: past 64 KiB of code points there is no full form to view: no ask.
+  it(
+    "denies a target over 64 KiB without asking (S-3)",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner({ answer: "approved", by: "tty" });
+      const argv = ["npm", "install", "a".repeat(65_536)];
+      await run(
+        engineOf([call("execute", { argv })]),
+        log,
+        undefined,
+        presence,
+      );
       expect(prompts).toEqual([]);
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([
         "permission.evaluated",
@@ -324,7 +420,7 @@ describe("broker with the run's log", () => {
         m.role === "tool" ? [m.text] : [],
       );
       expect(tools).toEqual([
-        "denied: " + rule + "; the target is too long to show for approval",
+        "denied: asks (deps.add); the target is too long to show for approval",
       ]);
     },
   );

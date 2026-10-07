@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { PermissionPolicy } from "@helmwright/schema";
 import type {
   EmitAll,
@@ -160,54 +161,111 @@ export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
  * most 800 code points: 10 rows at 80 columns, plus their labels, or 20 rows if
  * every character is double width. The target sits just above the last line, so
  * only the header can scroll off. A target or detail that was cut, or is longer,
- * is not shown: S-3 denies it.
+ * is shown as a summary, and in full only in the ask's view (B9b-3c).
  */
 export const MAX_PROMPT_TARGET = 320;
 /** SF-A: the most code points a detail may have as shown (see MAX_PROMPT_TARGET). */
 export const MAX_PROMPT_DETAIL = 480;
 /** The cap on the reason shown, in code points; the reason only explains. */
 const MAX_PROMPT_REASON = 512;
+/** B9b-3c: the code points of a long value shown in its summary line. */
+const SUMMARY_HEAD = 120;
 
 const quoted = (text: string) => JSON.stringify(text);
 const fits = (text: string, max: number) =>
   Array.from(quoted(text)).length <= max;
+const sha256 = (text: string) =>
+  createHash("sha256").update(text, "utf8").digest("hex");
 
-/** S-3: the prompt shows the whole target and detail, or there is no ask. */
-function showable(verdict: EvaluatedVerdict): boolean {
-  const { value, detail, truncated } = verdict.target;
-  return (
-    truncated !== true &&
-    fits(value, MAX_PROMPT_TARGET) &&
-    (detail === undefined || fits(detail, MAX_PROMPT_DETAIL))
+/** One value an ask shows: its label, its whole escaped text and whether it is long. */
+interface Shown {
+  readonly label: string;
+  readonly text: string;
+  readonly long: boolean;
+}
+
+/**
+ * What an ask shows of the target and detail: their whole escaped text (the
+ * policy's full form of a cut value), each long if over its cap or cut in the log.
+ * Undefined (S-3: no ask) if a value was cut and has no full form, which the policy
+ * gives only up to MAX_FULL_SHOWN code points.
+ */
+function shownValues(verdict: EvaluatedVerdict): readonly Shown[] | undefined {
+  const { target, fullTarget } = verdict;
+  const whole = target.truncated === true ? fullTarget : target;
+  if (whole === undefined) return undefined;
+  const one = (label: string, text: string, logged: string, max: number) => ({
+    label,
+    text,
+    long: text !== logged || !fits(text, max),
+  });
+  const value = one(
+    "target (" + target.kind + ")",
+    whole.value,
+    target.value,
+    MAX_PROMPT_TARGET,
   );
+  if (whole.detail === undefined) return [value];
+  const detail = one(
+    "detail",
+    whole.detail,
+    target.detail ?? "",
+    MAX_PROMPT_DETAIL,
+  );
+  return [value, detail];
+}
+
+/**
+ * B9b-3c: the full-value view of an ask with a long value: for each, a label line
+ * and the whole value as a JSON string literal. The presence wraps and pages it;
+ * `permission.asked` holds its SHA-256. Undefined if no value is long.
+ */
+function askView(values: readonly Shown[]): string | undefined {
+  const long = values.filter((v) => v.long);
+  if (long.length === 0) return undefined;
+  return long.map((v) => "full " + v.label + ":\n" + quoted(v.text)).join("\n");
 }
 
 /**
  * What an ask shows, and what `permission.asked` hashes. Values (target, detail,
  * reason) are escaped by the policy and then shown as JSON string literals, so
- * their edges and spaces are visible; the target and detail are shown in full
- * (`showable`), the reason cut to MAX_PROMPT_REASON. Every other part is fixed text,
- * an action name, a rule ID or a run ID. The last two lines are the target and
- * "Approve <action> (<rule>, <tier>)?", so no value can push what is approved off
- * the screen (SF-A).
+ * their edges and spaces are visible; a short target or detail is shown in full, a
+ * long one as a summary (its first SUMMARY_HEAD code points, its length and the
+ * view's hash), the reason cut to MAX_PROMPT_REASON. Every other part is fixed
+ * text, an action name, a rule ID or a run ID. The last two lines are the target
+ * and "Approve <action> (<rule>, <tier>)?", so no value can push what is approved
+ * off the screen (SF-A).
  */
-function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
-  const { action, requested, target, ruleId, reason, tier } = verdict;
+function askPrompt(
+  verdict: EvaluatedVerdict,
+  runId: string,
+  values: readonly Shown[],
+  view: string | undefined,
+): string {
+  const { action, requested, ruleId, reason, tier } = verdict;
   const as = requested === action ? "" : " (requested as " + requested + ")";
-  const detail =
-    target.detail === undefined ? [] : ["  detail: " + quoted(target.detail)];
+  const show = (v: Shown) => {
+    if (!v.long) return "  " + v.label + ": " + quoted(v.text);
+    const points = Array.from(v.text);
+    const head = quoted(points.slice(0, SUMMARY_HEAD).join(""));
+    const hash = sha256(view ?? "").slice(0, 16);
+    const size = String(points.length) + " code points, sha256 " + hash;
+    return "  " + v.label + ": " + head + " … [" + size + "]";
+  };
+  const [value, detail] = values;
   const why = Array.from(reason);
   const shownReason =
     why.length <= MAX_PROMPT_REASON
       ? reason
       : why.slice(0, MAX_PROMPT_REASON).join("") + "…[truncated]";
+  const keys = view === undefined ? "[y/N] " : "[v=view, y/N] ";
   return [
     "helmwright: allow " + action + as + "?",
-    ...detail,
+    ...(detail === undefined ? [] : [show(detail)]),
     "  rule: " + ruleId + ", tier " + tier + " (" + quoted(shownReason) + ")",
     "  run: " + runId,
-    "  target (" + target.kind + "): " + quoted(target.value),
-    "Approve " + action + as + " (" + ruleId + ", " + tier + ")? [y/N] ",
+    ...(value === undefined ? [] : [show(value)]),
+    "Approve " + action + as + " (" + ruleId + ", " + tier + ")? " + keys,
   ].join("\n");
 }
 
@@ -215,21 +273,40 @@ const NOBODY = { answer: "denied", by: "noPresence" } as const;
 const CANCELLED = { answer: "denied", by: "cancelled" } as const;
 const APPROVED = { answer: "approved", by: "tty" } as const;
 
-/** The answer to log: an approval only from the TTY; anything else denies. */
+/**
+ * The answer to log: an approval only from the TTY, and for an ask with a view only
+ * once it was viewed to its end (`viewed` true); anything else denies.
+ */
 async function askOwner(
   presence: Presence,
   toolCallId: string,
   prompt: string,
+  view: string | undefined,
   signal: AbortSignal,
 ): Promise<PermissionAnswer> {
+  const request = {
+    toolCallId,
+    prompt,
+    ...(view === undefined ? {} : { view }),
+  };
   try {
-    const got = await presence.ask({ toolCallId, prompt }, signal);
-    // Read as plain strings: a wrapped presence (SIG) is checked, not trusted.
+    const got = await presence.ask(request, signal);
+    // Read as plain values: a wrapped presence (SIG) is checked, not trusted.
     const [answer, by]: readonly string[] = [got.answer, got.by];
-    if (by !== "tty") return CANCELLED;
-    return answer === "approved" ? APPROVED : { answer: "denied", by: "tty" };
+    const seen: unknown = got.viewed;
+    if (view === undefined) {
+      if (by !== "tty") return CANCELLED;
+      return answer === "approved" ? APPROVED : { answer: "denied", by: "tty" };
+    }
+    const viewed = seen === true;
+    if (by !== "tty" || (answer === "approved" && !viewed)) {
+      return { ...CANCELLED, viewed };
+    }
+    return answer === "approved"
+      ? { ...APPROVED, viewed: true }
+      : { answer: "denied", by: "tty", viewed };
   } catch {
-    return CANCELLED;
+    return view === undefined ? CANCELLED : { ...CANCELLED, viewed: false };
   }
 }
 
@@ -239,9 +316,11 @@ async function askOwner(
  * an ask the owner approved, runs its handler, on the ruled input snapshot. An ask
  * goes to `permission.presence`: the ruling and `permission.asked` are logged before
  * the prompt is shown, and `permission.answered` before any handler runs. Without a
- * presence an ask is denied as noPresence. S-3: an ask whose target or detail the
- * prompt cannot show in full (cut by the policy, or over MAX_PROMPT_TARGET or
- * MAX_PROMPT_DETAIL as shown) is denied with fixed text, without asking: only the
+ * presence an ask is denied as noPresence. B9b-3c: a target or detail cut by the
+ * policy, or over MAX_PROMPT_TARGET or MAX_PROMPT_DETAIL as shown, is asked with a
+ * full-value view, whose hash `permission.asked` holds; its approval counts only if
+ * the presence says it was viewed to its end. S-3: a cut value with no full form
+ * (over MAX_FULL_SHOWN) is denied with fixed text, without asking: only the
  * ruling is logged, no `permission.asked` or `permission.answered`. A ruling that
  * cannot be built denies with
  * fixed text; one whose append fails also halts the broker and the run.
@@ -298,20 +377,23 @@ export function createBroker(context: BrokerContext): Broker {
       const asking =
         verdict.kind === "evaluated" &&
         (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
-      // S-3: a target the prompt cannot show in full is denied without an ask.
-      const unshowable = asking && !showable(verdict);
+      // S-3: a target the ask cannot show in full is denied without an ask.
+      const values = asking ? shownValues(verdict) : undefined;
+      const unshowable = asking && values === undefined;
       const asks = asking && !unshowable;
+      const view = values === undefined ? undefined : askView(values);
+      const viewed = view === undefined ? {} : { viewed: false };
       let entries: PermissionLogEntry[];
       let shown = "";
       try {
         const ctx = { agentId: permission.agentId, toolCallId: id };
         entries = [...permissionEvents(verdict, ctx)];
         if (asks) {
-          shown = askPrompt(verdict, permission.runId);
+          shown = askPrompt(verdict, permission.runId, values ?? [], view);
           const present = presence === undefined ? "none" : "tty";
-          entries.push(permissionAsked(id, present, shown));
+          entries.push(permissionAsked(id, present, shown, view));
           if (presence === undefined) {
-            entries.push(permissionAnswered(id, NOBODY, 0));
+            entries.push(permissionAnswered(id, { ...NOBODY, ...viewed }, 0));
           }
         }
       } catch (error) {
@@ -352,7 +434,7 @@ export function createBroker(context: BrokerContext): Broker {
           }
           // The wait counts toward the run's timeout: `signal` ends it.
           const started = performance.now();
-          const answer = await askOwner(presence, id, shown, signal);
+          const answer = await askOwner(presence, id, shown, view, signal);
           const waitMs = Math.max(0, Math.round(performance.now() - started));
           let answered: PermissionLogEntry;
           try {

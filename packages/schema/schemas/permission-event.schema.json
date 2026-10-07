@@ -87,7 +87,7 @@
     },
     "asked": {
       "title": "PermissionAsked",
-      "description": "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.",
+      "description": "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen. `viewSha256` is present when a target or detail was too long for the prompt: the SHA-256 of the full-value view the owner must page through before an approval counts.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "toolCallId", "presence", "promptSha256"],
@@ -98,7 +98,8 @@
           "description": "`tty`: an interactive terminal could show the prompt. `none`: no one can answer, so the ask is denied.",
           "enum": ["tty", "none"]
         },
-        "promptSha256": { "$ref": "#/$defs/sha256" }
+        "promptSha256": { "$ref": "#/$defs/sha256" },
+        "viewSha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "answered": {
@@ -126,6 +127,10 @@
         "toolCallId": { "$ref": "#/$defs/toolCallId" },
         "answer": { "const": "approved" },
         "by": { "const": "tty" },
+        "viewed": {
+          "description": "Present when the ask had a full-value view: an approval counts only after the view was shown to its end.",
+          "const": true
+        },
         "waitMs": { "$ref": "#/$defs/waitMs" },
         "attestation": { "$ref": "#/$defs/attestation" }
       }
@@ -149,6 +154,10 @@
         "by": {
           "description": "`tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.",
           "enum": ["tty", "noPresence", "cancelled"]
+        },
+        "viewed": {
+          "description": "Present when the ask had a full-value view: whether it was shown to its end.",
+          "type": "boolean"
         },
         "waitMs": { "$ref": "#/$defs/waitMs" },
         "attestation": { "$ref": "#/$defs/attestation" }

@@ -6,12 +6,29 @@ export interface PresenceRequest {
   readonly toolCallId: string;
   /** Shown verbatim; `permission.asked` holds its SHA-256. */
   readonly prompt: string;
+  /**
+   * B9b-3c: the full values the prompt could only summarize, already escaped; lines
+   * end at LF. When present, an approval counts only after the whole view was shown
+   * in this ask. `permission.asked` holds its SHA-256.
+   */
+  readonly view?: string;
 }
 
-/** How an ask ended. Only an owner at the terminal approves. */
+/**
+ * How an ask ended. Only an owner at the terminal approves. `viewed` is present
+ * when the request had a view: whether it was shown to its end in this ask.
+ */
 export type PresenceAnswer =
-  | { readonly answer: "approved"; readonly by: "tty" }
-  | { readonly answer: "denied"; readonly by: "tty" | "cancelled" };
+  | {
+      readonly answer: "approved";
+      readonly by: "tty";
+      readonly viewed?: boolean;
+    }
+  | {
+      readonly answer: "denied";
+      readonly by: "tty" | "cancelled";
+      readonly viewed?: boolean;
+    };
 
 /** Someone who can answer an ask (B9b-3: the owner at a TTY; slice SIG wraps it). */
 export interface Presence {
@@ -61,6 +78,36 @@ const CTRL_C = "\u0003";
 const CTRL_D = "\u0004";
 const CONTROL = /\p{Cc}/u;
 const DISCARDED = "(input discarded; answer again)\n";
+const VIEW_FIRST = "(view the full value first: v)\n";
+const MORE = "-- more: space/Enter next, q stop --";
+
+/** A terminal size from the output, if it is a positive integer, else `fallback`. */
+const sized = (n: unknown, fallback: number) =>
+  typeof n === "number" && Number.isInteger(n) && n > 0 ? n : fallback;
+
+/**
+ * `text` split at LF and wrapped hard to rows of at most `width` columns. Each code
+ * point from U+1100 on counts as 2 columns, so a wide character never overflows.
+ */
+function wrap(text: string, width: number): string[] {
+  const rows: string[] = [];
+  for (const line of text.split("\n")) {
+    let row = "";
+    let used = 0;
+    for (const c of line) {
+      const w = (c.codePointAt(0) ?? 0) < 0x1100 ? 1 : 2;
+      if (used + w > width && row !== "") {
+        rows.push(row);
+        row = "";
+        used = 0;
+      }
+      row += c;
+      used += w;
+    }
+    rows.push(row);
+  }
+  return rows;
+}
 
 /**
  * The owner at a terminal: each ask writes its prompt to `output` and waits for one
@@ -85,6 +132,15 @@ const DISCARDED = "(input discarded; answer again)\n";
  * any time) and then raises SIGINT for the process. The previous mode is restored
  * when the ask ends in any way, and on process exit while it waits. Other inputs
  * end a line at LF.
+ *
+ * B9b-3c: for a request with a view, the line "v" shows the view, and "y" approves
+ * only once the view was shown to its end in this ask; before that it says so and
+ * waits. At a TTY the view is paged on `output` (rows - 2 rows a page, wrapped at
+ * its columns; else 24 and 80): space or Enter shows the next page, q stops (the
+ * view does not count), Ctrl-C cancels as above; other keys are ignored. Elsewhere
+ * the whole view is written at once. After the view, or the "view first" note, the
+ * prompt's last line or the whole prompt is shown again and a new window starts.
+ * Only this module writes the view: no external pager ($PAGER) ever runs.
  *
  * N-5: presence is a TTY, not proof of a human: a program that drives a pty
  * (`yes | script …`) approves once the window opens. Each answer's attestation
@@ -114,10 +170,11 @@ export function createTtyPresence(
   let skipping = false;
   let queue: Promise<unknown> = Promise.resolve();
 
-  const readLine = (signal: AbortSignal, raw: boolean) =>
+  /** One line after a new window; or, with `pageKey`, one key at once (raw only). */
+  const readLine = (signal: AbortSignal, raw: boolean, pageKey = false) =>
     new Promise<Read>((done) => {
       const shownAt = performance.now();
-      let open = false;
+      let open = pageKey;
       let discarded = false;
       let timer: NodeJS.Timeout | undefined;
       let immediate: NodeJS.Immediate | undefined;
@@ -135,6 +192,7 @@ export function createTtyPresence(
       };
       const key = (c: string): Read | undefined => {
         if (raw && c === CTRL_C) return { kind: "interrupt" };
+        if (pageKey) return { kind: "line", text: c };
         if (!open) {
           // Type-ahead: never an answer, nor the start of one.
           discarded = true;
@@ -198,18 +256,52 @@ export function createTtyPresence(
           });
         }, ms);
       };
-      arm(graceMs);
+      if (!pageKey) arm(graceMs);
       input.on("data", onData).once("end", onEnd).once("error", onEnd);
       signal.addEventListener("abort", onAbort, { once: true });
       input.resume();
     });
 
+  /**
+   * Shows `view` (paged in raw mode): true if it was shown to its end, false if
+   * stopped with q, or how input ended.
+   */
+  const showView = async (
+    view: string,
+    signal: AbortSignal,
+    raw: boolean,
+  ): Promise<boolean | Read> => {
+    const size = output as Writable & { columns?: unknown; rows?: unknown };
+    const rows = wrap(view, sized(size.columns, 80));
+    if (!raw) {
+      output.write(rows.join("\n") + "\n");
+      return true;
+    }
+    const page = Math.max(1, sized(size.rows, 24) - 2);
+    for (let at = 0; ; at += page) {
+      output.write(rows.slice(at, at + page).join("\n") + "\n");
+      if (at + page >= rows.length) return true;
+      output.write(MORE);
+      let key: Read;
+      do {
+        key = await readLine(signal, true, true);
+        if (key.kind !== "line") return key;
+      } while (![" ", "\r", "\n", "q"].includes(key.text));
+      output.write("\r" + " ".repeat(MORE.length) + "\r");
+      if (key.text === "q") return false;
+    }
+  };
+
   const one = async (
     request: PresenceRequest,
     signal: AbortSignal,
   ): Promise<PresenceAnswer> => {
-    if (signal.aborted) return CANCELLED;
-    if (ended || input.readableEnded || input.destroyed) return CANCELLED;
+    const { prompt, view } = request;
+    let viewed = false;
+    const seen = () => (view === undefined ? {} : { viewed });
+    if (signal.aborted || ended || input.readableEnded || input.destroyed) {
+      return { ...CANCELLED, ...seen() };
+    }
     const tty = rawInput(input);
     const was = tty?.isRaw === true;
     const restore = () => {
@@ -223,8 +315,26 @@ export function createTtyPresence(
         // Nit-1: in raw mode no terminal line is left over: each ask starts fresh.
         skipping = false;
       }
-      output.write(request.prompt);
-      read = await readLine(signal, tty !== undefined);
+      output.write(prompt);
+      for (;;) {
+        read = await readLine(signal, tty !== undefined);
+        if (view === undefined || read.kind !== "line") break;
+        if (isApproval(read.text) && !viewed) {
+          output.write(VIEW_FIRST + prompt.slice(prompt.lastIndexOf("\n") + 1));
+          continue;
+        }
+        const line = read.text.endsWith("\r")
+          ? read.text.slice(0, -1)
+          : read.text;
+        if (line !== "v") break;
+        const shown = await showView(view, signal, tty !== undefined);
+        if (typeof shown !== "boolean") {
+          read = shown;
+          break;
+        }
+        viewed ||= shown;
+        output.write(prompt);
+      }
     } finally {
       process.off("exit", restore);
       restore();
@@ -235,14 +345,15 @@ export function createTtyPresence(
         output.write("\nhelmwright: ask cancelled\n");
         // Ctrl-C in raw mode raised no signal: raise it, so the run cancels as before.
         if (read.kind === "interrupt") process.kill(process.pid, "SIGINT");
-        return CANCELLED;
+        return { ...CANCELLED, ...seen() };
       case "eof":
         // Nit-2: Ctrl-D too ends input, so every later ask is denied at once.
         ended = true;
         output.write("\n");
-        return CANCELLED;
+        return { ...CANCELLED, ...seen() };
       case "line":
-        return isApproval(read.text) ? APPROVED : DENIED;
+        // With a view, "y" ends the loop above only once it was viewed.
+        return { ...(isApproval(read.text) ? APPROVED : DENIED), ...seen() };
     }
   };
 
