@@ -15,9 +15,12 @@ import {
   createBroker,
 } from "../broker/broker.ts";
 import {
+  CONFIG_ACCEPTED,
   ConfigError,
   GIT_CHECKOUT_TIMEOUT_MS,
   loadRunConfig,
+  ring0SettingDigests,
+  ring0Status,
   runGit,
   type RunConfig,
 } from "../config/config.ts";
@@ -194,10 +197,10 @@ export interface RunSetup {
   readonly engine: Engine;
   readonly tools: readonly ToolSpec[];
   /**
-   * Makes the tool executor once `run.started` is logged. A throw refuses the run:
-   * it ends failed with that error before any engine step.
+   * Makes the tool executor once `run.started` is logged. A throw (or rejection)
+   * refuses the run: it ends failed with that error before any engine step.
    */
-  readonly connect: (hooks: RunHooks) => ExecuteTool;
+  readonly connect: (hooks: RunHooks) => ExecuteTool | Promise<ExecuteTool>;
   /** Aborting ends the run as incomplete("cancelled"). */
   readonly signal?: AbortSignal;
   /** Dev-mode desync check before every engine step and at the end. Default true. */
@@ -326,7 +329,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   let thrown: { error: unknown } | undefined;
   const pending = new Set<Promise<unknown>>();
   try {
-    const connected = setup.connect({
+    const connected = await setup.connect({
       emit: (type, payload) => {
         append(type, payload);
       },
@@ -444,6 +447,9 @@ export interface RunTaskResult extends RunOutcome {
 
 const LOG_FILE = "session.sqlite";
 const WORKSPACES = "workspaces";
+/** OQ1: why a run whose Ring 0 config change was not approved fails. */
+export const RING0_NOT_APPROVED =
+  "Ring 0 configuration changed and was not approved";
 
 /**
  * Runs a task: validates the task, repo and state dir, loads the config from the
@@ -451,7 +457,12 @@ const WORKSPACES = "workspaces";
  * sandbox image, creates the run's git worktree from that commit under
  * `<stateDir>/workspaces/<runId>`, and
  * drives the loop with every event and context message appended to
- * `<stateDir>/session.sqlite`.
+ * `<stateDir>/session.sqlite`. OQ1: after `run.started` and before the first engine
+ * step, a Ring 0 config that differs from the last one accepted for the repo
+ * (`ring0Status`) is asked (always-ask); unless approved the run fails with
+ * RING0_NOT_APPROVED. An approval, or a first run on the defaults, logs
+ * `config.accepted`; an unchanged config logs nothing more. The ask is bounded by
+ * `limits.timeoutMs` and the run's signal.
  * @throws UsageError for an invalid task, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
@@ -527,7 +538,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       },
       engine,
       tools: BROKER_TOOLS,
-      connect: ({ emitAll, halt }) => {
+      connect: async ({ emit, emitAll, halt }) => {
         let ring0: RunRing0;
         try {
           ring0 = runRing0(workspace, policy);
@@ -546,10 +557,34 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           emitAll,
           ...(presence === undefined ? {} : { presence }),
         };
-        return createBroker({
+        const broker = createBroker({
           ...{ image, workspace, workspaceRoot, halt },
           permission: { ...permission, agentId: nodeId },
-        }).executeTool;
+        });
+        const repo = realpathSync(task.repo);
+        const status = ring0Status(log.events(), repo, config);
+        const accepted = (how: string) => {
+          const { ring0Sha256 } = config.record;
+          const settings = ring0SettingDigests(config.ring0);
+          emit(CONFIG_ACCEPTED, { repo, ring0Sha256, how, settings });
+        };
+        if (status.kind === "default") accepted("default");
+        if (status.kind === "changed") {
+          const timeout = AbortSignal.timeout(task.limits.timeoutMs);
+          const signal =
+            options.signal === undefined
+              ? timeout
+              : AbortSignal.any([options.signal, timeout]);
+          const change = {
+            ...{ from: status.from, to: config.record.ring0Sha256 },
+            ...{ changed: status.changed, ring0: config.ring0 },
+          };
+          if (!(await broker.acceptRing0(change, signal))) {
+            throw new Error(RING0_NOT_APPROVED);
+          }
+          accepted("approved");
+        }
+        return broker.executeTool;
       },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.checkDesync === undefined

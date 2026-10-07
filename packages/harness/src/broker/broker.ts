@@ -10,6 +10,7 @@ import type {
 import { errorMessage } from "../loop/terminal.ts";
 import {
   PermissionLogError,
+  RING0_CONFIG_CALL_ID,
   permissionAnswered,
   permissionAsked,
   permissionEvents,
@@ -71,10 +72,33 @@ interface Action {
   ): Promise<ToolResult>;
 }
 
+/** OQ1: a Ring 0 config change, asked at run start. */
+export interface Ring0Change {
+  /** The digest last accepted for the repo, and the new one (64 hex each). */
+  readonly from: string;
+  readonly to: string;
+  /** The changed Ring 0 setting names; never empty. */
+  readonly changed: readonly string[];
+  /** The new Ring 0 object; `to` is the sha256 of its canonical JSON. */
+  readonly ring0: Readonly<Record<string, unknown>>;
+}
+
 export interface Broker {
   readonly tools: readonly ToolSpec[];
   readonly executeTool: ExecuteTool;
+  /**
+   * OQ1: rules on `change` as `config.set` of its first changed setting, with the
+   * whole new Ring 0 object as the value, under RING0_CONFIG_CALL_ID, and asks it
+   * as `executeTool` asks. True only for an approved always-ask whose answer was
+   * logged; once per broker.
+   */
+  acceptRing0(change: Ring0Change, signal: AbortSignal): Promise<boolean>;
 }
+
+/** A ruling's outcome: run the action on the ruled snapshot, or this denial. */
+type Ruled =
+  | { readonly kind: "run"; readonly verdict: EvaluatedVerdict }
+  | { readonly kind: "denied"; readonly result: ToolResult };
 
 /** Wall-clock bound on one `execute` (the loop's signal may end it sooner). */
 export const EXECUTE_TIMEOUT_MS = 120_000;
@@ -284,7 +308,8 @@ function head(text: string): string {
  * their edges and spaces are visible; a short target or detail is shown in full, a
  * long one as a summary (its first SUMMARY_HEAD code points, its length and the
  * view's hash), the reason cut to MAX_PROMPT_REASON. Every other part is fixed
- * text, an action name, a rule ID or a run ID. The last two lines are the target
+ * text, an action name, a rule ID or a run ID, and the `context` lines after the
+ * first are built by the caller from such parts. The last two lines are the target
  * and "Approve <action> (<rule>, <tier>)?", so no value can push what is approved
  * off the screen (SF-A).
  */
@@ -293,6 +318,7 @@ function askPrompt(
   runId: string,
   values: readonly Shown[],
   view: string | undefined,
+  context: readonly string[],
 ): string {
   const { action, requested, ruleId, reason, tier } = verdict;
   const as = requested === action ? "" : " (requested as " + requested + ")";
@@ -312,6 +338,7 @@ function askPrompt(
   const keys = view === undefined ? "[y/N] " : "[v=view, y/N] ";
   return [
     "helmwright: allow " + action + as + "?",
+    ...context,
     ...(detail === undefined ? [] : [show(detail)]),
     "  rule: " + ruleId + ", tier " + tier + " (" + quoted(shownReason) + ")",
     "  run: " + runId,
@@ -418,6 +445,101 @@ export function createBroker(context: BrokerContext): Broker {
       return false;
     }
   };
+  /** Logs the ruling and, for an ask, asks; `context` adds prompt lines. */
+  const ruleOn = async (
+    id: string,
+    verdict: PermissionVerdict,
+    signal: AbortSignal,
+    context: readonly string[] = [],
+  ): Promise<Ruled> => {
+    const no = (output: string): Ruled => ({
+      kind: "denied",
+      result: denied(output),
+    });
+    const asking =
+      verdict.kind === "evaluated" &&
+      (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
+    // S-3: a target the ask cannot show in full is denied without an ask.
+    const values = asking ? shownValues(verdict) : undefined;
+    const unshowable = asking && values === undefined;
+    const asks = asking && !unshowable;
+    const view = values === undefined ? undefined : askView(values);
+    const viewed = view === undefined ? {} : { viewed: false };
+    let entries: PermissionLogEntry[];
+    let shown = "";
+    try {
+      const ctx = { agentId: permission.agentId, toolCallId: id };
+      entries = [...permissionEvents(verdict, ctx)];
+      if (asks) {
+        const { runId } = permission;
+        shown = askPrompt(verdict, runId, values ?? [], view, context);
+        const present = presence === undefined ? "none" : "tty";
+        entries.push(permissionAsked(id, present, shown, view));
+        if (presence === undefined) {
+          entries.push(permissionAnswered(id, { ...NOBODY, ...viewed }, 0));
+        }
+      }
+    } catch (error) {
+      if (error instanceof PermissionLogError) return no(LOG_DENIED);
+      throw error;
+    }
+    if (!append(entries)) return no(LOG_DENIED);
+    if (verdict === REUSED) return no("denied: " + REUSED.reason);
+    if (verdict.kind === "rejected") {
+      const named = verdict.requestedName ?? "";
+      const by = verdict.ruleId + (named === "" ? "" : "; requested " + named);
+      return no("denied: " + verdict.reason + " (" + by + ")");
+    }
+    const rule = " (" + verdict.ruleId + ")";
+    switch (verdict.tier) {
+      case "allow":
+        return { kind: "run", verdict };
+      case "ask":
+      case "alwaysAsk": {
+        const what = verdict.tier === "ask" ? "asks" : "always asks";
+        if (unshowable) {
+          return no(
+            "denied: " +
+              what +
+              rule +
+              "; the target is too long to show for approval",
+          );
+        }
+        if (presence === undefined) {
+          return no("denied: " + what + rule + "; nobody present to approve");
+        }
+        // The wait counts toward the run's timeout: `signal` ends it.
+        const started = performance.now();
+        const answer = await askOwner(presence, id, shown, view, signal);
+        const waitMs = Math.max(0, Math.round(performance.now() - started));
+        let answered: PermissionLogEntry;
+        try {
+          answered = permissionAnswered(id, answer, waitMs);
+        } catch (error) {
+          if (!(error instanceof PermissionLogError)) throw error;
+          own.halt(PERMISSION_LOG_FAILED);
+          return no(LOG_DENIED);
+        }
+        // Logged before any handler runs; unlogged, the approval counts for nothing.
+        if (!append([answered])) return no(LOG_DENIED);
+        const stop = haltedNow();
+        if (stop !== undefined) return no("denied: " + stop);
+        if (answer.answer !== "approved") {
+          const why =
+            answer.by === "cancelled"
+              ? "the ask was cancelled"
+              : "the owner did not approve";
+          return no("denied: " + what + rule + "; " + why);
+        }
+        return { kind: "run", verdict };
+      }
+      case "deny":
+        return no("denied: " + verdict.reason + rule);
+    }
+  };
+  // OQ1: the run-start ask's ID is never an engine call's, so none inherits its approval.
+  usedIds.add(RING0_CONFIG_CALL_ID);
+  let ring0Asked = false;
   return {
     tools: BROKER_TOOLS,
     async executeTool(call: ToolCall, signal: AbortSignal) {
@@ -434,97 +556,37 @@ export function createBroker(context: BrokerContext): Broker {
             runId: permission.runId,
             extraRing0Paths: permission.ring0,
           });
-      const asking =
-        verdict.kind === "evaluated" &&
-        (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
-      // S-3: a target the ask cannot show in full is denied without an ask.
-      const values = asking ? shownValues(verdict) : undefined;
-      const unshowable = asking && values === undefined;
-      const asks = asking && !unshowable;
-      const view = values === undefined ? undefined : askView(values);
-      const viewed = view === undefined ? {} : { viewed: false };
-      let entries: PermissionLogEntry[];
-      let shown = "";
-      try {
-        const ctx = { agentId: permission.agentId, toolCallId: id };
-        entries = [...permissionEvents(verdict, ctx)];
-        if (asks) {
-          shown = askPrompt(verdict, permission.runId, values ?? [], view);
-          const present = presence === undefined ? "none" : "tty";
-          entries.push(permissionAsked(id, present, shown, view));
-          if (presence === undefined) {
-            entries.push(permissionAnswered(id, { ...NOBODY, ...viewed }, 0));
-          }
-        }
-      } catch (error) {
-        if (error instanceof PermissionLogError) return denied(LOG_DENIED);
-        throw error;
+      const ruled = await ruleOn(id, verdict, signal);
+      if (ruled.kind === "denied") return ruled.result;
+      const action = ACTIONS.get(ruled.verdict.requested);
+      if (action === undefined) {
+        return denied("denied: no M1 handler for " + ruled.verdict.requested);
       }
-      if (!append(entries)) return denied(LOG_DENIED);
-      if (reused) return denied("denied: " + REUSED.reason);
-      if (verdict.kind === "rejected") {
-        const named = verdict.requestedName ?? "";
-        const by =
-          verdict.ruleId + (named === "" ? "" : "; requested " + named);
-        return denied("denied: " + verdict.reason + " (" + by + ")");
-      }
-      const rule = " (" + verdict.ruleId + ")";
-      switch (verdict.tier) {
-        case "allow": {
-          const action = ACTIONS.get(verdict.requested);
-          if (action === undefined) {
-            return denied("denied: no M1 handler for " + verdict.requested);
-          }
-          return action.handle(verdict.input, own, signal);
-        }
-        case "ask":
-        case "alwaysAsk": {
-          const what = verdict.tier === "ask" ? "asks" : "always asks";
-          if (unshowable) {
-            return denied(
-              "denied: " +
-                what +
-                rule +
-                "; the target is too long to show for approval",
-            );
-          }
-          if (presence === undefined) {
-            return denied(
-              "denied: " + what + rule + "; nobody present to approve",
-            );
-          }
-          // The wait counts toward the run's timeout: `signal` ends it.
-          const started = performance.now();
-          const answer = await askOwner(presence, id, shown, view, signal);
-          const waitMs = Math.max(0, Math.round(performance.now() - started));
-          let answered: PermissionLogEntry;
-          try {
-            answered = permissionAnswered(id, answer, waitMs);
-          } catch (error) {
-            if (!(error instanceof PermissionLogError)) throw error;
-            own.halt(PERMISSION_LOG_FAILED);
-            return denied(LOG_DENIED);
-          }
-          // Logged before any handler runs; unlogged, the approval counts for nothing.
-          if (!append([answered])) return denied(LOG_DENIED);
-          const stop = haltedNow();
-          if (stop !== undefined) return denied("denied: " + stop);
-          if (answer.answer !== "approved") {
-            const why =
-              answer.by === "cancelled"
-                ? "the ask was cancelled"
-                : "the owner did not approve";
-            return denied("denied: " + what + rule + "; " + why);
-          }
-          const action = ACTIONS.get(verdict.requested);
-          if (action === undefined) {
-            return denied("denied: no M1 handler for " + verdict.requested);
-          }
-          return action.handle(verdict.input, own, signal);
-        }
-        case "deny":
-          return denied("denied: " + verdict.reason + rule);
-      }
+      return action.handle(ruled.verdict.input, own, signal);
+    },
+    async acceptRing0(change, signal) {
+      if (halted !== undefined || ring0Asked) return false;
+      ring0Asked = true;
+      const { from, to, changed, ring0 } = change;
+      const verdict = evaluate(permission.policy, {
+        action: "config.set",
+        input: { setting: changed[0], value: ring0 },
+        worktree: permission.worktree,
+        runId: permission.runId,
+        extraRing0Paths: permission.ring0,
+      });
+      const context = [
+        "  Ring 0 settings changed: " + displayText(changed.join(", ")),
+        "  Ring 0 digest: " + displayText(from) + " -> " + displayText(to),
+      ];
+      const ruled = await ruleOn(
+        RING0_CONFIG_CALL_ID,
+        verdict,
+        signal,
+        context,
+      );
+      // Fails closed: only an approved always-ask accepts the change.
+      return ruled.kind === "run" && ruled.verdict.tier === "alwaysAsk";
     },
   };
 }

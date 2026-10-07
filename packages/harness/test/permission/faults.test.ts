@@ -327,6 +327,34 @@ describe("permissionFaults (SF3)", () => {
     expect(permissionFaults(run(...payloads))).toEqual(faults);
   });
 
+  // OQ1: the run-start ask for a Ring 0 config change.
+  it("binds config.accepted approvals to the reserved ask (OQ1)", () => {
+    const id = "helmwright.config.ring0";
+    const ask = [
+      { ...evaluated("alwaysAsk", id), requested: "config.set" },
+      { ...asked("tty", true), toolCallId: id },
+    ];
+    const ok = answered({ toolCallId: id, viewed: true });
+    const accepted = (how = "approved"): Payload => ({
+      kind: "config.accepted",
+      how,
+    });
+    const forged = "config.accepted approved without an approval of its ask";
+    expect(permissionFaults(run(...ask, ok, accepted()))).toEqual([]);
+    expect(permissionFaults(run(accepted("default")))).toEqual([]);
+    expect(permissionFaults(run(accepted()))).toEqual([`seq 0: ${forged}`]);
+    expect(
+      permissionFaults(run(...ask, { ...ok, answer: "denied" }, accepted())),
+    ).toEqual([`seq 3: ${forged}`]);
+    expect(permissionFaults(run(...ask, ok, accepted(), accepted()))).toEqual([
+      `seq 4: ${forged}`,
+    ]);
+    const ran = { ...called("ok", id), name: "config.set" };
+    expect(permissionFaults(run(...ask, ok, ran))).toEqual([
+      "seq 3: tool call ran with the reserved Ring 0 config ID",
+    ]);
+  });
+
   it("never copies payload text into a fault", () => {
     const evil = "\u001b]8;;x\u0007";
     const faults = permissionFaults(

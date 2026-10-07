@@ -241,6 +241,44 @@ function answerOnce(answer: string, promptEnd = PROMPT_END): Driver {
 }
 
 /**
+ * B9b-3c: asks for the full view at the first ask ending in `end`, pages it to its
+ * end and then approves with "y". `pages()` is how many pages were turned.
+ */
+function viewThenApprove(end: string): { drive: Driver; pages: () => number } {
+  const more = "-- more (page ";
+  const last = "-- end of view: space/Enter --";
+  const first = windowOpen(end, 1);
+  const second = windowOpen(end, 2);
+  let step = 0;
+  let pages = 0;
+  let markers = 0;
+  let markerAt = 0;
+  const drive: Driver = (text, type) => {
+    const shownMarkers = count(text, more) + count(text, last);
+    if (step === 0 && first(text)) {
+      step = 1;
+      type("v\r");
+    } else if (step === 1 && count(text, end) < 2) {
+      if (shownMarkers > markers) {
+        markers = shownMarkers;
+        markerAt = performance.now();
+      } else if (markers > pages && performance.now() - markerAt > 300) {
+        // Keys typed within 150 ms of a page are dropped (SF1).
+        pages = markers;
+        type(text.includes(last) ? "\r" : " ");
+        // Type-ahead for the window after the view (a paging key otherwise).
+        type("x");
+      }
+    } else if (step === 1 && second(text)) {
+      step = 2;
+      // DEL erases the "x" in case it arrived after that window opened.
+      type("\u007fy\r");
+    }
+  };
+  return { drive, pages: () => pages };
+}
+
+/**
  * Runs the CLI on a pty, types `early` at once (before any prompt), and types
  * `answer` and Enter (CR) once the ask's window has observably opened: `early`
  * is type-ahead, so the CLI says it was discarded as the window opens. A driver
@@ -353,9 +391,11 @@ describe("helmwright CLI (e2e)", () => {
       expect(git("-C", repo, "worktree", "list")).toContain(workspace);
 
       const events = expectWellFormedLog(out.runId);
-      // Each message is logged when it is created: cause before effect.
+      // Each message is logged when it is created: cause before effect. The
+      // first run on the defaults accepts them silently (OQ1).
       expect(events.map((e) => e.type)).toEqual([
-        ...["run.started", "message.appended", "loop.iteration.started"],
+        ...["run.started", "config.accepted"],
+        ...["message.appended", "loop.iteration.started"],
         ...["message.appended", "loop.tool.started", "permission.evaluated"],
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
         ...["message.appended", "run.terminated"],
@@ -564,42 +604,13 @@ describe("helmwright CLI (e2e)", () => {
     async () => {
       const end =
         "Approve comment (always-ask.comment, alwaysAsk)? [v=view, y/N] ";
-      const more = "-- more (page ";
-      const last = "-- end of view: space/Enter --";
-      const first = windowOpen(end, 1);
-      const second = windowOpen(end, 2);
-      let step = 0;
-      let pages = 0;
-      let markers = 0;
-      let markerAt = 0;
-      const drive: Driver = (text, type) => {
-        const shownMarkers = count(text, more) + count(text, last);
-        if (step === 0 && first(text)) {
-          step = 1;
-          type("v\r");
-        } else if (step === 1 && count(text, end) < 2) {
-          if (shownMarkers > markers) {
-            markers = shownMarkers;
-            markerAt = performance.now();
-          } else if (markers > pages && performance.now() - markerAt > 300) {
-            // Keys typed within 150 ms of a page are dropped (SF1).
-            pages = markers;
-            type(text.includes(last) ? "\r" : " ");
-            // Type-ahead for the window after the view (a paging key otherwise).
-            type("x");
-          }
-        } else if (step === 1 && second(text)) {
-          step = 2;
-          // DEL erases the "x" in case it arrived after that window opened.
-          type("\u007fy\r");
-        }
-      };
+      const { drive, pages } = viewThenApprove(end);
       const { status, shown, out } = await runAtTty(
         "comment-long.turns.json",
         drive,
       );
       expect(status, shown).toBe(0);
-      expect(pages, shown).toBeGreaterThan(1);
+      expect(pages(), shown).toBeGreaterThan(1);
       // B1: after the view only the target and Approve lines are shown again.
       expect(count(shown, "helmwright: allow comment?"), shown).toBe(1);
       expect(shown).toContain('  target (remote): "github.com"\n' + end);
@@ -1206,6 +1217,21 @@ function startedOf(runId: string): Record<string, unknown> | undefined {
     ?.payload;
 }
 
+const RING0_ID = "helmwright.config.ring0";
+const RING0_END =
+  "Approve config.set (always-ask.ring0-setting, alwaysAsk)? [v=view, y/N] ";
+const NOT_APPROVED = "Ring 0 configuration changed and was not approved";
+
+/** Commits a config whose policy adds `paths` to the default Ring 0 paths. */
+function commitStrict(version: string, paths: readonly string[]): void {
+  const base = DEFAULT_PERMISSION_POLICY;
+  const ring0Paths = [...base.ring0Paths, ...paths];
+  const policy = { ...base, version, ring0Paths };
+  commitConfig((path) => {
+    writeFileSync(path, JSON.stringify({ permissions: { policy } }));
+  });
+}
+
 describe("helmwright.config.json (e2e)", () => {
   it(
     "reads task.repo, not GIT_DIR, and runs no fsmonitor (S1, S3)",
@@ -1355,7 +1381,7 @@ describe("helmwright.config.json (e2e)", () => {
   );
 
   it(
-    "applies a stricter policy and refuses a relaxing one (AC4, AC6)",
+    "refuses a relaxing policy; an unapproved Ring 0 change fails (AC4, AC5)",
     { timeout: T },
     () => {
       const base = DEFAULT_PERMISSION_POLICY;
@@ -1371,19 +1397,80 @@ describe("helmwright.config.json (e2e)", () => {
         "permissions.policy: override relaxes alwaysAsk: removes deploy",
       );
 
-      const strict = {
-        ...base,
-        version: "strict-1",
-        ring0Paths: [...base.ring0Paths, "docs/**"],
-      };
+      // OQ1: a stricter policy is a Ring 0 change; with nobody present the run fails.
+      commitStrict("strict-1", ["docs/**"]);
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = expectWellFormedLog(out.runId);
+      // Asked after run.started, before the first message and any tool call.
+      expect(events.map((e) => e.type)).toEqual([
+        "run.started",
+        "permission.evaluated",
+        "permission.asked",
+        "permission.answered",
+        "run.terminated",
+      ]);
+      expect(events[0]?.payload).toMatchObject({ policyVersion: "strict-1" });
+      expect(events.slice(1, 4).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, action: "config.set", tier: "alwaysAsk" },
+          ...{ ruleId: "always-ask.ring0-setting", policyVersion: "strict-1" },
+          target: { kind: "setting", value: "permissions", truncated: true },
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
+      expect(logEvents().some((e) => e.type === "config.accepted")).toBe(false);
+      // No loop ran, so there is no context digest to match; the asks are bound.
+      const replay = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        terminated: true,
+        permissionFaults: [],
+      });
+    },
+  );
+
+  it.skipIf(NO_PTY)(
+    "asks a Ring 0 change at run start, once approved (AC4-6)" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
       mkdirSync(join(repo, "docs"));
       writeFileSync(join(repo, "docs", "x.md"), "keep\n");
-      commitConfig((path) => {
-        writeFileSync(
-          path,
-          JSON.stringify({ permissions: { policy: strict } }),
-        );
+      commitStrict("strict-1", ["docs/**"]);
+      const { drive, pages } = viewThenApprove(RING0_END);
+      const tty = await runAtTty("write-file.turns.json", drive);
+      expect(tty.status, tty.shown).toBe(0);
+      expect(pages(), tty.shown).toBeGreaterThan(0);
+      const asked = logEvents().filter((e) => e.runId === tty.out.runId);
+      const to = (asked[0]?.payload["config"] as Record<string, string>)[
+        "ring0Sha256"
+      ];
+      expect(tty.shown).toContain("  Ring 0 settings changed: permissions\n");
+      expect(tty.shown).toMatch(
+        new RegExp(`  Ring 0 digest: [0-9a-f]{64} -> ${to ?? "none"}\n`),
+      );
+      const of = (events: readonly Event[], type: string) =>
+        events.filter((e) => e.type === type).map((e) => e.payload);
+      expect(of(asked, "permission.answered")).toMatchObject([
+        { toolCallId: RING0_ID, answer: "approved", by: "tty", viewed: true },
+      ]);
+      const [accepted, ...more] = of(asked, "config.accepted");
+      expect(more).toEqual([]);
+      expect(accepted).toMatchObject({
+        repo,
+        ring0Sha256: to,
+        how: "approved",
       });
+      expect(Object.keys(accepted?.["settings"] ?? {})).toEqual([
+        "intake.classification",
+        "permissions",
+      ]);
+      expect(asked.find((e) => e.type === "loop.tool.called")).toBeDefined();
+      expectReplayMatches(tty.out.runId, asked);
+
+      // The same config is not asked again; the stricter policy applies (AC4).
       const turns = join(tmp, "strict.turns.json");
       const setting = "permissions.untrustedContent.hintBytes";
       writeFileSync(
@@ -1406,14 +1493,13 @@ describe("helmwright.config.json (e2e)", () => {
       );
       const { status, stderr, out } = runTask(turns);
       expect(status, stderr).toBe(0);
-      const events = expectWellFormedLog(out.runId);
+      const events = logEvents().filter((e) => e.runId === out.runId);
       expect(events[0]?.payload).toMatchObject({
         policyVersion: "strict-1",
-        config: { source: "file" },
+        config: { source: "file", ring0Sha256: to },
       });
-      const of = (type: string) =>
-        events.filter((e) => e.type === type).map((e) => e.payload);
-      expect(of("permission.evaluated")).toMatchObject([
+      expect(of(events, "config.accepted")).toEqual([]);
+      expect(of(events, "permission.evaluated")).toMatchObject([
         {
           ...{
             action: "fs.edit",
@@ -1427,7 +1513,7 @@ describe("helmwright.config.json (e2e)", () => {
           ...{ ruleId: "always-ask.ring0-setting", target: { value: setting } },
         },
       ]);
-      expect(of("permission.answered")).toMatchObject(
+      expect(of(events, "permission.answered")).toMatchObject(
         Array(2).fill({ answer: "denied", by: "noPresence" }),
       );
       const workspace = join(stateDir, "workspaces", out.runId);
@@ -1435,6 +1521,77 @@ describe("helmwright.config.json (e2e)", () => {
         "keep\n",
       );
       expectReplayMatches(out.runId, events);
+
+      // Another change is asked again.
+      commitStrict("strict-2", ["docs/**", "notes/**"]);
+      const again = runTask("write-file.turns.json");
+      expect(again.status, again.stderr).toBe(1);
+      expect(again.out.terminal).toEqual({
+        kind: "failed",
+        error: NOT_APPROVED,
+      });
+      const ruled = logEvents().filter((e) => e.runId === again.out.runId);
+      expect(of(ruled, "permission.evaluated")).toMatchObject([
+        { toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
+      ]);
+    },
+  );
+
+  it(
+    "accepts the defaults silently and refuses the reserved call ID (OQ1)",
+    { timeout: T },
+    () => {
+      const first = runTask("write-file.turns.json");
+      expect(first.status, first.stderr).toBe(0);
+      const events = expectWellFormedLog(first.out.runId);
+      const config = events[0]?.payload["config"] as Record<string, string>;
+      expect(events[1]).toMatchObject({
+        type: "config.accepted",
+        payload: { repo, ring0Sha256: config["ring0Sha256"], how: "default" },
+      });
+      expect(events.some((e) => e.payload["toolCallId"] === RING0_ID)).toBe(
+        false,
+      );
+      expectReplayMatches(first.out.runId, events);
+
+      // An engine call with the reserved ID never inherits a Ring 0 approval.
+      const turns = join(tmp, "reserved.turns.json");
+      writeFileSync(
+        turns,
+        JSON.stringify([
+          {
+            text: "Writing a.txt with the reserved ID.",
+            toolCalls: [
+              {
+                id: RING0_ID,
+                name: "execute",
+                input: { argv: ["sh", "-c", "echo hi > a.txt"] },
+              },
+            ],
+            claimsDone: false,
+          },
+          { text: "It was refused.", toolCalls: [], claimsDone: true },
+        ]),
+      );
+      const second = runTask(turns);
+      expect(second.status, second.stderr).toBe(0);
+      const later = logEvents().filter((e) => e.runId === second.out.runId);
+      expect(later.filter((e) => e.type === "config.accepted")).toEqual([]);
+      expect(
+        later.filter((e) => e.type.startsWith("permission.")),
+      ).toMatchObject([
+        {
+          type: "permission.rejected",
+          payload: { toolCallId: RING0_ID, ruleId: "schema.duplicate-call-id" },
+        },
+      ]);
+      const tool = deriveMessages(later, second.out.runId).find(
+        (m) => m.role === "tool",
+      );
+      expect(tool?.text).toBe("denied: tool call ID already used in this run");
+      const workspace = join(stateDir, "workspaces", second.out.runId);
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+      expectReplayMatches(second.out.runId, later);
     },
   );
 });
