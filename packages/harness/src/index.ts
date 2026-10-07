@@ -109,9 +109,12 @@ export {
   runTask,
 } from "./run/run.ts";
 export type {
+  EvaluatedVerdict,
   PermissionRequest,
   PermissionTarget,
   PermissionVerdict,
+  RejectedVerdict,
+  RunRing0,
 } from "./permission/policy.ts";
 export {
   ALWAYS_ASK_ACTIONS,
@@ -122,7 +125,20 @@ export {
   evaluate,
   resolvePolicy,
   ring0LinkTargets,
+  runRing0,
 } from "./permission/policy.ts";
+export type {
+  PermissionAnswer,
+  PermissionLogContext,
+  PermissionLogEntry,
+  PermissionLogIssue,
+} from "./permission/events.ts";
+export {
+  PermissionLogError,
+  permissionAnswered,
+  permissionAsked,
+  permissionEvents,
+} from "./permission/events.ts";
 export type { NormalizedPath } from "./permission/normalize.ts";
 export {
   caseFold,

@@ -67,6 +67,9 @@ function lexical(
     : { base, relative: posix.relative(base, host) };
 }
 
+/** The run's extra Ring 0 globs. Only `ring0LinkTargets` (and so `runRing0`) makes one. */
+export type RunRing0 = readonly string[] & { readonly __brand: "RunRing0" };
+
 /** One action call to rule on. Every field is untrusted and read once. */
 export interface PermissionRequest {
   readonly action: string;
@@ -74,31 +77,58 @@ export interface PermissionRequest {
   /** Host path of the run's worktree, mounted at /workspace in the sandbox. */
   readonly worktree: string;
   readonly runId: string;
-  /** The run's extra Ring 0 globs: `ring0LinkTargets` of the worktree at run start. */
-  readonly extraRing0Paths?: readonly string[];
+  /** `runRing0` of the worktree at run start (SF3); an invalid value denies. */
+  readonly extraRing0Paths: RunRing0;
 }
 
 export interface PermissionTarget {
-  readonly kind: "path" | "ref" | "remote" | "setting" | "argv";
-  /** Normalized (a path is its resolved host path) and escaped. */
+  readonly kind: "path" | "ref" | "remote" | "setting" | "argv" | "amount";
+  /** Display only: normalized (a path is its resolved host path) and escaped. */
   readonly value: string;
   /** The payload to show: the spend cap, a config value or a comment body; bounded and escaped. */
   readonly detail?: string;
+  /** Present when `detail` was cut to fit. */
+  readonly truncated?: true;
 }
 
-export interface PermissionVerdict {
+/** A known action with valid input, ruled on under a valid policy. */
+export interface EvaluatedVerdict {
+  readonly kind: "evaluated";
   readonly tier: PermissionTier;
   readonly ruleId: string;
   /** Escaped: no control, format or separator characters. */
   readonly reason: string;
-  /** Absent when the policy, action or input was invalid. */
-  readonly target?: PermissionTarget;
-  /**
-   * The frozen snapshot of the input that was ruled on. Handlers act on it (and on a
-   * path's `target.value`), never on the request. Absent with `target`.
-   */
-  readonly input?: Readonly<Record<string, unknown>>;
+  /** The action ruled on: `execute` that installs dependencies is `deps.add`. */
+  readonly action: PermissionAction;
+  readonly requested: PermissionAction;
+  /** The guard that decided. */
+  readonly guard: "exfiltration" | "policy";
+  /** The `version` of the policy snapshot that was checked. */
+  readonly policyVersion: string;
+  readonly target: PermissionTarget;
+  /** A path target's resolved host path, unescaped (SF4). Handlers act on it, never on `target.value`. */
+  readonly path?: string;
+  /** The frozen snapshot of the input that was ruled on. Handlers act on it, never on the request. */
+  readonly input: Readonly<Record<string, unknown>>;
+  readonly requestedName?: undefined;
 }
+
+/** A call denied before evaluation: an invalid policy (guard `policy`), or an unknown action or invalid input (`schema`). */
+export interface RejectedVerdict {
+  readonly kind: "rejected";
+  readonly tier: "deny";
+  readonly ruleId: string;
+  /** Escaped: no control, format or separator characters. */
+  readonly reason: string;
+  readonly guard: "schema" | "policy";
+  /** The requested action name as shown: cut to 64 code points, escaped, then a marker if cut. */
+  readonly requestedName?: string;
+  readonly target?: undefined;
+  readonly path?: undefined;
+  readonly input?: undefined;
+}
+
+export type PermissionVerdict = EvaluatedVerdict | RejectedVerdict;
 
 /** Freezes `value` and everything reachable from it. */
 function deepFreeze<T>(value: T): T {
@@ -169,7 +199,7 @@ const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   commit: ["ref", { ref: "ref", paths: "texts" }],
   "deps.add": ["argv", { packages: "names" }],
   "config.set": ["setting", { setting: "text", value: "json" }],
-  "spend.raiseCap": ["setting", { capUsd: "usd" }],
+  "spend.raiseCap": ["amount", { capUsd: "usd" }],
   push: ["remote", { ...egress, ref: "pushRef" }],
   "pr.open": ["remote", egress],
   "pr.merge": ["remote", egress],
@@ -430,7 +460,10 @@ function floorRule(policy: PermissionPolicy, f: Facts): [string, string] | [] {
 }
 
 /** The always-ask floor first (a matching deny rule still denies), then the first matching rule, else ask. */
-function decide(policy: PermissionPolicy, f: Facts): PermissionVerdict {
+function decide(
+  policy: PermissionPolicy,
+  f: Facts,
+): { tier: PermissionTier; ruleId: string; reason: string } {
   const match = policy.rules.find(
     (r) =>
       r.action === f.action &&
@@ -455,6 +488,13 @@ interface Run {
   readonly extraRing0Paths: readonly string[];
 }
 
+/** What `factsFor` derives: the facts, the shown target and a path target's resolved path. */
+interface Derived {
+  readonly facts: Facts;
+  readonly target: PermissionTarget;
+  readonly path: string | undefined;
+}
+
 /**
  * Normalizes the target and derives the facts.
  * @throws PathError if a path cannot be normalized; TypeError on an invalid setting.
@@ -464,7 +504,7 @@ function factsFor(
   requested: PermissionAction,
   fields: Readonly<Record<string, unknown>>,
   request: Run,
-): { facts: Facts; target: PermissionTarget } {
+): Derived {
   const { argv, body, capUsd, path, paths, setting, ref } = fields;
   const ring0Paths = union(
     [...policy.ring0Paths, ...request.extraRing0Paths],
@@ -552,7 +592,9 @@ function factsFor(
         : typeof body === "string"
           ? body
           : undefined;
+  const cut = detail !== undefined && Array.from(detail).length > MAX_DETAIL;
   return {
+    path: resolved?.real,
     facts: {
       action: install ? "deps.add" : requested,
       requested,
@@ -564,6 +606,7 @@ function factsFor(
       kind: ACTIONS[requested][0],
       value: escape(value || "spend.cap"),
       ...(detail === undefined ? {} : { detail: bounded(detail) }),
+      ...(cut ? { truncated: true } : {}),
     },
   };
 }
@@ -594,11 +637,26 @@ class PathError extends Error {
   }
 }
 
-const deny = (ruleId: string, reason: string): PermissionVerdict => ({
+const reject = (
+  guard: RejectedVerdict["guard"],
+  ruleId: string,
+  reason: string,
+  requestedName: string | undefined,
+): RejectedVerdict => ({
+  kind: "rejected",
   tier: "deny",
   ruleId,
   reason: escape(reason),
+  guard,
+  ...(requestedName === undefined ? {} : { requestedName }),
 });
+
+/** An action name as shown: cut to 64 code points, escaped, then a marker if cut. */
+function shownName(action: string): string {
+  const points = Array.from(action);
+  const more = points.length > 64 ? TRUNCATED : "";
+  return escape(points.slice(0, 64).join("")) + more;
+}
 
 /** The first problem with a policy, or undefined if it is valid. */
 function policyProblem(policy: unknown): string | undefined {
@@ -635,23 +693,29 @@ export function evaluate(
   request: PermissionRequest,
 ): PermissionVerdict {
   let requested: PermissionAction | undefined;
+  let name: string | undefined;
   try {
     const { action, input, worktree, runId, extraRing0Paths } = request;
-    const rules = snapshot(policy);
+    if (typeof action === "string") name = shownName(action);
+    let rules: unknown;
+    try {
+      rules = snapshot(policy);
+    } catch {
+      // N7: a policy that is not plain data is a policy failure, with fixed text.
+      return reject("policy", "policy.invalid", "policy is not JSON", name);
+    }
     const problem = policyProblem(rules);
-    if (problem !== undefined) return deny("policy.invalid", problem);
+    if (problem !== undefined) {
+      return reject("policy", "policy.invalid", problem, name);
+    }
     // policyProblem validated it.
     const checked = rules as PermissionPolicy;
     if (typeof action !== "string" || !Object.hasOwn(ACTIONS, action)) {
-      const name = typeof action === "string" ? action.slice(0, 64) : "";
-      return deny(
-        "schema.unknown-action",
-        `unknown action ${JSON.stringify(name)}`,
-      );
+      return reject("schema", "schema.unknown-action", "unknown action", name);
     }
     requested = action as PermissionAction;
     const fields = parseInput(ACTIONS[requested][1], snapshot(input));
-    const extra = snapshot(extraRing0Paths ?? []);
+    const extra = snapshot(extraRing0Paths);
     if (
       fields === undefined ||
       typeof worktree !== "string" ||
@@ -659,13 +723,25 @@ export function evaluate(
       !RUN_ID.test(runId) ||
       !isGlobs(extra)
     ) {
-      return deny("schema.invalid-input", `invalid input for ${requested}`);
+      const why = `invalid input for ${requested}`;
+      return reject("schema", "schema.invalid-input", why, name);
     }
     const run = { worktree, runId, extraRing0Paths: extra };
-    const { facts, target } = factsFor(checked, requested, fields, run);
+    const { facts, target, path } = factsFor(checked, requested, fields, run);
     const { tier, ruleId, reason } = decide(checked, facts);
-    const ruled = deepFreeze(fields);
-    return { tier, ruleId, reason: escape(reason), target, input: ruled };
+    return {
+      kind: "evaluated",
+      tier,
+      ruleId,
+      reason: escape(reason),
+      action: facts.action,
+      requested,
+      guard: "policy",
+      policyVersion: checked.version,
+      target,
+      ...(path === undefined ? {} : { path }),
+      input: deepFreeze(fields),
+    };
   } catch (error) {
     // Fail closed with fixed text: a thrown value is never converted or inspected,
     // except our own PathError, which is recognized by identity.
@@ -673,9 +749,11 @@ export function evaluate(
     if (typeof error === "object" && error !== null && pathErrors.has(error)) {
       const { message } = error as PathError;
       const why = message === "" ? "" : `: ${message}`;
-      return deny("schema.invalid-input", `${action} path rejected${why}`);
+      const reason = `${action} path rejected${why}`;
+      return reject("schema", "schema.invalid-input", reason, name);
     }
-    return deny("schema.invalid-input", `invalid input for ${action}`);
+    const reason = `invalid input for ${action}`;
+    return reject("schema", "schema.invalid-input", reason, name);
   }
 }
 
@@ -744,7 +822,7 @@ export function resolvePolicy(
 }
 
 /** JSON with object keys sorted, so equal policies compare equal. */
-const canonical = (value: unknown): string =>
+export const canonical = (value: unknown): string =>
   JSON.stringify(value, (_key, v: unknown) =>
     typeof v === "object" && v !== null && !Array.isArray(v)
       ? Object.fromEntries(
@@ -789,7 +867,7 @@ function linksOnTheWay(
 export function ring0LinkTargets(
   worktree: string,
   ring0Paths: readonly string[],
-): string[] {
+): RunRing0 {
   const root = realpathSync.native(worktree);
   // Each glob's leading parts, and the glob itself.
   const prefixes = ring0Paths.flatMap((glob) =>
@@ -822,5 +900,19 @@ export function ring0LinkTargets(
       `Ring 0 link targets with unsupported names (ASCII letters, digits, ._-/ only, at most 128 characters): ${unsupported.map((g) => escape(g)).join(", ")}`,
     );
   }
-  return [...found];
+  return Object.freeze([...found]) as RunRing0;
+}
+
+/**
+ * The run's extra Ring 0 globs (SF3): `ring0LinkTargets` of the worktree for the
+ * policy's Ring 0 paths united with the floor. Call it at run start.
+ * @throws TypeError on an invalid policy; as `ring0LinkTargets` otherwise.
+ */
+export function runRing0(worktree: string, policy: PermissionPolicy): RunRing0 {
+  const checked = snapshot(policy);
+  if (policyProblem(checked) !== undefined) {
+    throw new TypeError("invalid permission policy");
+  }
+  const { ring0Paths } = checked as PermissionPolicy;
+  return ring0LinkTargets(worktree, union(ring0Paths, FLOOR_PATHS));
 }
