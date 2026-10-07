@@ -48,6 +48,7 @@ const NO_EVAL = "permission.asked not directly after its ask-tier ruling";
 const WRONG_BY = "answer not given by the presence its ask had";
 const UNRULED = "tool call ran without an allow ruling or an approval";
 
+const SECOND_EVAL = "more than one permission.evaluated for one tool call";
 const NO_RULING = "tool call ended without denial and without any ruling";
 const OTHER_ACTION =
   "tool call ran as another action than its ruling requested";
@@ -163,7 +164,7 @@ describe("permissionFaults (SF3)", () => {
     [
       "S1: an ask after a later allow ruling of its call",
       [evaluated(), evaluated("allow"), asked(), answered()],
-      [`seq 2: ${NO_EVAL}`],
+      [`seq 1: ${SECOND_EVAL}`, `seq 2: ${NO_EVAL}`],
     ],
     [
       "S1: an ask after a rejection of its call",
@@ -186,6 +187,21 @@ describe("permissionFaults (SF3)", () => {
       [],
     ],
     ["N-d: a run with no ruling", [called()], [`seq 0: ${NO_RULING}`]],
+    [
+      "N4: a second evaluation of one call",
+      [evaluated("allow"), evaluated("allow"), called()],
+      [`seq 1: ${SECOND_EVAL}`],
+    ],
+    [
+      "N4: an exfiltration ruling that does not deny",
+      [{ ...evaluated("allow"), guard: "exfiltration" }, called()],
+      ["seq 0: exfiltration ruling that does not deny"],
+    ],
+    [
+      "N4: no fault for an exfiltration denial",
+      [{ ...evaluated("deny"), guard: "exfiltration" }, called("denied")],
+      [],
+    ],
     [
       "N-d: an error with no ruling",
       [called("error")],

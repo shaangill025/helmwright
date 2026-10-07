@@ -1,10 +1,14 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PermissionPolicy } from "@helmwright/schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { EGRESS } from "../../src/permission/policy.ts";
 import {
   DEFAULT_PERMISSION_POLICY as BASE,
+  PERMISSION_ONLY_ACTIONS,
+  canonicalJson,
   evaluate,
   permissionEvents,
   runRing0,
@@ -60,6 +64,53 @@ const SECRETS: [string, string, string][] = [
     '{"api-key": "' + tail(24) + '"}',
     "a credential-named value",
   ],
+  // S1: every separator, spaced and split pairs, URL queries.
+  ["NAME = v", "GITHUB_TOKEN = " + tail(20), "a credential-named value"],
+  ["NAME= v", "GITHUB_TOKEN= " + tail(20), "a credential-named value"],
+  ["NAME=newline v", "GITHUB_TOKEN=\n" + tail(20), "a credential-named value"],
+  ["NAME := v", "api_key := " + tail(20), "a credential-named value"],
+  ["NAME:=v", "api_key:=" + tail(20), "a credential-named value"],
+  [
+    '{"token" : "v"}',
+    '{"token" : "' + tail(20) + '"}',
+    "a credential-named value",
+  ],
+  [
+    "?access_token=v",
+    "https://x.io/a?access_token=" + tail(20),
+    "a credential-named value",
+  ],
+  [
+    "&password=v",
+    "https://x.io/a?q=1&password=" + tail(12) + "&b=2",
+    "a credential-named value",
+  ],
+  [
+    "a later separator",
+    "mode=fast:secret=" + tail(12),
+    "a credential-named value",
+  ],
+  // S2: a specific prefix matches inside a word.
+  ["a prefix inside a word", "xghp_" + tail(36), "a GitHub token"],
+  [
+    "a key after an underscore",
+    "MY_AKIA" + tail(16, "Q7X2"),
+    "an AWS access key ID",
+  ],
+  // S3: a normalized copy is scanned.
+  [
+    "a zero-width space",
+    "ghp_" + tail(10) + "\u200b" + tail(26),
+    "a GitHub token",
+  ],
+  ["a soft hyphen", "gh\u00adp_" + tail(36), "a GitHub token"],
+  ["fullwidth forms", "\uff47\uff48\uff50\uff3f" + tail(36), "a GitHub token"],
+  // S4: a PGP private key.
+  [
+    "PGP",
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----\n" + tail(64),
+    "a private key",
+  ],
 ];
 
 describe("exfiltration guard (guard 1)", () => {
@@ -80,6 +131,14 @@ describe("exfiltration guard (guard 1)", () => {
     // The reason, target and logged event never hold the secret.
     const [event] = permissionEvents(v, { agentId: "a", toolCallId: "c" });
     const logged = JSON.stringify(event);
+    // S3: the input snapshot, and its hash, stay the raw input.
+    const raw = {
+      destination: "o/r",
+      body: "see (" + secret + ") for the result\n",
+    };
+    expect(v.input).toEqual(raw);
+    const sha = createHash("sha256").update(canonicalJson(raw)).digest("hex");
+    expect(event?.payload).toMatchObject({ inputSha256: sha });
     for (const part of secret.split(/\s/u).filter((p) => p.length > 8)) {
       expect(logged).not.toContain(part);
       expect(JSON.stringify(v.target) + v.reason).not.toContain(part);
@@ -109,7 +168,7 @@ describe("exfiltration guard (guard 1)", () => {
   it.each([
     ["sk- inside prose words", "the task-runner and disk-usage report"],
     ["a short sk- tail", "use sk-learn for this"],
-    ["a prefix inside a word", "xghp_" + tail(36)],
+    ["generic sk- inside a word", "task-" + tail(30)],
     ["a short GitHub tail", "ghp_" + tail(12)],
     ["an AWS-like ID too long", "AKIA" + tail(20, "Q7X2")],
     ["token without a value", "the token= is unset; token: (none)"],
@@ -133,6 +192,47 @@ describe("exfiltration guard (guard 1)", () => {
     expect(
       rule("execute", { argv: ["echo", "GITHUB_TOKEN=" + tail(20)] }),
     ).toMatchObject({ guard: "policy", tier: "allow" });
+  });
+
+  it("scans a long body of end markers in linear time (S4)", () => {
+    const body = "PRIVATE KEY-----".repeat(4096);
+    expect(body.length).toBe(65_536);
+    const started = performance.now();
+    expect(comment(body)).toMatchObject({ guard: "policy" });
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it("has an egress entry for every action; exactly the remote six (N6)", () => {
+    const actions = ["execute", ...PERMISSION_ONLY_ACTIONS].sort();
+    expect(Object.keys(EGRESS).sort()).toEqual(actions);
+    const egress = actions.filter((a) => EGRESS[a as keyof typeof EGRESS]);
+    expect(egress).toEqual([
+      "comment",
+      "deploy",
+      "pr.merge",
+      "pr.open",
+      "publish",
+      "push",
+    ]);
+  });
+
+  it.each([
+    ["exfiltration", "rejected"],
+    ["default", "rejected"],
+    ["exfiltration-credential", "evaluated"],
+  ])("reserves the bare word too: rule ID %s is %s (N1)", (id, kind) => {
+    const policy: PermissionPolicy = {
+      ...BASE,
+      rules: [{ id, action: "deploy", scope: "any", tier: "allow" }],
+    };
+    const v = evaluate(policy, {
+      action: "deploy",
+      input: { destination: "prod" },
+      worktree,
+      runId: "run_01",
+      extraRing0Paths: ring0,
+    });
+    expect(v.kind).toBe(kind);
   });
 
   it("reserves the exfiltration. rule ID prefix", () => {

@@ -1,4 +1,4 @@
-import { CREDENTIAL_KEY } from "../sandbox/docker.ts";
+import { isCredentialKey } from "../sandbox/docker.ts";
 
 /**
  * Guard 1 (B9 guard chain), the exfiltration check: credential-shaped content in
@@ -34,6 +34,8 @@ interface Prefixed {
   readonly min: number;
   /** If set, the tail must be exactly `min` characters long. */
   readonly exact?: true;
+  /** S2: if set (only the generic `sk-`), the prefix must start a word. */
+  readonly boundary?: true;
   readonly pattern: string;
 }
 
@@ -57,7 +59,13 @@ const PREFIXED: readonly Prefixed[] = [
     min: 20,
     pattern: "an Anthropic API key",
   },
-  { prefixes: ["sk-"], tail: isKeyChar, min: 20, pattern: "a secret API key" },
+  {
+    prefixes: ["sk-"],
+    tail: isKeyChar,
+    min: 20,
+    boundary: true,
+    pattern: "a secret API key",
+  },
   {
     prefixes: ["xoxb-", "xoxp-"],
     tail: isKeyChar,
@@ -75,14 +83,16 @@ const PREFIXED: readonly Prefixed[] = [
   { prefixes: ["glpat-"], tail: isKeyChar, min: 20, pattern: "a GitLab token" },
 ];
 
-/** True if `prefix` starts a word at `at` in `token` and is followed by a matching tail. */
+/** True if `prefix` at `at` in `token` is followed by a matching tail (and starts a word if it must). */
 function tailMatches(
   token: string,
   at: number,
   length: number,
   p: Prefixed,
 ): boolean {
-  if (at > 0 && isWord(code(token, at - 1))) return false;
+  if (p.boundary === true && at > 0 && isWord(code(token, at - 1))) {
+    return false;
+  }
   let n = 0;
   // Bounded: counts at most one past `min`.
   for (let i = at + length; i < token.length && n <= p.min; i += 1) {
@@ -104,17 +114,20 @@ function prefixedIn(token: string): string | undefined {
   return undefined;
 }
 
-const PEM_END = "PRIVATE KEY-----";
-const PEM_BEGIN = "-----BEGIN";
-/** How far before `PRIVATE KEY-----` its `-----BEGIN` may start (e.g. `-----BEGIN OPENSSH `). */
-const PEM_WINDOW = 48;
+/** S4: the end markers of a PEM and a PGP private key header. */
+const KEY_ENDS = ["PRIVATE KEY-----", "PRIVATE KEY BLOCK-----"];
+const KEY_BEGIN = "-----BEGIN";
+/** How far before an end marker its `-----BEGIN` may start (e.g. `-----BEGIN OPENSSH `). */
+const KEY_WINDOW = 48;
 
-/** A PEM private key header (spans tokens, so checked on the whole text). */
+/** A private key header (spans tokens, so checked on the whole text); linear. */
 function hasPrivateKey(text: string): boolean {
-  for (let at = text.indexOf(PEM_END); at !== -1;) {
-    const begin = text.lastIndexOf(PEM_BEGIN, at);
-    if (begin !== -1 && at - begin <= PEM_WINDOW) return true;
-    at = text.indexOf(PEM_END, at + 1);
+  for (const end of KEY_ENDS) {
+    for (let at = text.indexOf(end); at !== -1;) {
+      const before = text.slice(Math.max(0, at - KEY_WINDOW), at);
+      if (before.includes(KEY_BEGIN)) return true;
+      at = text.indexOf(end, at + 1);
+    }
   }
   return false;
 }
@@ -123,6 +136,8 @@ function hasPrivateKey(text: string): boolean {
 const MIN_VALUE = 8;
 const QUOTES = new Set(["'", '"', "`"]);
 const TRAILING = new Set(["'", '"', "`", ",", ";", ")", "}", "]"]);
+/** Pair separators; a value also ends at `&` (a URL query). */
+const SEPARATORS = new Set(["=", ":"]);
 
 /** `text` without leading quotes and trailing quotes or punctuation. */
 function unquoted(text: string): string {
@@ -155,22 +170,63 @@ function keyName(left: string): string {
 const isSecretValue = (value: string): boolean =>
   value.length >= MIN_VALUE && !value.startsWith("$");
 
-/** `NAME=value` or `NAME: value` (value in the next token) with a credential-shaped NAME. */
-function pairAt(tokens: readonly string[], i: number): boolean {
-  const token = tokens[i] ?? "";
-  const eq = token.indexOf("=");
-  const colon = token.indexOf(":");
-  const at = eq === -1 ? colon : colon === -1 ? eq : Math.min(eq, colon);
-  if (at <= 0) return false;
-  const name = keyName(token.slice(0, at));
-  if (name === "" || !CREDENTIAL_KEY.test(name)) return false;
-  const rest = token.slice(at + 1);
-  const value = rest === "" && at === colon ? (tokens[i + 1] ?? "") : rest;
-  return isSecretValue(unquoted(value));
+const isPair = (name: string, value: string): boolean =>
+  isCredentialKey(keyName(name)) && isSecretValue(unquoted(value));
+
+/** The part of `token` after its last separator. */
+function lastSegment(token: string): string {
+  let at = token.length;
+  while (at > 0 && !SEPARATORS.has(token.charAt(at - 1))) at -= 1;
+  return token.slice(at);
 }
 
+/** The part of `token` from `from` up to the next separator or `&`. */
+function valueFrom(token: string, from: number): string {
+  let end = from;
+  while (end < token.length) {
+    const c = token.charAt(end);
+    if (SEPARATORS.has(c) || c === "&") break;
+    end += 1;
+  }
+  return token.slice(from, end);
+}
+
+/**
+ * S1: a `NAME=value` or `NAME: value` pair with a credential-shaped NAME at token `i`,
+ * at any of its separators (each name runs back only to the previous separator, so
+ * the walk is linear). A separator that ends the token takes its value from the next
+ * token, one that starts it its name from the previous token: so `NAME = v`,
+ * `NAME= v`, `NAME := v`, `{"token" : "v"}` and `?access_token=v&password=v` match.
+ */
+function pairAt(tokens: readonly string[], i: number): boolean {
+  const token = tokens[i] ?? "";
+  const previous = lastSegment(tokens[i - 1] ?? "");
+  const next = valueFrom(tokens[i + 1] ?? "", 0);
+  let segment = 0;
+  for (let at = 0; at < token.length; at += 1) {
+    if (!SEPARATORS.has(token.charAt(at))) continue;
+    // A run of separators (`:=`) is one separator.
+    let after = at + 1;
+    while (after < token.length && SEPARATORS.has(token.charAt(after))) {
+      after += 1;
+    }
+    const left = at === 0 ? previous : token.slice(segment, at);
+    const value = after === token.length ? next : valueFrom(token, after);
+    if (isPair(left, value)) return true;
+    segment = after;
+    at = after - 1;
+  }
+  return false;
+}
+
+/** S3: what is scanned: no invisible or format characters, then NFKC. */
+const IGNORED = /[\p{Default_Ignorable_Code_Point}\p{Cf}]/u;
+const scanned = (text: string): string =>
+  text.split(IGNORED).join("").normalize("NFKC");
+
 /** The pattern class of the first credential-shaped content in `text`, if any. */
-function credentialPattern(text: string): string | undefined {
+function credentialPattern(raw: string): string | undefined {
+  const text = scanned(raw);
   if (hasPrivateKey(text)) return "a private key";
   const tokens = text.split(/\s+/u);
   for (const [i, token] of tokens.entries()) {
@@ -192,7 +248,7 @@ function strings(value: unknown): string[] {
  * The first input field (in key order) with credential-shaped content, and its
  * pattern class: a known token prefix, a PEM private key, or a `NAME=value` /
  * `NAME: value` pair whose NAME matches the sandbox's CREDENTIAL_KEY and whose
- * value has at least MIN_VALUE characters. Pure and total for JSON snapshots.
+ * value has at least MIN_VALUE characters. Scans a normalized copy (S3); pure and total for JSON snapshots.
  */
 export function credentialIn(
   fields: Readonly<Record<string, unknown>>,
