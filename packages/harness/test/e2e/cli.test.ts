@@ -26,6 +26,8 @@ import {
   contextDigest,
   deriveMessages,
   openSessionLog,
+  permissionAnswered,
+  permissionAsked,
   type ToolSpec,
 } from "../../src/index.ts";
 
@@ -322,6 +324,7 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
     derivedDigest: recorded,
     recordedDigest: recorded,
     events: events.length,
+    permissionFaults: [],
   });
   expect(recorded).toMatch(/^[0-9a-f]{64}$/);
 }
@@ -509,7 +512,10 @@ describe("helmwright CLI (e2e)", () => {
         // Replay never asks: it re-derives the context from the logged answer.
         const replay = cli("replay", out.runId, "--state-dir", stateDir);
         expect(replay.status, replay.stderr).toBe(0);
-        expect(JSON.parse(replay.stdout)).toMatchObject({ match: true });
+        expect(JSON.parse(replay.stdout)).toMatchObject({
+          match: true,
+          permissionFaults: [],
+        });
       }
     },
   );
@@ -687,6 +693,42 @@ describe("helmwright CLI (e2e)", () => {
       expect(tool?.text).toContain("nobody present");
       expect(tool?.text).not.toContain("unknown action");
       expectReplayMatches(out.runId, events);
+    },
+  );
+
+  // SF3: replay checks that each approval in the log is bound to what was asked.
+  it(
+    "fails replay on an approval logged without its full view (SF3)",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("deploy.turns.json");
+      expect(status, stderr).toBe(0);
+      const events = expectWellFormedLog(out.runId);
+      const evaluated = events.find((e) => e.type === "permission.evaluated");
+      const { graphId = "", nodeId = "", payload = {} } = evaluated ?? {};
+      const toolCallId = "call-9";
+      const log = openSessionLog(join(stateDir, "session.sqlite"));
+      for (const [i, { type, payload: p }] of [
+        { type: "permission.evaluated", payload: { ...payload, toolCallId } },
+        permissionAsked(toolCallId, "tty", "prompt", "full view"),
+        permissionAnswered(toolCallId, { answer: "approved", by: "tty" }, 300),
+      ].entries()) {
+        log.append({
+          ...{ eventId: `forged-${String(i)}`, graphId, runId: out.runId },
+          ...{ nodeId, type, at: new Date().toISOString() },
+          payload: { ...p },
+        });
+      }
+      log.close();
+      // The context is untouched, so the digest still matches; the binding does not.
+      const replay = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(replay.status, replay.stderr).toBe(3);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        match: true,
+        permissionFaults: [
+          `seq ${String(events.length + 2)}: approval without the full view shown to its end`,
+        ],
+      });
     },
   );
 

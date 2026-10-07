@@ -149,6 +149,7 @@ export {
   permissionAsked,
   permissionEvents,
 } from "./permission/events.ts";
+export { permissionFaults } from "./permission/faults.ts";
 export type {
   Presence,
   PresenceAnswer,

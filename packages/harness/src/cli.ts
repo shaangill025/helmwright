@@ -16,8 +16,9 @@ const USAGE =
   "       cli.ts reap --state-dir <dir>";
 
 /**
- * run: 0 completed, 2 incomplete, 1 failed; replay: 0 match, 3 mismatch,
- * 4 never terminated; reap: 0, 1 if anything could not be reaped; 64 usage.
+ * run: 0 completed, 2 incomplete, 1 failed; replay: 0 match, 3 mismatch (the
+ * context digest differs or `permissionFaults` is not empty), 4 never terminated;
+ * reap: 0, 1 if anything could not be reaped; 64 usage.
  */
 const EXIT = {
   ok: 0,
@@ -93,7 +94,8 @@ async function main(args: readonly string[]): Promise<number> {
       const result = replayRun(target, stateDir);
       console.log(jsonLine(result));
       if (!result.terminated) return EXIT.unterminated;
-      return result.match ? EXIT.ok : EXIT.mismatch;
+      const bound = result.permissionFaults.length === 0;
+      return result.match && bound ? EXIT.ok : EXIT.mismatch;
     }
     const controller = new AbortController();
     const cancel = () => {
