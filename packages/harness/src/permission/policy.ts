@@ -201,7 +201,10 @@ export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
 const RANK: readonly PermissionTier[] = ["allow", "ask", "alwaysAsk", "deny"];
 const MAX_TEXT = 4096;
 const MAX_BODY = 65_536;
-const SETTING = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)*$/;
+// Checked per dot-separated segment, so no regex nests quantifiers.
+const SETTING_SEGMENT = /^[a-z][A-Za-z0-9]*$/;
+const isSetting = (s: string) =>
+  s.split(".").every((segment) => SETTING_SEGMENT.test(segment));
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 const isText = (v: unknown, max: number): v is string =>
@@ -209,14 +212,23 @@ const isText = (v: unknown, max: number): v is string =>
 const isPlain = (v: unknown) => isText(v, MAX_TEXT) && !hasControl(v);
 const isList = (v: unknown, item: (x: unknown) => boolean) =>
   Array.isArray(v) && v.length > 0 && v.length <= 1024 && v.every(item);
-const FIELDS: Readonly<Record<Field, (v: unknown) => boolean>> = {
-  text: isPlain,
-  texts: (v) => isList(v, isPlain),
-  args: (v) => isList(v, (x) => isText(x, MAX_BODY) && !x.includes("\0")),
-  body: (v) => isText(v, MAX_BODY) && !hasControl(v, "\t\n\r"),
-  number: (v) => typeof v === "number" && Number.isFinite(v) && v > 0,
-  json: (v) => v !== undefined,
-};
+/** True if `v` is a valid value of the field kind (a switch, not a dynamic lookup). */
+function isField(kind: Field, v: unknown): boolean {
+  switch (kind) {
+    case "text":
+      return isPlain(v);
+    case "texts":
+      return isList(v, isPlain);
+    case "args":
+      return isList(v, (x) => isText(x, MAX_BODY) && !x.includes("\0"));
+    case "body":
+      return isText(v, MAX_BODY) && !hasControl(v, "\t\n\r");
+    case "number":
+      return typeof v === "number" && Number.isFinite(v) && v > 0;
+    case "json":
+      return v !== undefined;
+  }
+}
 
 /** The input's fields if it has exactly the action's fields, all valid. */
 function parseInput(
@@ -232,7 +244,7 @@ function parseInput(
     keys.length === Object.keys(fields).length &&
     keys.every((key) => {
       const kind = Object.hasOwn(fields, key) ? fields[key] : undefined;
-      return kind !== undefined && FIELDS[kind](record[key]);
+      return kind !== undefined && isField(kind, record[key]);
     });
   return valid ? record : undefined;
 }
@@ -352,7 +364,7 @@ function factsFor(
   ) {
     ring0 = "path";
   } else if (typeof setting === "string") {
-    if (setting.length > 128 || !SETTING.test(setting)) {
+    if (setting.length > 128 || !isSetting(setting)) {
       throw new TypeError("invalid setting name");
     }
     const folded = caseFold(setting);
