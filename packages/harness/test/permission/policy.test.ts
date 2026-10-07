@@ -11,21 +11,27 @@ import {
   validatePermissionPolicy,
   type PermissionPolicy,
 } from "@helmwright/schema";
+import type { PermissionVerdict } from "../../src/index.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   ALWAYS_ASK_ACTIONS,
   DEFAULT_PERMISSION_POLICY as BASE,
   PERMISSION_ONLY_ACTIONS,
   RING0_PATHS,
+  RING0_SETTINGS,
   evaluate,
   isRing0Path,
   resolvePolicy,
+  ring0LinkTargets,
 } from "../../src/index.ts";
 
 let worktree: string;
 beforeAll(() => {
   worktree = join(mkdtempSync(join(tmpdir(), "helmwright-policy-")), "wt");
   mkdirSync(join(worktree, "src", "gh", "workflows"), { recursive: true });
+  mkdirSync(join(worktree, "packages", "harness", "src", "loop"), {
+    recursive: true,
+  });
   for (const file of ["a.ts", "pkg.json"]) {
     writeFileSync(join(worktree, "src", file), "");
   }
@@ -138,8 +144,17 @@ describe("evaluate with the default policy", () => {
     ["config.set", set("security.sensorSet"), "alwaysAsk", R0_SETTING],
     // The worktree root itself: not inside it, and not a Ring 0 path.
     ["fs.read", p("."), "ask", "fs.read.outside"],
-    ["fs.edit", p("/workspace"), "ask", "fs.edit.outside"],
     ["fs.delete", p("/workspace/"), "alwaysAsk", "always-ask.delete-outside"],
+    // S5: an existing directory cannot be checked file by file, so it counts as Ring 0.
+    ["fs.edit", p("/workspace"), "alwaysAsk", R0_PATH],
+    ["fs.delete", p("packages/harness/src"), "alwaysAsk", R0_PATH],
+    ["fs.edit", p("src"), "alwaysAsk", R0_PATH],
+    [
+      "spend.raiseCap",
+      { capUsd: 1000 },
+      "alwaysAsk",
+      "always-ask.spend.raiseCap",
+    ],
   ])("%s %j → %s (%s)", (action, input, tier, ruleId) => {
     expect(verdict(action, input)).toEqual({ tier, ruleId });
   });
@@ -151,7 +166,7 @@ describe("evaluate with the default policy", () => {
     expect(target?.value).toMatch(/\/wt\/src\/a\.ts$/);
   });
 
-  it.each([
+  it.each<[string, unknown]>([
     ["shell", x("ls")],
     ["__proto__", {}],
     ["toString", {}],
@@ -169,7 +184,20 @@ describe("evaluate with the default policy", () => {
     ["config.set", set("Bad Name")],
     ["spend.raiseCap", { capUsd: -1 }],
     ["spend.raiseCap", { capUsd: Number.POSITIVE_INFINITY }],
+    ["spend.raiseCap", { capUsd: 1000.01 }],
     ["commit", commit(branch)],
+    // S4: invisible characters, whitespace, and refs that are not plain branch names.
+    ["push", to("git\u202ehub.com")],
+    ["push", to("origin main")],
+    ["deps.add", { packages: ["left\u202epad"] }],
+    ["config.set", set("permissions\u200b")],
+    ...`+main:main --force a..b main.lock main/ main. ma\tin a@{1} a\\b a~1 a^ a? a* a[b
+      refs/heads/.x a//b /main @ main:x`
+      .split(/[ \n]+/)
+      .flatMap((ref) => [
+        ["push", to("origin", ref)] as [string, unknown],
+        ["commit", commit(ref, "src/a.ts")] as [string, unknown],
+      ]),
   ])("denies the unknown action or invalid input %s %j", (action, input) => {
     expect(verdict(action, input).tier).toBe("deny");
   });
@@ -365,7 +393,7 @@ describe("resolvePolicy", () => {
     ["ring0Paths", "docs/**"],
     ["ring0Settings", "friction.defaultIntensity"],
   ] as const)("accepts an override whose %s adds %j", (key, item) => {
-    const override = { ...BASE, [key]: [...BASE[key], item] };
+    const override = { ...BASE, version: "p-2", [key]: [...BASE[key], item] };
     expect(resolvePolicy(BASE, override)[key]).toContain(item);
   });
 
@@ -389,5 +417,227 @@ describe("resolvePolicy", () => {
       tier: "deny",
       ruleId: "deploy.never",
     });
+  });
+});
+
+describe("evaluate on hostile requests (B9a-4)", () => {
+  const rule = (input: unknown, extra: Record<string, unknown> = {}) =>
+    evaluate(BASE, {
+      action: "fs.edit",
+      input,
+      worktree,
+      runId: "run_01",
+      ...extra,
+    });
+  const hostile = {
+    toString(): string {
+      throw new Error("hostile toString");
+    },
+  };
+
+  it.each([
+    [
+      "a throwing getter",
+      () =>
+        rule({
+          get path(): string {
+            throw new Error("getter");
+          },
+        }),
+    ],
+    [
+      "a Proxy whose ownKeys throws",
+      () =>
+        rule(
+          new Proxy(p("src/a.ts"), {
+            ownKeys() {
+              throw new Error("ownKeys");
+            },
+          }),
+        ),
+    ],
+    [
+      "a sparse array in paths",
+      () => {
+        const paths = ["src/a.ts"];
+        paths[2] = "src/a.ts";
+        const request = { action: "commit", input: { ref: branch, paths } };
+        return evaluate(BASE, { ...request, worktree, runId: "run_01" });
+      },
+    ],
+    [
+      "a thrown object with a hostile toString",
+      () => {
+        // The value thrown has a toString that throws too.
+        const request = {
+          action: "fs.edit",
+          input: p("src/a.ts"),
+          worktree,
+          get runId(): string {
+            throw hostile as unknown as Error;
+          },
+        };
+        return evaluate(BASE, request);
+      },
+    ],
+    ["a Symbol runId", () => rule(p("src/a.ts"), { runId: Symbol("r") })],
+    ["a non-string worktree", () => rule(p("src/a.ts"), { worktree: 1 })],
+    ["a BigInt in the input", () => rule({ path: 1n })],
+    [
+      "an input over 256 KiB (N4)",
+      () => {
+        const argv = ["echo", ...Array<string>(5).fill("a".repeat(60_000))];
+        const request = { action: "execute", input: { argv }, runId: "r" };
+        return evaluate(BASE, { ...request, worktree });
+      },
+    ],
+  ])("denies %s without throwing", (_, run) => {
+    let result: PermissionVerdict | undefined;
+    expect(() => (result = run())).not.toThrow();
+    expect(result?.tier).toBe("deny");
+    expect(result?.reason).not.toMatch(/hostile|getter|ownKeys/);
+  });
+
+  it("reads the input once and returns what it ruled on", () => {
+    let count = 0;
+    const input = {
+      get path() {
+        count += 1;
+        return count === 1 ? "src/a.ts" : "package.json";
+      },
+    };
+    const result = rule(input);
+    expect(count).toBe(1);
+    expect(result.tier).toBe("allow");
+    expect(result.input).toEqual({ path: "src/a.ts" });
+    expect(Object.isFrozen(result.input)).toBe(true);
+    expect(input.path).toBe("package.json");
+  });
+
+  it("escapes an unknown action name and never returns its raw characters", () => {
+    const request = { action: "dep\u202eloy\u0007", input: {}, runId: "r" };
+    const { tier, reason } = evaluate(BASE, { ...request, worktree });
+    expect(tier).toBe("deny");
+    expect(reason).not.toContain("\u202e");
+    expect(reason).not.toContain("\u0007");
+    expect(reason).toContain("\\u{202e}");
+  });
+
+  it("keeps fs error text, which may name the worktree, out of the reason (N3)", () => {
+    const request = { action: "fs.read", input: p("a"), runId: "r" };
+    const bad = join(worktree, "x\0y");
+    const { tier, reason } = evaluate(BASE, { ...request, worktree: bad });
+    expect(tier).toBe("deny");
+    expect(reason).not.toContain(worktree);
+    expect(reason).toMatch(/^fs\.read path rejected(: [A-Z_]+)?$/);
+  });
+
+  it("never allows an edit through an upper-cased worktree path", () => {
+    const path = `${worktree.toUpperCase()}/package.json`;
+    expect(verdict("fs.edit", p(path)).tier).not.toBe("allow");
+  });
+});
+
+describe("targets show the payload (S3)", () => {
+  const target = (action: string, input: unknown) =>
+    evaluate(BASE, { action, input, worktree, runId: "r" }).target;
+
+  it("shows the spend cap", () => {
+    expect(target("spend.raiseCap", { capUsd: 50 })).toEqual({
+      kind: "setting",
+      value: "spend.cap",
+      detail: "50 USD",
+    });
+  });
+
+  it("shows a bounded, escaped config value and comment body", () => {
+    expect(target("config.set", set("ui.theme", "dark"))?.detail).toBe(
+      '"dark"',
+    );
+    const long = target("config.set", set("ui.theme", { a: "x".repeat(900) }));
+    expect(Array.from(long?.detail ?? "").length).toBeLessThanOrEqual(512);
+    expect(long?.detail).toMatch(/…\[truncated\]$/);
+    const body = {
+      destination: "github.com",
+      body: `ok\u202e\n${"y".repeat(900)}`,
+    };
+    const shown = target("comment", body);
+    expect(shown?.value).toBe("github.com");
+    expect(Array.from(shown?.detail ?? "").length).toBeLessThanOrEqual(512);
+    expect(shown?.detail).toMatch(/^ok\\u\{202e\}\\u\{a\}y/);
+  });
+});
+
+describe("Ring 0 exports are frozen (S2)", () => {
+  it("freezes the floor sets and the default policy, and a mutation cannot drop push", () => {
+    for (const list of [ALWAYS_ASK_ACTIONS, RING0_PATHS, RING0_SETTINGS]) {
+      expect(Object.isFrozen(list)).toBe(true);
+    }
+    expect(Object.isFrozen(BASE)).toBe(true);
+    expect(Object.isFrozen(BASE.rules)).toBe(true);
+    for (const r of BASE.rules) expect(Object.isFrozen(r)).toBe(true);
+    expect(() => (ALWAYS_ASK_ACTIONS as unknown as string[]).splice(0)).toThrow(
+      TypeError,
+    );
+    expect(() => (BASE.alwaysAsk as string[]).splice(0)).toThrow(TypeError);
+    expect(() => (BASE.rules as unknown[]).unshift({})).toThrow(TypeError);
+    expect(verdict("push", to("origin")).tier).toBe("alwaysAsk");
+  });
+});
+
+describe("pre-existing Ring 0 symlinks (#26)", () => {
+  it("lists the worktree paths that Ring 0 links resolve to", () => {
+    const targets = ring0LinkTargets(worktree, RING0_PATHS);
+    expect(targets).toEqual(
+      expect.arrayContaining([
+        "src/pkg.json/**",
+        "src/missing.js/**",
+        "src/gh/**",
+      ]),
+    );
+    expect(targets).not.toContain("src/a.ts/**");
+  });
+
+  it("treats the run's extra Ring 0 paths as Ring 0", () => {
+    const extraRing0Paths = ring0LinkTargets(worktree, RING0_PATHS);
+    const input = commit(branch, "src/pkg.json");
+    const request = { action: "commit", input, worktree, runId: "run_01" };
+    expect(evaluate(BASE, request).tier).toBe("allow");
+    expect(evaluate(BASE, { ...request, extraRing0Paths })).toMatchObject({
+      tier: "alwaysAsk",
+      ruleId: R0_PATH,
+    });
+    const workflow = { ...request, input: p("src/gh/workflows/ci.yml") };
+    expect(
+      evaluate(BASE, { ...workflow, action: "fs.edit", extraRing0Paths }).tier,
+    ).toBe("alwaysAsk");
+  });
+});
+
+describe("resolvePolicy (B9a-4)", () => {
+  it("rejects an override with the base's version but other content (N2)", () => {
+    const change = { alwaysAsk: [...BASE.alwaysAsk, "execute"] };
+    expect(() => resolvePolicy(BASE, { ...BASE, ...change })).toThrow(
+      /same version/,
+    );
+    const reordered = Object.fromEntries(Object.entries(BASE).reverse());
+    expect(resolvePolicy(BASE, reordered)).toEqual(BASE);
+  });
+
+  it("rejects an override that trades a deny rule for always-ask", () => {
+    const deny = {
+      id: "deps.deny",
+      action: "deps.add",
+      scope: "any",
+      tier: "deny",
+    };
+    const base = { ...BASE, rules: [deny, ...BASE.rules] } as PermissionPolicy;
+    const override = {
+      ...BASE,
+      version: "project-2",
+      alwaysAsk: [...BASE.alwaysAsk, "deps.add"],
+    };
+    expect(() => resolvePolicy(base, override)).toThrow(RangeError);
+    expect(() => resolvePolicy(base, override)).toThrow(/relaxes deps\.add/);
   });
 });

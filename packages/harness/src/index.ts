@@ -121,6 +121,7 @@ export {
   RING0_SETTINGS,
   evaluate,
   resolvePolicy,
+  ring0LinkTargets,
 } from "./permission/policy.ts";
 export type { NormalizedPath } from "./permission/normalize.ts";
 export {

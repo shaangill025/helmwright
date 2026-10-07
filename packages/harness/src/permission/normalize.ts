@@ -36,7 +36,7 @@ export const caseFold = (text: string): string =>
   text.toUpperCase().toLowerCase();
 
 /** Unicode format characters (bidi, zero-width, BOM, soft hyphen) and line/paragraph separators. */
-const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+export const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}]/u;
 
 /**
  * `futureRealpath`, except that a dangling symlink is followed (a write would follow

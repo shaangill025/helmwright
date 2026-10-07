@@ -1,4 +1,5 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import {
   validatePermissionPolicy,
@@ -8,6 +9,7 @@ import {
   type PermissionTier,
 } from "@helmwright/schema";
 import {
+  INVISIBLE,
   caseFold,
   hasControl,
   isDependencyInstall,
@@ -64,53 +66,91 @@ function lexical(
     : { base, relative: posix.relative(base, host) };
 }
 
-/** One action call to rule on. `action` and `input` are untrusted. */
+/** One action call to rule on. Every field is untrusted and read once. */
 export interface PermissionRequest {
   readonly action: string;
   readonly input: unknown;
   /** Host path of the run's worktree, mounted at /workspace in the sandbox. */
   readonly worktree: string;
   readonly runId: string;
+  /** The run's extra Ring 0 globs: `ring0LinkTargets` of the worktree at run start. */
+  readonly extraRing0Paths?: readonly string[];
 }
 
 export interface PermissionTarget {
   readonly kind: "path" | "ref" | "remote" | "setting" | "argv";
-  /** Normalized: a path is its resolved host path. */
+  /** Normalized (a path is its resolved host path) and escaped. */
   readonly value: string;
+  /** The payload to show: the spend cap, a config value or a comment body; bounded and escaped. */
+  readonly detail?: string;
 }
 
 export interface PermissionVerdict {
   readonly tier: PermissionTier;
   readonly ruleId: string;
+  /** Escaped: no control, format or separator characters. */
   readonly reason: string;
   /** Absent when the policy, action or input was invalid. */
   readonly target?: PermissionTarget;
+  /**
+   * The frozen snapshot of the input that was ruled on. Handlers act on it (and on a
+   * path's `target.value`), never on the request. Absent with `target`.
+   */
+  readonly input?: Readonly<Record<string, unknown>>;
 }
 
-/** `text` has no control characters, `body` allows tab and newlines, `args` only bars NUL. */
-type Field = "text" | "texts" | "args" | "body" | "number" | "json";
+/** Freezes `value` and everything reachable from it. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const item of Object.values(value) as unknown[]) deepFreeze(item);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/** Control (C0, DEL, C1), format, line and paragraph separator, and lone surrogate code points. */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
+/** Shown text: every unprintable code point becomes `\u{…}`, so it cannot hide or reorder text. */
+const escape = (text: string) =>
+  text.replace(
+    UNPRINTABLE,
+    (c) => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`,
+  );
+const MAX_DETAIL = 512;
+const TRUNCATED = "…[truncated]";
+/** Escaped, then at most MAX_DETAIL code points, the last ones replaced by a marker if cut. */
+function bounded(text: string): string {
+  const points = Array.from(escape(text));
+  return points.length <= MAX_DETAIL
+    ? points.join("")
+    : points.slice(0, MAX_DETAIL - TRUNCATED.length).join("") + TRUNCATED;
+}
+
+/** Text fields bar control and invisible characters; `word` and `ref` also whitespace; `body` allows tab and newlines; `args` only bars NUL. */
+type Field =
+  "text" | "word" | "ref" | "texts" | "args" | "body" | "usd" | "json";
 type Spec = readonly [
   PermissionTarget["kind"],
   Readonly<Record<string, Field>>,
 ];
 
-const egress = { destination: "text", ref: "text" } as const;
+const egress = { destination: "word", ref: "ref" } as const;
 /** Every typed action: its target kind and its exact input fields (Q6). */
 const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   execute: ["argv", { argv: "args" }],
   "fs.read": ["path", { path: "text" }],
   "fs.edit": ["path", { path: "text" }],
   "fs.delete": ["path", { path: "text" }],
-  commit: ["ref", { ref: "text", paths: "texts" }],
+  commit: ["ref", { ref: "ref", paths: "texts" }],
   "deps.add": ["argv", { packages: "texts" }],
   "config.set": ["setting", { setting: "text", value: "json" }],
-  "spend.raiseCap": ["setting", { capUsd: "number" }],
+  "spend.raiseCap": ["setting", { capUsd: "usd" }],
   push: ["remote", egress],
   "pr.open": ["remote", egress],
   "pr.merge": ["remote", egress],
-  comment: ["remote", { destination: "text", body: "body" }],
-  publish: ["remote", { destination: "text" }],
-  deploy: ["remote", { destination: "text" }],
+  comment: ["remote", { destination: "word", body: "body" }],
+  publish: ["remote", { destination: "word" }],
+  deploy: ["remote", { destination: "word" }],
 };
 
 /** Typed actions without an M1 handler; they exist so the policy can rule on them (Q6). */
@@ -122,7 +162,7 @@ export const PERMISSION_ONLY_ACTIONS = (
 type NonEmpty<T> = readonly [T, ...T[]];
 
 /** Q51 and the owner's B9 decisions (2026-10-06): always ask, in every governance mode. */
-export const ALWAYS_ASK_ACTIONS: NonEmpty<PermissionAction> = [
+const FLOOR_ACTIONS: NonEmpty<PermissionAction> = deepFreeze([
   "push",
   "pr.open",
   "pr.merge",
@@ -130,10 +170,10 @@ export const ALWAYS_ASK_ACTIONS: NonEmpty<PermissionAction> = [
   "publish",
   "deploy",
   "spend.raiseCap",
-];
+]);
 
 /** Always-ask to edit in every target repo until B6 makes the set per-project. */
-export const RING0_PATHS: NonEmpty<string> = [
+const FLOOR_PATHS: NonEmpty<string> = deepFreeze([
   "packages/harness/src/loop/**",
   "packages/harness/src/log/**",
   "packages/harness/src/permission/**",
@@ -157,10 +197,10 @@ export const RING0_PATHS: NonEmpty<string> = [
   "helmwright.config.json",
   ".npmrc",
   ".pnpmfile.cjs",
-];
+]);
 
 /** The Ring 0 settings of design 08, every permissions setting (owner, 2026-10-06), and the spend cap (Q51). */
-export const RING0_SETTINGS: NonEmpty<string> = [
+const FLOOR_SETTINGS: NonEmpty<string> = deepFreeze([
   "intake.classification",
   "permissions",
   "harnessLoop.selfImprovementModel",
@@ -169,7 +209,14 @@ export const RING0_SETTINGS: NonEmpty<string> = [
   "security.sensorSet",
   "ontology.objectModel",
   "spend.cap",
-];
+]);
+
+// The exports are frozen copies; the floor checks use the private originals above.
+export const ALWAYS_ASK_ACTIONS: NonEmpty<PermissionAction> = deepFreeze([
+  ...FLOOR_ACTIONS,
+]);
+export const RING0_PATHS: NonEmpty<string> = deepFreeze([...FLOOR_PATHS]);
+export const RING0_SETTINGS: NonEmpty<string> = deepFreeze([...FLOOR_SETTINGS]);
 
 const rule = (
   id: string,
@@ -179,7 +226,7 @@ const rule = (
 ): PermissionRule => ({ id, action, scope, tier });
 
 /** B9 initial policy. Deletes outside the worktree and Ring 0 edits are in the always-ask floor. */
-export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
+export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = deepFreeze({
   version: "default-1",
   governance: "tiered",
   rules: [
@@ -192,15 +239,18 @@ export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = {
     rule("commit.run-branch", "commit", "runBranch", "allow"),
     rule("deps.add", "deps.add", "any", "ask"),
   ],
-  alwaysAsk: [...ALWAYS_ASK_ACTIONS],
-  ring0Paths: [...RING0_PATHS],
-  ring0Settings: [...RING0_SETTINGS],
-};
+  alwaysAsk: [...FLOOR_ACTIONS],
+  ring0Paths: [...FLOOR_PATHS],
+  ring0Settings: [...FLOOR_SETTINGS],
+});
 
 /** Strictness order: an override may only move a decision rightwards. */
 const RANK: readonly PermissionTier[] = ["allow", "ask", "alwaysAsk", "deny"];
 const MAX_TEXT = 4096;
 const MAX_BODY = 65_536;
+const MAX_CAP_USD = 1000;
+/** The whole input, as JSON (N4). */
+const MAX_INPUT_BYTES = 262_144;
 // Checked per dot-separated segment, so no regex nests quantifiers.
 const SETTING_SEGMENT = /^[a-z][A-Za-z0-9]*$/;
 const isSetting = (s: string) =>
@@ -209,7 +259,23 @@ const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 const isText = (v: unknown, max: number): v is string =>
   typeof v === "string" && v !== "" && v.length <= max;
-const isPlain = (v: unknown) => isText(v, MAX_TEXT) && !hasControl(v);
+const isPlain = (v: unknown): v is string =>
+  isText(v, MAX_TEXT) && !hasControl(v) && !INVISIBLE.test(v);
+const isWord = (v: unknown): v is string => isPlain(v) && !/\s/u.test(v);
+/** A name git check-ref-format accepts that is not an option or a refspec (no `-`, `:` or `+`). */
+const isRef = (v: unknown): boolean =>
+  isWord(v) &&
+  v !== "@" &&
+  !v.startsWith("-") &&
+  !/[:+\\~^?*[]/.test(v) &&
+  !v.includes("..") &&
+  !v.includes("@{") &&
+  !v.endsWith(".") &&
+  v
+    .split("/")
+    .every(
+      (part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+    );
 const isList = (v: unknown, item: (x: unknown) => boolean) =>
   Array.isArray(v) && v.length > 0 && v.length <= 1024 && v.every(item);
 /** True if `v` is a valid value of the field kind (a switch, not a dynamic lookup). */
@@ -217,17 +283,31 @@ function isField(kind: Field, v: unknown): boolean {
   switch (kind) {
     case "text":
       return isPlain(v);
+    case "word":
+      return isWord(v);
+    case "ref":
+      return isRef(v);
     case "texts":
       return isList(v, isPlain);
     case "args":
       return isList(v, (x) => isText(x, MAX_BODY) && !x.includes("\0"));
     case "body":
       return isText(v, MAX_BODY) && !hasControl(v, "\t\n\r");
-    case "number":
-      return typeof v === "number" && Number.isFinite(v) && v > 0;
+    case "usd":
+      return typeof v === "number" && v > 0 && v <= MAX_CAP_USD;
     case "json":
       return v !== undefined;
   }
+}
+
+/** A plain-data copy of `value`, read once; undefined if it is not JSON or over MAX_INPUT_BYTES. */
+function snapshot(value: unknown): unknown {
+  // Undefined at run time for undefined, a function or a symbol.
+  const json = JSON.stringify(value) as string | undefined;
+  if (json === undefined || Buffer.byteLength(json) > MAX_INPUT_BYTES) {
+    return undefined;
+  }
+  return JSON.parse(json);
 }
 
 /** The input's fields if it has exactly the action's fields, all valid. */
@@ -265,7 +345,7 @@ const union = (own: readonly string[], floor: readonly string[]) => [
 ];
 
 function floorRule(policy: PermissionPolicy, f: Facts): [string, string] | [] {
-  const alwaysAsk = union(policy.alwaysAsk, ALWAYS_ASK_ACTIONS);
+  const alwaysAsk = union(policy.alwaysAsk, FLOOR_ACTIONS);
   for (const action of [f.action, f.requested]) {
     if (alwaysAsk.includes(action)) {
       return [`always-ask.${action}`, `${action} is in the always-ask set`];
@@ -303,6 +383,13 @@ function decide(policy: PermissionPolicy, f: Facts): PermissionVerdict {
   return { tier: "ask", ruleId: "default.ask", reason: "no rule matches" };
 }
 
+/** The request's own values, each read once. */
+interface Run {
+  readonly worktree: string;
+  readonly runId: string;
+  readonly extraRing0Paths: readonly string[];
+}
+
 /**
  * Normalizes the target and derives the facts.
  * @throws PathError if a path cannot be normalized; TypeError on an invalid setting.
@@ -311,10 +398,13 @@ function factsFor(
   policy: PermissionPolicy,
   requested: PermissionAction,
   fields: Readonly<Record<string, unknown>>,
-  request: PermissionRequest,
+  request: Run,
 ): { facts: Facts; target: PermissionTarget } {
-  const { argv, path, paths, setting, ref } = fields;
-  const ring0Paths = union(policy.ring0Paths, RING0_PATHS);
+  const { argv, body, capUsd, path, paths, setting, ref } = fields;
+  const ring0Paths = union(
+    [...policy.ring0Paths, ...request.extraRing0Paths],
+    FLOOR_PATHS,
+  );
   // The worktree root ("") is not itself a Ring 0 path; it is outside the worktree scope.
   const isRing0 = ({ relative }: { relative: string | undefined }) =>
     relative !== undefined &&
@@ -340,11 +430,12 @@ function factsFor(
   const runBranch = `helmwright/run/${request.runId}`;
   const resolved = typeof path === "string" ? normalize(path) : undefined;
   let ring0: Facts["ring0"];
+  // An existing directory cannot be checked file by file, so editing or deleting it counts as Ring 0.
   if (
     requested !== "fs.read" &&
     typeof path === "string" &&
     resolved !== undefined &&
-    isRing0Write(path, resolved)
+    (isDirectory(resolved.real) || isRing0Write(path, resolved))
   ) {
     ring0 = "path";
   } else if (
@@ -372,7 +463,7 @@ function factsFor(
     const overlaps = (s: string) =>
       folded === s || folded.startsWith(s + ".") || s.startsWith(folded + ".");
     if (
-      union(policy.ring0Settings, RING0_SETTINGS).map(caseFold).some(overlaps)
+      union(policy.ring0Settings, FLOOR_SETTINGS).map(caseFold).some(overlaps)
     ) {
       ring0 = "setting";
     }
@@ -386,6 +477,14 @@ function factsFor(
           .filter((s) => typeof s === "string")
           .join(" ")
       : JSON.stringify(list));
+  const detail =
+    requested === "config.set"
+      ? JSON.stringify(fields["value"])
+      : typeof capUsd === "number"
+        ? `${String(capUsd)} USD`
+        : typeof body === "string"
+          ? body
+          : undefined;
   return {
     facts: {
       action: install ? "deps.add" : requested,
@@ -394,29 +493,44 @@ function factsFor(
       onRunBranch: ref === runBranch || ref === `refs/heads/${runBranch}`,
       ring0,
     },
-    target: { kind: ACTIONS[requested][0], value: value || "spend.cap" },
+    target: {
+      kind: ACTIONS[requested][0],
+      value: escape(value || "spend.cap"),
+      ...(detail === undefined ? {} : { detail: bounded(detail) }),
+    },
   };
 }
 
-/** normalizePath threw. The reason keeps only our own message or an fs error code. */
+/** normalizePath's own messages, which name no path. */
+const PATH_MESSAGES = new Set([
+  "path must be non-empty, without control characters",
+  "path or path segment too long",
+  "path does not resolve",
+  "resolved path has control or invisible characters",
+]);
+/** The PathErrors thrown, so the catch can recognize one by identity alone. */
+const pathErrors = new WeakSet<object>();
+
+/** normalizePath threw. The message is an error code, one of PATH_MESSAGES, or empty; never a path. */
 class PathError extends Error {
   constructor(cause: unknown) {
     const code: unknown =
       cause instanceof Error && "code" in cause ? cause.code : undefined;
     super(
-      cause instanceof TypeError
-        ? cause.message
-        : typeof code === "string"
-          ? code
-          : "unexpected error",
+      typeof code === "string" && /^E[A-Z0-9_]{1,63}$/.test(code)
+        ? code
+        : cause instanceof TypeError && PATH_MESSAGES.has(cause.message)
+          ? cause.message
+          : "",
     );
+    pathErrors.add(this);
   }
 }
 
 const deny = (ruleId: string, reason: string): PermissionVerdict => ({
   tier: "deny",
   ruleId,
-  reason,
+  reason: escape(reason),
 });
 
 /** The first problem with a policy, or undefined if it is valid. */
@@ -433,60 +547,91 @@ function policyProblem(policy: unknown): string | undefined {
   return reserved === undefined ? undefined : `rule id ${reserved} is reserved`;
 }
 
+/** Bounded like the schema's lists; each is a Ring 0 glob. */
+const isGlobs = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.length <= 1024 && v.every(isPlain);
+
 /**
  * Rules on one action call. The always-ask floor (the policy's set united with the
  * built-in one, deletes outside the worktree, Ring 0 paths and settings) comes first
  * in every governance mode; then the first matching rule; no match asks. An unknown
- * action, invalid input or invalid policy is denied. Never throws.
+ * action, invalid input or invalid policy is denied. Never throws: each request field
+ * is read once, and the policy and input are ruled on as JSON snapshots.
  */
 export function evaluate(
   policy: PermissionPolicy,
   request: PermissionRequest,
 ): PermissionVerdict {
-  const problem = policyProblem(policy);
-  if (problem !== undefined) return deny("policy.invalid", problem);
-  const action: unknown = request.action;
-  if (typeof action !== "string" || !Object.hasOwn(ACTIONS, action)) {
-    const name = typeof action === "string" ? action.slice(0, 64) : "";
-    return deny(
-      "schema.unknown-action",
-      `unknown action ${JSON.stringify(name)}`,
-    );
-  }
-  const requested = action as PermissionAction;
-  const fields = parseInput(ACTIONS[requested][1], request.input);
-  const invalid = `invalid input for ${requested}`;
-  if (fields === undefined || !RUN_ID.test(request.runId)) {
-    return deny("schema.invalid-input", invalid);
-  }
+  let requested: PermissionAction | undefined;
   try {
-    const { facts, target } = factsFor(policy, requested, fields, request);
-    return { ...decide(policy, facts), target };
-  } catch (error) {
-    // Fail closed: a path that cannot be normalized (even an fs error) is denied.
-    if (error instanceof PathError) {
+    const { action, input, worktree, runId, extraRing0Paths } = request;
+    const rules = snapshot(policy);
+    const problem = policyProblem(rules);
+    if (problem !== undefined) return deny("policy.invalid", problem);
+    // policyProblem validated it.
+    const checked = rules as PermissionPolicy;
+    if (typeof action !== "string" || !Object.hasOwn(ACTIONS, action)) {
+      const name = typeof action === "string" ? action.slice(0, 64) : "";
       return deny(
-        "schema.invalid-input",
-        `${requested} path rejected: ${error.message}`,
+        "schema.unknown-action",
+        `unknown action ${JSON.stringify(name)}`,
       );
     }
-    const why = error instanceof Error ? error.message : String(error);
-    return deny("schema.invalid-input", `${invalid}: ${why}`);
+    requested = action as PermissionAction;
+    const fields = parseInput(ACTIONS[requested][1], snapshot(input));
+    const extra = snapshot(extraRing0Paths ?? []);
+    if (
+      fields === undefined ||
+      typeof worktree !== "string" ||
+      typeof runId !== "string" ||
+      !RUN_ID.test(runId) ||
+      !isGlobs(extra)
+    ) {
+      return deny("schema.invalid-input", `invalid input for ${requested}`);
+    }
+    const run = { worktree, runId, extraRing0Paths: extra };
+    const { facts, target } = factsFor(checked, requested, fields, run);
+    const { tier, ruleId, reason } = decide(checked, facts);
+    const ruled = deepFreeze(fields);
+    return { tier, ruleId, reason: escape(reason), target, input: ruled };
+  } catch (error) {
+    // Fail closed with fixed text: a thrown value is never converted or inspected,
+    // except our own PathError, which is recognized by identity.
+    const action = requested ?? "request";
+    if (typeof error === "object" && error !== null && pathErrors.has(error)) {
+      const { message } = error as PathError;
+      const why = message === "" ? "" : `: ${message}`;
+      return deny("schema.invalid-input", `${action} path rejected${why}`);
+    }
+    return deny("schema.invalid-input", `invalid input for ${action}`);
   }
 }
 
 /**
- * Validates `override` (a whole PermissionPolicy) and returns it if it is at least
- * as strict as `base`: it may add to and tighten the rules and the always-ask,
- * Ring 0 path and Ring 0 setting sets, but never remove from or relax them.
- * @throws TypeError if either policy is invalid; RangeError on a relaxation.
+ * Validates copies of `given` and `untrusted` (a whole PermissionPolicy) and returns the
+ * override's copy if it is at least as strict as the base: it may add to and tighten the
+ * rules and the always-ask, Ring 0 path and Ring 0 setting sets, but never remove from
+ * or relax them. A changed policy needs a new version.
+ * @throws TypeError if either policy is invalid; RangeError on a relaxation, or on the
+ * base's version with other content.
  */
 export function resolvePolicy(
-  base: PermissionPolicy,
-  override: unknown,
+  given: PermissionPolicy,
+  untrusted: unknown,
 ): PermissionPolicy {
+  let copies: [unknown, unknown];
+  try {
+    copies = [structuredClone(given), structuredClone(untrusted)];
+  } catch {
+    throw new TypeError("invalid permission policy: not plain data");
+  }
+  const [base, override] = copies;
   const problem = policyProblem(base) ?? policyProblem(override);
-  if (problem !== undefined || !validatePermissionPolicy(override)) {
+  if (
+    problem !== undefined ||
+    !validatePermissionPolicy(base) ||
+    !validatePermissionPolicy(override)
+  ) {
     throw new TypeError(`invalid permission policy: ${problem ?? ""}`);
   }
   for (const key of ["alwaysAsk", "ring0Paths", "ring0Settings"] as const) {
@@ -515,5 +660,57 @@ export function resolvePolicy(
       }
     }
   }
-  return structuredClone(override);
+  if (
+    override.version === base.version &&
+    canonical(override) !== canonical(base)
+  ) {
+    throw new RangeError(
+      `override has the same version as the base (${base.version}) but other content`,
+    );
+  }
+  return override;
+}
+
+/** JSON with object keys sorted, so equal policies compare equal. */
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, v: unknown) =>
+    typeof v === "object" && v !== null && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        )
+      : v,
+  );
+
+/**
+ * The Ring 0 globs for the worktree paths that existing symlinks at Ring 0 names
+ * resolve to (`package.json` -> `config/pkg.json` gives `config/pkg.json/**`, which
+ * matches the path and everything below it; a link to the worktree root gives `**`).
+ * B9b computes them at run start and passes them as `extraRing0Paths`, so a commit of
+ * the link's target asks. Only directories that a Ring 0 glob or a leading part of
+ * one matches are walked; symlinked directories are not followed.
+ * @throws on an fs error or a link that normalizePath rejects; refuse the run then.
+ */
+export function ring0LinkTargets(
+  worktree: string,
+  ring0Paths: readonly string[],
+): string[] {
+  const root = realpathSync.native(worktree);
+  const prefixes = ring0Paths.flatMap((glob) =>
+    glob.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/")),
+  );
+  const found = new Set<string>();
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const relative = dir === "" ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isSymbolicLink() && isRing0Path(relative, ring0Paths)) {
+        const target = normalizePath(relative, root).relative;
+        if (target !== undefined)
+          found.add(target === "" ? "**" : `${target}/**`);
+      } else if (entry.isDirectory() && isRing0Path(relative, prefixes)) {
+        walk(relative);
+      }
+    }
+  };
+  walk("");
+  return [...found];
 }
