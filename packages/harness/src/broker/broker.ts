@@ -4,11 +4,10 @@ import type {
   ToolResult,
   ToolSpec,
 } from "../loop/types.ts";
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
 import {
   checkWorkspacePaths,
   dockerRunArgs,
+  futureRealpath,
   runInSandbox,
   type SandboxResult,
 } from "../sandbox/docker.ts";
@@ -127,17 +126,6 @@ export function createBroker(context: BrokerContext): Broker {
       return action.handle(call.input, context, signal);
     },
   };
-}
-
-/** Realpath of `path`'s nearest existing ancestor, with the missing rest appended. */
-function futureRealpath(path: string): string {
-  const rest: string[] = [];
-  let existing = resolve(path);
-  while (!existsSync(existing) && dirname(existing) !== existing) {
-    rest.unshift(basename(existing));
-    existing = dirname(existing);
-  }
-  return join(realpathSync.native(existing), ...rest);
 }
 
 /**

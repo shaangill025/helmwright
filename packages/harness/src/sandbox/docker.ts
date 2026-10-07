@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -111,7 +112,7 @@ export interface SandboxDeps {
   readonly buildTimeoutMs?: number;
 }
 
-const CONTAINER_PATH = "/workspace";
+export const CONTAINER_PATH = "/workspace";
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
 const CREDENTIAL_KEY =
   /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY)|^(AWS|ANTHROPIC|GITHUB|GH|NPM|OPENAI)_/;
@@ -157,8 +158,19 @@ function checkArgv(argv: readonly string[]): void {
 }
 
 /** True if `path` is `dir` or inside it (both realpaths). */
-const contains = (dir: string, path: string): boolean =>
+export const contains = (dir: string, path: string): boolean =>
   path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+
+/** Realpath of `path`'s nearest existing ancestor, with the missing rest appended. */
+export function futureRealpath(path: string): string {
+  const rest: string[] = [];
+  let existing = resolve(path);
+  while (!existsSync(existing) && dirname(existing) !== existing) {
+    rest.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  return join(realpathSync.native(existing), ...rest);
+}
 
 /** Returns the realpath of an existing absolute directory, or throws. */
 function realDirectory(field: string, path: string): string {
