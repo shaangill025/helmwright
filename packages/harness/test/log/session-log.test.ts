@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EventValidationError,
   SESSION_LOG_SCHEMA_VERSION,
@@ -294,6 +294,30 @@ describe("transaction", () => {
       {},
     );
     expect(await done).toEqual({ code: 0, stderr: "" });
+  });
+
+  it("refuses every later write once a rollback fails (N-3)", () => {
+    const log = openLog();
+    log.append(input());
+    // The only way to make SQLite's ROLLBACK fail on demand: a stub on the driver,
+    // installed after BEGIN, so the next exec (the ROLLBACK) throws.
+    const spy = vi.spyOn(DatabaseSync.prototype, "exec");
+    try {
+      expect(() =>
+        log.transaction(() => {
+          log.append(input());
+          spy.mockImplementation(() => {
+            throw new Error("disk I/O error");
+          });
+          throw new Error("boom");
+        }),
+      ).toThrow(/rollback failed/);
+    } finally {
+      spy.mockRestore();
+    }
+    // The connection may still hold the open transaction: an append would never commit.
+    expect(() => log.append(input())).toThrow(/rollback failed/);
+    expect(() => log.transaction(() => 1)).toThrow(/rollback failed/);
   });
 });
 

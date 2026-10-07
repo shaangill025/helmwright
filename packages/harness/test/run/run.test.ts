@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  SANDBOX_CLEANUP_FAILED,
+  errorMessage,
   executeRun,
   openSessionLog,
   replayRun,
@@ -241,5 +243,145 @@ describe("executeRun", () => {
     expect(outcome.terminal).toMatchObject({ kind: "failed" });
     expect(outcome.summary).toContain("sandbox cleanup unconfirmed");
     expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("keeps cleanup unconfirmed when the final check throws (S-1)", async () => {
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      () => (call) => {
+        // Desyncs the logged context, so the final derive throws.
+        (call.input as { argv: string[] }).argv[1] = "mutated";
+        return new Promise(() => undefined);
+      },
+      { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
+    );
+    expect(outcome.summary).toContain("sandbox cleanup unconfirmed");
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("refuses appends from a call that settles after the run ended", async () => {
+    const thrown: string[] = [];
+    const { promise: late, resolve: settle } =
+      Promise.withResolvers<undefined>();
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      ({ emit, emitAll }) =>
+        () =>
+          new Promise((done) => {
+            setTimeout(() => {
+              for (const append of [
+                () => {
+                  emit("permission.test", {});
+                },
+                () => {
+                  emitAll([{ type: "permission.test", payload: {} }]);
+                },
+              ]) {
+                try {
+                  append();
+                } catch (error) {
+                  thrown.push(errorMessage(error));
+                }
+              }
+              done({ status: "ok", output: "late" });
+              settle(undefined);
+            }, 200);
+          }),
+      { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
+    );
+    await late;
+    expect(outcome.summary).toContain("sandbox cleanup unconfirmed");
+    expect(thrown).toEqual(["the run has ended", "the run has ended"]);
+    expect(terminated()?.type).toBe("run.terminated");
+  });
+
+  it("commits none of an emitAll batch with an invalid event", async () => {
+    let failure = "";
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      ({ emitAll }) =>
+        () => {
+          try {
+            emitAll([
+              { type: "permission.test", payload: { n: 1 } },
+              { type: "Not A Type", payload: {} },
+            ]);
+          } catch (error) {
+            failure = errorMessage(error);
+          }
+          return ok();
+        },
+    );
+    expect(failure).not.toBe("");
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types).not.toContain("permission.test");
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("ranks a halt above a later failed append (N-4)", async () => {
+    let appends = 0;
+    const full: SessionLog = {
+      append(input) {
+        if (input.type === "permission.test" && ++appends === 1) {
+          throw new Error("database or disk is full (SQLITE_FULL)");
+        }
+        return log.append(input);
+      },
+      transaction: (fn) => log.transaction(fn),
+      events: (query) => log.events(query),
+      lastSeq: () => log.lastSeq(),
+      close: () => {
+        log.close();
+      },
+    };
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      full,
+      ({ emit, halt }) =>
+        () => {
+          halt("halted first");
+          expect(() => {
+            emit("permission.test", {});
+          }).toThrow("SQLITE_FULL");
+          return ok();
+        },
+    );
+    expect(outcome.terminal).toEqual({ kind: "failed", error: "halted first" });
+  });
+
+  it("lets a sandbox cleanup failure override an earlier halt (S6)", async () => {
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      ({ halt }) =>
+        () => {
+          halt("another reason");
+          halt(SANDBOX_CLEANUP_FAILED);
+          halt("a later reason");
+          return ok();
+        },
+    );
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: SANDBOX_CLEANUP_FAILED,
+    });
+  });
+
+  it("rejects an invalid settleMs before run.started (N-5)", async () => {
+    for (const settleMs of [-1, 1.5, Number.NaN, 2 ** 31]) {
+      await expect(
+        run(mutatingEngine(0).engine, true, log, () => ok, { settleMs }),
+      ).rejects.toThrow(RangeError);
+    }
+    expect(log.events()).toEqual([]);
   });
 });

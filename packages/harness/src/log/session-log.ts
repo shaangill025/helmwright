@@ -81,6 +81,7 @@ export interface SessionLog {
    * A Promise-returning `fn` is a type error; at runtime its transaction is
    * rolled back, its rejection is marked handled, and a TypeError is thrown.
    * Anything it does after its first `await` runs outside the transaction.
+   * If its rollback fails, this and every later write throw (N-3).
    */
   transaction<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T;
   events(query?: EventsQuery): Event[];
@@ -172,8 +173,25 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
     return result;
   } catch (error) {
     // SQLite may already have rolled back (e.g. SQLITE_FULL).
-    if (db.isTransaction) db.exec("ROLLBACK");
+    if (db.isTransaction) {
+      try {
+        db.exec("ROLLBACK");
+      } catch (rollback) {
+        throw new RollbackError(rollback, error);
+      }
+    }
     throw error;
+  }
+}
+
+/** A failed ROLLBACK: the connection may still hold the open transaction. */
+class RollbackError extends Error {
+  constructor(rollback: unknown, cause: unknown) {
+    const why = rollback instanceof Error ? rollback.message : "unknown error";
+    super(`session log: rollback failed (${why}); no further writes`, {
+      cause,
+    });
+    this.name = "RollbackError";
   }
 }
 
@@ -193,9 +211,22 @@ function createLog(db: DatabaseSync): SessionLog {
     return seq === null || seq === undefined ? undefined : Number(seq);
   };
 
+  // N-3: after a failed rollback a write could join the stale transaction and never
+  // commit, so every later write throws instead.
+  let poisoned: RollbackError | undefined;
+  const write = <T>(fn: () => T): T => {
+    if (poisoned !== undefined) throw poisoned;
+    try {
+      return inTransaction(db, fn);
+    } catch (error) {
+      if (error instanceof RollbackError) poisoned = error;
+      throw error;
+    }
+  };
+
   return {
     append(input) {
-      return inTransaction(db, () => {
+      return write(() => {
         const seq = (lastSeq() ?? -1) + 1;
         const schemaVersion = EVENT_SCHEMA_VERSION;
         const candidate: unknown = { ...input, schemaVersion, seq };
@@ -235,10 +266,11 @@ function createLog(db: DatabaseSync): SessionLog {
       });
     },
     transaction(fn) {
+      if (poisoned !== undefined) throw poisoned;
       if (db.isTransaction) {
         throw new Error("SessionLog.transaction cannot be nested");
       }
-      return inTransaction(db, fn);
+      return write(fn);
     },
     events(query = {}) {
       const fromSeq = query.fromSeq ?? 0;

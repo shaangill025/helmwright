@@ -11,6 +11,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Event } from "@helmwright/schema";
 import {
   BROKER_TOOLS,
+  SANDBOX_CLEANUP_FAILED,
   checkWorkspace,
   createBroker,
 } from "../broker/broker.ts";
@@ -21,7 +22,12 @@ import {
   deriveMessages,
 } from "../log/messages.ts";
 import { openSessionLog, type SessionLog } from "../log/session-log.ts";
-import { runLoop, validateLimits, type LoopResult } from "../loop/loop.ts";
+import {
+  MAX_LIMIT,
+  runLoop,
+  validateLimits,
+  type LoopResult,
+} from "../loop/loop.ts";
 import { canonicalJson } from "../loop/reminders.ts";
 import { errorMessage, summarize, type Terminal } from "../loop/terminal.ts";
 import {
@@ -161,11 +167,17 @@ export function contextDigest(
 
 /** What a run gives its tool executor once `run.started` is logged. */
 export interface RunHooks {
-  /** Appends a validated event to the run's log; throws if it cannot. */
+  /**
+   * Appends a validated event to the run's log; throws if it cannot. A permission
+   * ruling's entries must use `emitAll`, never one `emit` each.
+   */
   readonly emit: Emit;
   /** Appends validated events in one transaction, all or none; throws if it cannot. */
   readonly emitAll: EmitAll;
-  /** Ends the run as failed with `reason` before its next engine step. */
+  /**
+   * Ends the run as failed with `reason` before its next engine step. The first
+   * reason is kept, except that SANDBOX_CLEANUP_FAILED always wins (S6).
+   */
   readonly halt: (reason: string) => void;
 }
 
@@ -190,7 +202,10 @@ export interface RunSetup {
   readonly signal?: AbortSignal;
   /** Dev-mode desync check before every engine step and at the end. Default true. */
   readonly checkDesync?: boolean;
-  /** Bound on waiting for a tool call still in flight when the loop ends. Default SETTLE_TIMEOUT_MS. */
+  /**
+   * Bound on waiting for a tool call still in flight when the loop ends: an integer
+   * in [0, MAX_LIMIT]. Default SETTLE_TIMEOUT_MS.
+   */
   readonly settleMs?: number;
 }
 
@@ -242,10 +257,19 @@ export interface RunOutcome {
  * it at the end even if the loop stopped for another reason. A tool call still in
  * flight when the loop ends (timeout, cancel) is awaited, bounded by `settleMs`,
  * before `run.terminated`; past the bound the run fails as cleanup unconfirmed.
- * @throws if `run.started` cannot be logged.
+ * A failed run's error is, in order: cleanup unconfirmed, the halt reason, the
+ * first failed append, then whatever else was thrown.
+ * @throws RangeError for an invalid `settleMs`, before anything is logged; Error if
+ * `run.started` cannot be logged.
  */
 export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const { log, graphId, runId, nodeId, tools } = setup;
+  const settleMs = setup.settleMs ?? SETTLE_TIMEOUT_MS;
+  if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > MAX_LIMIT) {
+    throw new RangeError(
+      `settleMs must be an integer in [0, ${String(MAX_LIMIT)}]`,
+    );
+  }
   // The first failed append is the cause; a later desync is only its effect.
   let logFailure: { error: unknown } | undefined;
   // Set once run.terminated is due: a late call may no longer append.
@@ -299,6 +323,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     return outcome(terminal, summarize(terminal, ""));
   };
   let halted: string | undefined;
+  let thrown: { error: unknown } | undefined;
   const pending = new Set<Promise<unknown>>();
   try {
     const connected = setup.connect({
@@ -306,6 +331,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         append(type, payload);
       },
       emitAll: (entries) => {
+        if (ended) throw new Error("the run has ended");
         try {
           log.transaction(() => {
             for (const { type, payload } of entries) append(type, payload);
@@ -316,7 +342,9 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         }
       },
       halt: (reason) => {
-        halted ??= reason;
+        if (halted === undefined || reason === SANDBOX_CLEANUP_FAILED) {
+          halted = reason;
+        }
       },
     });
     // Tracked so run.terminated waits for a call the loop stopped waiting for (SF-4).
@@ -342,8 +370,8 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       {
         engine: {
           async step(input) {
-            if (logFailure !== undefined) throw logFailure.error;
             if (halted !== undefined) throw new Error(halted);
+            if (logFailure !== undefined) throw logFailure.error;
             const messages = derive(input.messages);
             return setup.engine.step({ ...input, messages });
           },
@@ -357,35 +385,34 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         },
       },
     );
-    const unconfirmed = !(await settled(
-      pending,
-      setup.settleMs ?? SETTLE_TIMEOUT_MS,
-    ));
-    ended = true;
     derive(result.transcript.messages);
-    // SF-3: a halt or failed append fails the run, whatever ended the loop.
-    const failure = unconfirmed
-      ? CLEANUP_UNCONFIRMED
-      : (halted ??
-        (logFailure === undefined
-          ? undefined
-          : errorMessage(logFailure.error)));
-    const done =
-      failure !== undefined &&
-      (unconfirmed || result.terminal.kind !== "failed")
-        ? failed(failure)
-        : outcome(result.terminal, result.summary);
+  } catch (error) {
+    thrown = { error };
+  }
+  const unconfirmed = !(await settled(pending, settleMs));
+  ended = true;
+  // SF-3, S-1: one order for every failure, whatever ended the loop.
+  const message = (f?: { error: unknown }) =>
+    f === undefined ? undefined : errorMessage(f.error);
+  const failure = unconfirmed
+    ? CLEANUP_UNCONFIRMED
+    : (halted ?? message(logFailure) ?? message(thrown));
+  const done =
+    failure === undefined && result !== undefined
+      ? outcome(result.terminal, result.summary)
+      : failed(failure ?? "the run ended without a result");
+  try {
     append("run.terminated", { agentId: nodeId, ...done });
     return done;
   } catch (error) {
-    ended = true;
-    const done = failed(errorMessage(logFailure?.error ?? error));
+    // An unlogged end is a failed run; retry once, best effort.
+    const lost = failed(failure ?? message(logFailure) ?? errorMessage(error));
     try {
-      append("run.terminated", { agentId: nodeId, ...done });
+      append("run.terminated", { agentId: nodeId, ...lost });
     } catch {
-      // Best effort: the log itself may be what failed.
+      // The log itself may be what failed.
     }
-    return done;
+    return lost;
   }
 }
 
