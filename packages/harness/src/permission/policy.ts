@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
-import { join, posix, resolve } from "node:path";
+import { lstatSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, posix, resolve } from "node:path";
 import {
   validatePermissionPolicy,
   type PermissionAction,
@@ -108,33 +108,57 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-/** Control (C0, DEL, C1), format, line and paragraph separator, and lone surrogate code points. */
-const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/gu;
-/** Shown text: every unprintable code point becomes `\u{…}`, so it cannot hide or reorder text. */
+/**
+ * Control (C0, DEL, C1), format, separator (spaces too), lone surrogate and
+ * default-ignorable code points, and the backslash.
+ */
+const UNPRINTABLE =
+  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Default_Ignorable_Code_Point}\\]/gu;
+/**
+ * Shown text: every unprintable code point but U+0020 becomes `\u{…}`, so it cannot
+ * hide or reorder text, and `\` becomes `\\`, so literal `\u{…}` text stays distinct.
+ */
 const escape = (text: string) =>
-  text.replace(
-    UNPRINTABLE,
-    (c) => `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`,
+  text.replace(UNPRINTABLE, (c) =>
+    c === " "
+      ? c
+      : c === "\\"
+        ? "\\\\"
+        : `\\u{${(c.codePointAt(0) ?? 0).toString(16)}}`,
   );
 const MAX_DETAIL = 512;
 const TRUNCATED = "…[truncated]";
-/** Escaped, then at most MAX_DETAIL code points, the last ones replaced by a marker if cut. */
+/** The raw text cut to MAX_DETAIL code points (so no escape is split), escaped, then a marker if cut. */
 function bounded(text: string): string {
-  const points = Array.from(escape(text));
+  const points = Array.from(text);
   return points.length <= MAX_DETAIL
-    ? points.join("")
-    : points.slice(0, MAX_DETAIL - TRUNCATED.length).join("") + TRUNCATED;
+    ? escape(text)
+    : escape(points.slice(0, MAX_DETAIL).join("")) + TRUNCATED;
 }
 
-/** Text fields bar control and invisible characters; `word` and `ref` also whitespace; `body` allows tab and newlines; `args` only bars NUL. */
+/**
+ * Text fields bar control and invisible characters; `word` and `ref` also whitespace;
+ * `body` allows tab and newlines; `args` only bars NUL. `destination` and `names` bar
+ * a leading `-` (an option); `pushRef` also bars remote-tracking refs and tags.
+ */
 type Field =
-  "text" | "word" | "ref" | "texts" | "args" | "body" | "usd" | "json";
+  | "text"
+  | "word"
+  | "destination"
+  | "ref"
+  | "pushRef"
+  | "texts"
+  | "names"
+  | "args"
+  | "body"
+  | "usd"
+  | "json";
 type Spec = readonly [
   PermissionTarget["kind"],
   Readonly<Record<string, Field>>,
 ];
 
-const egress = { destination: "word", ref: "ref" } as const;
+const egress = { destination: "destination", ref: "ref" } as const;
 /** Every typed action: its target kind and its exact input fields (Q6). */
 const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   execute: ["argv", { argv: "args" }],
@@ -142,21 +166,23 @@ const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   "fs.edit": ["path", { path: "text" }],
   "fs.delete": ["path", { path: "text" }],
   commit: ["ref", { ref: "ref", paths: "texts" }],
-  "deps.add": ["argv", { packages: "texts" }],
+  "deps.add": ["argv", { packages: "names" }],
   "config.set": ["setting", { setting: "text", value: "json" }],
   "spend.raiseCap": ["setting", { capUsd: "usd" }],
-  push: ["remote", egress],
+  push: ["remote", { ...egress, ref: "pushRef" }],
   "pr.open": ["remote", egress],
   "pr.merge": ["remote", egress],
-  comment: ["remote", { destination: "word", body: "body" }],
-  publish: ["remote", { destination: "word" }],
-  deploy: ["remote", { destination: "word" }],
+  comment: ["remote", { destination: "destination", body: "body" }],
+  publish: ["remote", { destination: "destination" }],
+  deploy: ["remote", { destination: "destination" }],
 };
 
 /** Typed actions without an M1 handler; they exist so the policy can rule on them (Q6). */
-export const PERMISSION_ONLY_ACTIONS = (
-  Object.keys(ACTIONS) as PermissionAction[]
-).filter((action) => action !== "execute");
+export const PERMISSION_ONLY_ACTIONS: readonly PermissionAction[] = deepFreeze(
+  (Object.keys(ACTIONS) as PermissionAction[]).filter(
+    (action) => action !== "execute",
+  ),
+);
 
 /** The schema's lists are non-empty, so these are built as non-empty literals. */
 type NonEmpty<T> = readonly [T, ...T[]];
@@ -262,19 +288,31 @@ const isText = (v: unknown, max: number): v is string =>
 const isPlain = (v: unknown): v is string =>
   isText(v, MAX_TEXT) && !hasControl(v) && !INVISIBLE.test(v);
 const isWord = (v: unknown): v is string => isPlain(v) && !/\s/u.test(v);
-/** A name git check-ref-format accepts that is not an option or a refspec (no `-`, `:` or `+`). */
-const isRef = (v: unknown): boolean =>
+/** git's special refs, which name no branch; case-folded, as a case-insensitive filesystem would. */
+const SPECIAL_REFS = new Set(
+  ["HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"].map(
+    caseFold,
+  ),
+);
+/**
+ * An ASCII branch name git check-ref-format accepts that is not an option, a refspec
+ * or a special ref; at most 255 characters per component.
+ */
+const isRef = (v: unknown): v is string =>
   isWord(v) &&
-  v !== "@" &&
+  /^[A-Za-z0-9._/-]+$/.test(v) &&
   !v.startsWith("-") &&
-  !/[:+\\~^?*[]/.test(v) &&
   !v.includes("..") &&
-  !v.includes("@{") &&
   !v.endsWith(".") &&
+  !SPECIAL_REFS.has(caseFold(v)) &&
   v
     .split("/")
     .every(
-      (part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"),
+      (part) =>
+        part !== "" &&
+        part.length <= 255 &&
+        !part.startsWith(".") &&
+        !part.endsWith(".lock"),
     );
 const isList = (v: unknown, item: (x: unknown) => boolean) =>
   Array.isArray(v) && v.length > 0 && v.length <= 1024 && v.every(item);
@@ -285,10 +323,16 @@ function isField(kind: Field, v: unknown): boolean {
       return isPlain(v);
     case "word":
       return isWord(v);
+    case "destination":
+      return isWord(v) && !v.startsWith("-");
     case "ref":
       return isRef(v);
+    case "pushRef":
+      return isRef(v) && !/^refs\/(?:remotes|tags)\//i.test(v);
     case "texts":
       return isList(v, isPlain);
+    case "names":
+      return isList(v, (x) => isPlain(x) && !x.startsWith("-"));
     case "args":
       return isList(v, (x) => isText(x, MAX_BODY) && !x.includes("\0"));
     case "body":
@@ -547,9 +591,14 @@ function policyProblem(policy: unknown): string | undefined {
   return reserved === undefined ? undefined : `rule id ${reserved} is reserved`;
 }
 
-/** Bounded like the schema's lists; each is a Ring 0 glob. */
+/** The schema's pathGlob (permission-policy.schema.json): its pattern, then its `not` pattern. */
+const GLOB = /^[A-Za-z0-9._*/-]{1,128}$/;
+const NOT_GLOB = /^\/|\/\/|\/$|(?:^|\/)\.\.?(?:\/|$)|\*\*[^/]|[^/]\*\*|\*\*\//;
+/** Bounded like the schema's lists; each is a valid Ring 0 glob. */
 const isGlobs = (v: unknown): v is string[] =>
-  Array.isArray(v) && v.length <= 1024 && v.every(isPlain);
+  Array.isArray(v) &&
+  v.length <= 1024 &&
+  v.every((g) => typeof g === "string" && GLOB.test(g) && !NOT_GLOB.test(g));
 
 /**
  * Rules on one action call. The always-ask floor (the policy's set united with the
@@ -668,7 +717,7 @@ export function resolvePolicy(
       `override has the same version as the base (${base.version}) but other content`,
     );
   }
-  return override;
+  return deepFreeze(override);
 }
 
 /** JSON with object keys sorted, so equal policies compare equal. */
@@ -682,19 +731,53 @@ const canonical = (value: unknown): string =>
   );
 
 /**
- * The Ring 0 globs for the worktree paths that existing symlinks at Ring 0 names
- * resolve to (`package.json` -> `config/pkg.json` gives `config/pkg.json/**`, which
- * matches the path and everything below it; a link to the worktree root gives `**`).
+ * The worktree-relative paths of the links met while resolving `relative` as the
+ * kernel does, one component at a time: each link in a chain and each symlinked
+ * directory along the way, even if the last hop leaves the worktree.
+ * @throws TypeError past 40 links (Linux's limit); an fs error.
+ */
+function linksOnTheWay(root: string, relative: string): string[] {
+  const pending = relative.split("/");
+  const links: string[] = [];
+  let current = root;
+  for (let part = pending.shift(); part !== undefined; part = pending.shift()) {
+    const next = part === ".." ? dirname(current) : join(current, part);
+    const stat = lstatSync(next, { throwIfNoEntry: false });
+    if (stat === undefined) break;
+    if (!stat.isSymbolicLink()) {
+      current = next;
+      continue;
+    }
+    if (links.length >= 40) throw new TypeError("too many symlinks");
+    links.push(next);
+    const target = readlinkSync(next);
+    pending.unshift(...target.split("/").filter((s) => s !== "" && s !== "."));
+    if (isAbsolute(target)) current = "/";
+  }
+  return links
+    .filter((link) => link !== root && contains(root, link))
+    .map((link) => posix.relative(root, link));
+}
+
+/**
+ * The Ring 0 globs for the worktree paths that existing symlinks at Ring 0 names, or
+ * at a leading part of one, resolve to (`package.json` -> `config/pkg.json` gives
+ * `config/pkg.json/**`, which matches the path and everything below it; a link to the
+ * worktree root gives `**`), plus every other link on the way (`a/**` for
+ * `package.json` -> `a` -> `config/pkg.json`). A link at a leading part, such as
+ * `packages/harness/src` -> `hsrc`, adds its whole target, which over-includes.
  * B9b computes them at run start and passes them as `extraRing0Paths`, so a commit of
  * the link's target asks. Only directories that a Ring 0 glob or a leading part of
  * one matches are walked; symlinked directories are not followed.
- * @throws on an fs error or a link that normalizePath rejects; refuse the run then.
+ * @throws on an fs error, over 40 links, a link that normalizePath rejects, or a target
+ * whose name is not a valid Ring 0 glob (RangeError); refuse the run then.
  */
 export function ring0LinkTargets(
   worktree: string,
   ring0Paths: readonly string[],
 ): string[] {
   const root = realpathSync.native(worktree);
+  // Each glob's leading parts, and the glob itself.
   const prefixes = ring0Paths.flatMap((glob) =>
     glob.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/")),
   );
@@ -702,15 +785,26 @@ export function ring0LinkTargets(
   const walk = (dir: string) => {
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
       const relative = dir === "" ? entry.name : `${dir}/${entry.name}`;
-      if (entry.isSymbolicLink() && isRing0Path(relative, ring0Paths)) {
+      if (entry.isSymbolicLink() && isRing0Path(relative, prefixes)) {
         const target = normalizePath(relative, root).relative;
         if (target !== undefined)
           found.add(target === "" ? "**" : `${target}/**`);
+        for (const link of linksOnTheWay(root, relative)) {
+          if (link !== relative) found.add(`${link}/**`);
+        }
       } else if (entry.isDirectory() && isRing0Path(relative, prefixes)) {
         walk(relative);
       }
     }
   };
   walk("");
+  // A name that is not a valid Ring 0 glob would deny every request in the run; refuse
+  // the run here instead, with a clear reason.
+  const unsupported = [...found].filter((g) => !isGlobs([g]));
+  if (unsupported.length > 0) {
+    throw new RangeError(
+      `Ring 0 link targets with unsupported names (ASCII letters, digits, ._-/ only, at most 128 characters): ${unsupported.map((g) => escape(g)).join(", ")}`,
+    );
+  }
   return [...found];
 }

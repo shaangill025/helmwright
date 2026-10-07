@@ -88,9 +88,14 @@ describe("normalizePath", () => {
     "a\u2028b",
     "\ufeffsrc",
     "a\u00adb",
-  ])("rejects %j (Unicode format or separator characters)", (input) => {
-    expect(() => normalizePath(input, worktree)).toThrow(TypeError);
-  });
+    "src/\ud800x",
+    "src/x\udc00",
+  ])(
+    "rejects %j (Unicode format, separator or lone surrogate characters)",
+    (input) => {
+      expect(() => normalizePath(input, worktree)).toThrow(TypeError);
+    },
+  );
 
   it("rejects an over-long path or segment, quickly", () => {
     const long = ("a".repeat(200) + "/").repeat(21);
