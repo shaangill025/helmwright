@@ -149,6 +149,12 @@ export {
   permissionAsked,
   permissionEvents,
 } from "./permission/events.ts";
+export type {
+  Presence,
+  PresenceAnswer,
+  PresenceRequest,
+} from "./permission/presence.ts";
+export { createTtyPresence, isApproval } from "./permission/presence.ts";
 export type { NormalizedPath } from "./permission/normalize.ts";
 export {
   caseFold,

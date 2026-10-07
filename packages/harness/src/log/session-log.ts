@@ -184,6 +184,9 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
+/** The RollbackErrors made here, recognized by identity alone (no Proxy trap runs). */
+const rollbackErrors = new WeakSet<object>();
+
 /** A failed ROLLBACK: the connection may still hold the open transaction. */
 class RollbackError extends Error {
   constructor(rollback: unknown, cause: unknown) {
@@ -192,6 +195,7 @@ class RollbackError extends Error {
       cause,
     });
     this.name = "RollbackError";
+    rollbackErrors.add(this);
   }
 }
 
@@ -219,7 +223,8 @@ function createLog(db: DatabaseSync): SessionLog {
     try {
       return inTransaction(db, fn);
     } catch (error) {
-      if (error instanceof RollbackError) poisoned = error;
+      if (rollbackErrors.has(error as object))
+        poisoned = error as RollbackError;
       throw error;
     }
   };

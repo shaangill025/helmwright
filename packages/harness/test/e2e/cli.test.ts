@@ -1,8 +1,11 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -166,6 +169,76 @@ function runTask(turns: string, limits?: object) {
   return { ...result, out: JSON.parse(lines[0] ?? "") as RunOutput };
 }
 
+/**
+ * script(1) runs the CLI on a pseudo-terminal: util-linux (CI) takes `-c command`,
+ * BSD (macOS) the command's argv. Undefined only if there is no script(1).
+ */
+const SCRIPT = ((): "util-linux" | "bsd" | undefined => {
+  const probe = spawnSync("script", ["--version"], { encoding: "utf8" });
+  if (probe.error !== undefined) return undefined;
+  return probe.stdout.includes("util-linux") ? "util-linux" : "bsd";
+})();
+// Skipped only where script(1) is absent, and never in CI (there it fails).
+const NO_PTY = SCRIPT === undefined && process.env["CI"] === undefined;
+if (NO_PTY) console.warn("e2e: script(1) not found; TTY ask tests skipped");
+/** Inside the pty: the CLI's stdout goes to a file, stdin and stderr stay on the pty. */
+const IN_PTY =
+  'exec "$HW_NODE" "$HW_CLI" run "$HW_TASK" --state-dir "$HW_STATE" > "$HW_OUT"';
+/**
+ * `cat` gives script a real pipe for stdin: BSD script refuses a socket, and Node's
+ * stdio pipes are sockets. The test keeps cat's input open and types into it later.
+ */
+const PTY_ARGV =
+  SCRIPT === "util-linux"
+    ? ["-c", 'cat | exec script -qec "$0" /dev/null', IN_PTY]
+    : ["-c", 'cat | exec script -q /dev/null /bin/sh -c "$0"', IN_PTY];
+
+const PROMPT_END = "Approve? [y/N] ";
+
+/** Runs the CLI on a pty and types `answer` once the ask's prompt is shown. */
+async function runAtTty(turns: string, answer: string) {
+  if (SCRIPT === undefined) throw new Error("script(1) not found");
+  const terminal = join(tmp, "pty.out");
+  const stdoutFile = join(tmp, "stdout.json");
+  const fd = openSync(terminal, "w+");
+  const env = {
+    ...process.env,
+    SHELL: "/bin/sh",
+    HW_NODE: process.execPath,
+    HW_CLI: CLI,
+    HW_TASK: writeTask(turns),
+    HW_STATE: stateDir,
+    HW_OUT: stdoutFile,
+  };
+  const child = spawn("/bin/sh", PTY_ARGV, { stdio: ["pipe", fd, fd], env });
+  closeSync(fd);
+  const { stdin } = child;
+  if (stdin === null) throw new Error("no stdin pipe");
+  // Types the answer only after the prompt is shown and its grace window (250 ms)
+  // has passed; ends input only once the CLI has written its result, so the answer
+  // never races end of input.
+  let answered = false;
+  const timer = setInterval(() => {
+    if (!answered && readFileSync(terminal, "utf8").includes(PROMPT_END)) {
+      answered = true;
+      setTimeout(() => stdin.write(answer + "\n"), 500);
+    }
+    if (existsSync(stdoutFile) && readFileSync(stdoutFile, "utf8") !== "") {
+      clearInterval(timer);
+      stdin.end();
+    }
+  }, 50);
+  const status = await new Promise<number | null>((done) => {
+    child.on("close", done);
+  });
+  clearInterval(timer);
+  stdin.destroy();
+  const shown = readFileSync(terminal, "utf8").replaceAll("\r\n", "\n");
+  const lines = readFileSync(stdoutFile, "utf8").trim().split("\n");
+  expect(lines, shown).toHaveLength(1);
+  return { status, shown, out: JSON.parse(lines[0] ?? "") as RunOutput };
+}
+
 function logEvents(): Event[] {
   const log = openSessionLog(join(stateDir, "session.sqlite"));
   try {
@@ -317,6 +390,76 @@ describe("helmwright CLI (e2e)", () => {
     });
     expectReplayMatches(out.runId, events);
   });
+
+  it.skipIf(NO_PTY)(
+    "asks at a TTY before deploy; only y approves (AC8)" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      for (const answer of ["n", "y"]) {
+        const { status, shown, out } = await runAtTty(
+          "deploy.turns.json",
+          answer,
+        );
+        expect(status, shown).toBe(0);
+        expect(out.terminal).toEqual({ kind: "completed" });
+        const events = logEvents().filter((e) => e.runId === out.runId);
+        const types = events.map((e) => e.type);
+        const started = types.indexOf("loop.tool.started");
+        expect(
+          types.slice(started, types.indexOf("loop.tool.called") + 1),
+        ).toEqual([
+          ...["loop.tool.started", "permission.evaluated", "permission.asked"],
+          ...["permission.answered", "loop.tool.called"],
+        ]);
+        const payload = (type: string) =>
+          events.find((e) => e.type === type)?.payload;
+        expect(payload("permission.asked")).toMatchObject({
+          toolCallId: "call-1",
+          presence: "tty",
+        });
+        // The pty shows exactly the prompt whose hash was logged before it was shown.
+        const from = shown.indexOf("helmwright: allow deploy?");
+        const prompt = shown.slice(
+          from,
+          shown.indexOf(PROMPT_END) + PROMPT_END.length,
+        );
+        expect(from, shown).toBeGreaterThanOrEqual(0);
+        for (const part of ["remote): prod", "always-ask.deploy", out.runId]) {
+          expect(prompt).toContain(part);
+        }
+        expect(prompt).toContain("  rule: always-ask.deploy, tier alwaysAsk (");
+        const sha = createHash("sha256").update(prompt, "utf8").digest("hex");
+        expect(payload("permission.asked")?.["promptSha256"]).toBe(sha);
+        const approved = answer === "y";
+        expect(payload("permission.answered")).toMatchObject({
+          toolCallId: "call-1",
+          answer: approved ? "approved" : "denied",
+          by: "tty",
+          attestation: { kind: "none" },
+        });
+        expect(payload("permission.answered")?.["waitMs"]).toEqual(
+          expect.any(Number),
+        );
+        expect(payload("loop.tool.called")).toMatchObject({
+          name: "deploy",
+          status: "denied",
+        });
+        const tool = deriveMessages(events, out.runId).find(
+          (m) => m.role === "tool",
+        );
+        expect(tool?.text).toBe(
+          approved
+            ? "denied: no M1 handler for deploy"
+            : "denied: always asks (always-ask.deploy); the owner did not approve",
+        );
+        // Replay never asks: it re-derives the context from the logged answer.
+        const replay = cli("replay", out.runId, "--state-dir", stateDir);
+        expect(replay.status, replay.stderr).toBe(0);
+        expect(JSON.parse(replay.stdout)).toMatchObject({ match: true });
+      }
+    },
+  );
 
   it(
     "stops deploy in the permission layer when nobody is present (AC8)",
