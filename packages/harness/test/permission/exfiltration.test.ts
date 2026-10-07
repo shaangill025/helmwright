@@ -90,6 +90,11 @@ const SECRETS: [string, string, string][] = [
     "mode=fast:secret=" + tail(12),
     "a credential-named value",
   ],
+  [
+    "a value with a separator",
+    "CREDENTIALS=user:" + tail(16),
+    "a credential-named value",
+  ],
   // S2: a specific prefix matches inside a word.
   ["a prefix inside a word", "xghp_" + tail(36), "a GitHub token"],
   [
