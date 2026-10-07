@@ -1,0 +1,312 @@
+[
+  {
+    "component": "packages/harness/sandbox/Dockerfile",
+    "ring": 0,
+    "assumption": "The sandbox needs neither npm nor npx, so its image is the pinned node:26-slim digest with both removed, built locally and never pulled from a registry.",
+    "evidence": [
+      "decisions Sandbox image gate",
+      "decisions Sandbox image",
+      "packages/harness/test/sandbox/docker.integration.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/sandbox",
+    "ring": 0,
+    "assumption": "Docker on a local unix:// endpoint is the sandbox boundary: each tool call runs in a fresh read-only, capability-free container with --network none, --pull never and a cleared entrypoint, which sees only the workspace and the request's environment.",
+    "evidence": [
+      "05 Rings",
+      "06 Ring 0 contents",
+      "decisions Sandbox image",
+      "packages/harness/test/sandbox/docker.integration.test.ts",
+      "packages/harness/test/sandbox/docker.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/log/session-log.ts",
+    "ring": 0,
+    "assumption": "The session log is node:sqlite with one writer process per log (a second writer can fail with SQLITE_BUSY after the 5 s busy timeout); its events table is append-only and gap-free even for a raw connection.",
+    "evidence": [
+      "decisions Q26",
+      "06 Spine",
+      "packages/harness/test/log/session-log.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/log/messages.ts",
+    "ring": 0,
+    "assumption": "The model's context is the run's logged context messages, derived again from the log on every turn; the dev-mode check compares those messages only, not the full API request, until B11.",
+    "evidence": [
+      "06 Spine",
+      "design-trace T-06-03",
+      "design-trace T-06-04",
+      "packages/harness/test/log/messages.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/loop/loop.ts",
+    "ring": 0,
+    "assumption": "P1: progress is a tool call not already made in this run, keyed by name and canonical input and independent of its result; a run without progress for noProgressIterations iterations halts, and a cap or watchdog halt gets one tools-stripped handoff step.",
+    "evidence": [
+      "decisions P1",
+      "06 Ring 0 contents",
+      "packages/harness/test/loop/loop.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["model", "engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/loop/reminders.ts",
+    "ring": 0,
+    "assumption": "Identical calls are counted per agent by name and canonical input, and the response to repetition is an escalating reminder at 3, 5 and 8 identical calls; a reminder never blocks a call.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/harness/test/loop/reminders.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["model", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/loop/terminal.ts",
+    "ring": 0,
+    "assumption": "Every run ends in one typed terminal state; completed means the engine ended its turn without tool calls, never that the task is done, which only the evaluator decides.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "decisions Q55",
+      "packages/harness/test/loop/loop.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/loop/types.ts",
+    "ring": 0,
+    "assumption": "Every engine fits one step interface (text plus tool calls with engine-assigned IDs); an engine's claimsDone is recorded but is never evidence of done.",
+    "evidence": [
+      "06 Hands",
+      "design-trace T-06-07",
+      "packages/harness/test/loop/loop.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/broker/broker.ts",
+    "ring": 0,
+    "assumption": "One broker serves each run, and engine tool call IDs are unique per run: a reused ID is rejected before any ruling; only an allow or an owner-approved ask runs its handler, on the ruled input snapshot, and an ask with nobody present is denied.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "decisions B9 initial policy",
+      "packages/harness/test/broker/broker.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/policy.ts",
+    "ring": 0,
+    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; the Ring 0 path set is always-ask in every repository until B6 makes it per-project.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "decisions Q51",
+      "decisions B9 owner decisions",
+      "packages/harness/test/permission/policy.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/presence.ts",
+    "ring": 0,
+    "assumption": "A TTY is presence, not proof of a human: a program that drives a pty can approve, so each approval's attestation stays none until slice SIG.",
+    "evidence": [
+      "decisions B9 owner decisions",
+      "decisions Owner answer signatures",
+      "packages/harness/test/permission/presence.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/exfiltration.ts",
+    "ring": 0,
+    "assumption": "Credential-shaped content in an egress action's input is found by a bounded linear scan of each whitespace-separated token; no destination allowlist is checked until the B11 credential proxy.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/harness/test/permission/exfiltration.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/normalize.ts",
+    "ring": 0,
+    "assumption": "A target path is the realpath of its nearest existing ancestor plus the missing rest, with the input's .. collapsed lexically before symlinks are followed (not kernel-equivalent), so callers act on the resolved path, never on the input.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/harness/test/permission/normalize.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/events.ts",
+    "ring": 0,
+    "assumption": "A permission event that cannot be logged denies its call (fail closed), and an engine tool call ID is printable ASCII without spaces, 1 to 256 characters.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/harness/test/permission/events.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/permission/faults.ts",
+    "ring": 0,
+    "assumption": "Replay can check permission bindings from the log alone because a tool call ID is unique per run: each ask directly follows its ask-tier ruling, there is one ask and one answer per call, and a call runs once, only on an allow or a bound approval.",
+    "evidence": [
+      "decisions Q5",
+      "packages/harness/test/permission/faults.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/engine/scripted.ts",
+    "ring": 2,
+    "assumption": "CI needs no live model: the scripted engine replays recorded turns in order and a step past the end fails the run rather than inventing a turn; live-engine tests run locally only.",
+    "evidence": [
+      "decisions Testing emphasis",
+      "decisions Q56",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/run/run.ts",
+    "ring": 2,
+    "assumption": "The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; without a hash chain over the log, the context digest detects divergence, not tampering.",
+    "evidence": [
+      "06 Spine",
+      "decisions Q5",
+      "packages/harness/test/run/run.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/cli.ts",
+    "ring": 2,
+    "assumption": "The CLI calls the harness in process, with no authenticated API until B13 brings the first second-process surface; each output line is JSON without control or invisible characters because it reaches a terminal.",
+    "evidence": [
+      "decisions X2 API transport",
+      "06 Surfaces and deployment",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/index.ts",
+    "ring": 2,
+    "assumption": "The harness is a private workspace package used in process: its index re-exports the module APIs, and no authenticated state/action API exists until B13.",
+    "evidence": [
+      "decisions X2 API transport",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/schema/src/index.ts",
+    "ring": 2,
+    "assumption": "JSON Schema is the source of truth: the index re-exports types and Ajv standalone validators generated from the schemas, so Ajv stays a build-time dependency and CI fails on drift.",
+    "evidence": [
+      "decisions Schema tooling",
+      "decisions Generated code",
+      "packages/schema/scripts/generate.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/event.schema.json",
+    "ring": 0,
+    "assumption": "Every event carries graph, run and node identity from the first event, before dynamic graphs exist, because retrofitting identity onto a log is painful.",
+    "evidence": ["06 Ring 0 contents", "packages/schema/test/event.test.ts"],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/permission-event.schema.json",
+    "ring": 0,
+    "assumption": "Each ruling is logged with the policy version and the input's SHA-256, each ask with its prompt's SHA-256, and an approval's attestation is none until slice SIG.",
+    "evidence": [
+      "decisions B9 owner decisions",
+      "decisions Owner answer signatures",
+      "packages/schema/test/permission-event.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/permission-policy.schema.json",
+    "ring": 0,
+    "assumption": "Only the default governance mode, tiered, exists until another mode has a fixture, and the always-ask, Ring 0 path and Ring 0 setting lists are never empty.",
+    "evidence": [
+      "07 rule 1",
+      "decisions Q51",
+      "decisions B9 owner decisions",
+      "packages/schema/test/permission-policy.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/rot-register.schema.json",
+    "ring": 2,
+    "assumption": "Each component's assumption is reviewed on a model change, an engine change or a milestone end; until B12 emits rot.reviewDue, the register's test only enforces coverage and existence, and review is by hand.",
+    "evidence": [
+      "07 rule 2",
+      "decisions Q60",
+      "packages/schema/test/rot-register.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["model", "engine", "milestone"]
+  }
+]
