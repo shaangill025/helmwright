@@ -141,7 +141,11 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     const workspace = join(realpathSync(workspaceRoot), runId);
     execFileSync(
       "git",
-      ["-C", task.repo, "worktree", "add", "--quiet", "--detach", workspace],
+      // No repo hooks: a post-checkout hook would run on the host, outside the sandbox.
+      [
+        ...["-C", task.repo, "-c", "core.hooksPath=/dev/null"],
+        ...["worktree", "add", "--quiet", "--detach", workspace],
+      ],
       { stdio: ["ignore", "ignore", "pipe"] },
     );
 
