@@ -22,6 +22,7 @@ import {
   deriveMessages,
 } from "../log/messages.ts";
 import { openSessionLog, type SessionLog } from "../log/session-log.ts";
+import { permissionFaults } from "../permission/faults.ts";
 import {
   MAX_LIMIT,
   runLoop,
@@ -566,14 +567,19 @@ export type ReplayResult =
       /** From the run's `run.terminated` event; null if it recorded none. */
       readonly recordedDigest: string | null;
       readonly events: number;
+      /** How asks and answers in the log break their binding (SF3); empty if none. */
+      readonly permissionFaults: string[];
     }
   | { readonly runId: string; readonly terminated: false };
 
 /**
  * Re-derives a run's context (and the tools logged in `run.started`) from the
- * log and compares its digest with the one recorded from the loop's transcript.
- * Executes no effects. Without a hash chain a fully rewritten log can still
- * match; see `contextDigest`.
+ * log and compares its digest with the one recorded from the loop's transcript
+ * (`match`), and checks that each ask and answer in the log is bound to what the
+ * owner was asked (`permissionFaults`, SF3). The replay passes only if `match` is
+ * true and `permissionFaults` is empty. Executes no effects. Without a hash
+ * chain a fully rewritten, self-consistent log can still pass; see
+ * `contextDigest`.
  * @throws UsageError for a bad run ID; Error if there is no log or no such run.
  */
 export function replayRun(runId: string, stateDir: string): ReplayResult {
@@ -602,6 +608,7 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
       derivedDigest,
       recordedDigest,
       events: events.length,
+      permissionFaults: permissionFaults(events),
     };
   } finally {
     log.close();
