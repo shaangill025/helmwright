@@ -461,14 +461,15 @@ export async function buildSandboxImage(
   const args = ["build", "--quiet", "--pull=false", SANDBOX_DOCKERFILE_DIR];
   const proc = startDocker(docker, args, 65_536);
   const limit = deps.buildTimeoutMs ?? BUILD_TIMEOUT_MS;
-  const { promise: killed, resolve } = Promise.withResolvers<null>();
+  const { promise: killed, resolve: settleKilled } =
+    Promise.withResolvers<null>();
   const state = { timedOut: false };
   const timer = setTimeout(() => {
     state.timedOut = true;
     proc.child.kill("SIGKILL");
     // A killed client may leave its pipes open (helpers): settle on exit, bounded.
     void within(proc.exited, KILL_SETTLE_MS).then(() => {
-      resolve(null);
+      settleKilled(null);
     });
   }, limit);
   const code = await Promise.race([proc.closed, killed]).finally(() => {

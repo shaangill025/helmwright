@@ -72,6 +72,23 @@ describe("normalizePath", () => {
     },
   );
 
+  it.each([
+    ".g\u200cit/config",
+    "src/\u202eevil",
+    "a\u2028b",
+    "\ufeffsrc",
+    "a\u00adb",
+  ])("rejects %j (Unicode format or separator characters)", (input) => {
+    expect(() => normalizePath(input, worktree)).toThrow(TypeError);
+  });
+
+  it("rejects an over-long path or segment, quickly", () => {
+    const long = ("a".repeat(200) + "/").repeat(21);
+    for (const input of [long, "a".repeat(256), "a/".repeat(100_000)]) {
+      expect(() => normalizePath(input, worktree)).toThrow(TypeError);
+    }
+  }, 1000);
+
   it("rejects a symlink loop", () => {
     expect(() => normalizePath("loop-a/x", worktree)).toThrow(TypeError);
   });
@@ -107,6 +124,13 @@ describe("isRing0Path", () => {
   )("does not match %j", (path) => {
     expect(isRing0Path(path, globs)).toBe(false);
   });
+
+  it.each(["./.github/x", "/.github/x", ".github//x", "a/../.github"])(
+    "throws on the non-canonical %j",
+    (path) => {
+      expect(() => isRing0Path(path, globs)).toThrow(TypeError);
+    },
+  );
 });
 
 describe("normalizeHost", () => {
@@ -119,6 +143,9 @@ describe("normalizeHost", () => {
     ["API.Anthropic.COM.", "api.anthropic.com"],
     ["bücher.de", "xn--bcher-kva.de"],
     ["[0:0:0:0:0:0:0:1]", "[::1]"],
+    ["[::ffff:169.254.169.254]", "169.254.169.254"],
+    ["[::ffff:a9fe:a9fe]", "169.254.169.254"],
+    ["example.com.", "example.com"],
   ])("normalizes %j to %j", (host, expected) => {
     expect(normalizeHost(host)).toBe(expected);
   });
@@ -133,6 +160,8 @@ describe("normalizeHost", () => {
     "exa mple.com",
     "a\0b",
     "256.1.1.1",
+    "example.com..",
+    ".example.com",
   ])("rejects %j", (host) => {
     expect(normalizeHost(host)).toBeUndefined();
   });
@@ -156,6 +185,30 @@ describe("argv normalization", () => {
     ["bash", "-lc", "cd sub && pnpm add x"],
     ["sh", "-c", "echo ok; 'npm' install|cat"],
     ["sh", "-c", "sh -c 'env A=1 npm i x'"],
+    ["env", "-S", "pnpm add x"],
+    ["env", "-Spnpm add x"],
+    ["env", "--split-string=pnpm add x"],
+    ["env", "--split-string", "pnpm add x"],
+    ["env", "-iS", "A=1 pnpm add x"],
+    ["env", "-", "pnpm", "add", "x"],
+    ["bash", "-Ec", "pnpm add x"],
+    ["sh", "-Cc", "npm i x"],
+    ...[
+      ...`ins inst insta instal isnt isnta isntal isntall it cit ic clean-install
+      install-clean install-test add update up upgrade`
+        .split(/\s+/)
+        .map((verb) => `npm ${verb}`),
+      "bun a x",
+      "pnpm up x",
+      "pnpm update",
+      "pnpm upgrade",
+      "yarn up x",
+      "yarn upgrade",
+      "nohup npm ci",
+      "time -p pnpm i",
+      "corepack pnpm add x",
+      "corepack pnpm@10.0.0 add x",
+    ].map((line) => line.split(" ")),
   ])("treats %j as a dependency install", (...argv) => {
     expect(isDependencyInstall(argv)).toBe(true);
   });
