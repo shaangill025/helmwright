@@ -4,7 +4,10 @@ import type {
   ToolResult,
   ToolSpec,
 } from "../loop/types.ts";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import {
+  checkWorkspacePaths,
   dockerRunArgs,
   runInSandbox,
   type SandboxResult,
@@ -126,11 +129,21 @@ export function createBroker(context: BrokerContext): Broker {
   };
 }
 
+/** Realpath of `path`'s nearest existing ancestor, with the missing rest appended. */
+function futureRealpath(path: string): string {
+  const rest: string[] = [];
+  let existing = resolve(path);
+  while (!existsSync(existing) && dirname(existing) !== existing) {
+    rest.unshift(basename(existing));
+    existing = dirname(existing);
+  }
+  return join(realpathSync.native(existing), ...rest);
+}
+
 /**
- * Checks a workspace against the sandbox's workspace rules before any docker
- * work (no image needed). @throws RangeError | TypeError
+ * Checks a workspace (which need not exist yet) against the sandbox's workspace
+ * rules, before anything is created or any docker work. @throws RangeError
  */
 export function checkWorkspace(workspace: string, workspaceRoot: string): void {
-  const image = "sha256:" + "0".repeat(64); // shape-valid placeholder
-  createBroker({ image, workspace, workspaceRoot });
+  checkWorkspacePaths(futureRealpath(workspace), futureRealpath(workspaceRoot));
 }

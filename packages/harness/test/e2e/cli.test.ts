@@ -4,7 +4,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -76,7 +78,8 @@ afterEach(() => {
   for (const line of listed.split("\n")) {
     const path = line.startsWith("worktree ") ? line.slice(9) : "";
     if (path !== "" && path !== repo) {
-      git("-C", repo, "worktree", "remove", "--force", path);
+      // A test may have corrupted or moved one; tmp is removed below anyway.
+      spawnSync("git", ["-C", repo, "worktree", "remove", "--force", path]);
     }
   }
   rmSync(tmp, { recursive: true, force: true });
@@ -311,9 +314,18 @@ describe("helmwright CLI (e2e)", () => {
     const good = writeTask("write-file.turns.json");
     const bad = cli("run", good, "--state-dir", unsafe);
     expect(bad.status, bad.stderr).toBe(64);
-    const listed = git("-C", repo, "worktree", "list", "--porcelain");
-    expect(listed).not.toContain(unsafe);
+    // Validated before anything is created: no log, no workspaces, no dir.
+    expect(existsSync(unsafe)).toBe(false);
     expect(existsSync(join(stateDir, "session.sqlite"))).toBe(false);
+  });
+
+  it("removes the workspace if worktree add fails", { timeout: T }, () => {
+    const empty = join(tmp, "empty");
+    git("init", "--quiet", empty); // no commit: there is no HEAD to check out
+    const task = writeTask("write-file.turns.json", LIMITS, empty);
+    const result = cli("run", task, "--state-dir", stateDir);
+    expect(result.status, result.stderr).toBe(1);
+    expect(readdirSync(join(stateDir, "workspaces"))).toEqual([]);
   });
 
   it("fails a run whose engine runs out of turns", { timeout: T }, () => {
@@ -384,10 +396,29 @@ describe("helmwright CLI (e2e)", () => {
     expect(status, stderr).toBe(0);
     const workspace = join(stateDir, "workspaces", out.runId);
     expect(existsSync(workspace)).toBe(true);
+    // The user's own worktree, moved away: prune would drop its metadata.
+    const mine = join(tmp, "mine");
+    git("-C", repo, "worktree", "add", "--quiet", "--detach", mine);
+    renameSync(mine, mine + "-moved");
     const reap = cli("reap", "--state-dir", stateDir);
     expect(reap.status, reap.stderr).toBe(0);
     expect(JSON.parse(reap.stdout)).toMatchObject({ worktrees: [out.runId] });
     expect(existsSync(workspace)).toBe(false);
-    expect(git("-C", repo, "worktree", "list")).not.toContain(workspace);
+    const listed = git("-C", repo, "worktree", "list", "--porcelain");
+    expect(listed).not.toContain(workspace);
+    expect(listed).toContain("worktree " + mine + "\n");
+  });
+
+  it("reaps the other runs when one worktree fails", { timeout: T }, () => {
+    const first = runTask("write-file.turns.json").out.runId;
+    const second = runTask("write-file.turns.json").out.runId;
+    const broken = join(stateDir, "workspaces", first);
+    writeFileSync(join(broken, ".git"), "not a gitdir\n");
+    const reap = cli("reap", "--state-dir", stateDir);
+    expect(reap.status).toBe(1);
+    expect(reap.stderr).toContain(first);
+    expect(JSON.parse(reap.stdout)).toMatchObject({ worktrees: [second] });
+    expect(existsSync(join(stateDir, "workspaces", second))).toBe(false);
+    expect(existsSync(broken)).toBe(true);
   });
 });

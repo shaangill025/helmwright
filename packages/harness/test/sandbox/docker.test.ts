@@ -509,6 +509,23 @@ describe("reapSandboxContainers", () => {
     expect(rest).toEqual([]);
   });
 
+  it("removes this instance's live containers only when asked to", async () => {
+    const args = dockerRunArgs(request(), NAME);
+    const label = args.find((a) => a.startsWith("helmwright.sandbox="));
+    const instance = label?.slice("helmwright.sandbox=".length) ?? "";
+    expect(instance).toMatch(/^[0-9a-f-]{36}$/);
+    const fake = fakeDocker("own-" + instance);
+    // As at the start of a run: other runs in this process may be live.
+    const orphans = { includeOwn: false };
+    await expect(reapSandboxContainers(fake.deps, orphans)).resolves.toBe(1);
+    await expect(reapSandboxContainers(fake.deps)).resolves.toBe(2);
+    const removals = fake.calls().filter((c) => c.args?.[0] === "rm");
+    expect(removals.map((c) => c.args)).toEqual([
+      ["rm", "-f", "aaa111"],
+      ["rm", "-f", "aaa111", "ddd444"],
+    ]);
+  });
+
   it("treats a container a concurrent reaper is removing as reaped", async () => {
     const fake = fakeDocker("rm-race");
     await expect(reapSandboxContainers(fake.deps)).resolves.toBe(1);

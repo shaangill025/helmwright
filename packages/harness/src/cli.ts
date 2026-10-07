@@ -15,7 +15,7 @@ const USAGE =
 
 /**
  * run: 0 completed, 2 incomplete, 1 failed; replay: 0 match, 3 mismatch,
- * 4 never terminated; reap: 0; 64 usage.
+ * 4 never terminated; reap: 0, 1 if anything could not be reaped; 64 usage.
  */
 const EXIT = {
   ok: 0,
@@ -58,8 +58,12 @@ async function main(args: readonly string[]): Promise<number> {
   try {
     const { name, target, stateDir } = command(args);
     if (name === "reap") {
-      console.log(JSON.stringify(await reapRuns(stateDir)));
-      return EXIT.ok;
+      const result = await reapRuns(stateDir);
+      console.log(JSON.stringify(result));
+      for (const { target, error } of result.failures) {
+        console.error("helmwright: reap " + target + ": " + error);
+      }
+      return result.failures.length === 0 ? EXIT.ok : EXIT.failed;
     }
     if (name === "replay") {
       const result = replayRun(target, stateDir);
