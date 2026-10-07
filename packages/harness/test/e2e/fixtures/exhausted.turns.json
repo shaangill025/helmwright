@@ -1,0 +1,9 @@
+[
+  {
+    "text": "Checking the workspace.",
+    "toolCalls": [
+      { "id": "call-1", "name": "execute", "input": { "argv": ["true"] } }
+    ],
+    "claimsDone": false
+  }
+]

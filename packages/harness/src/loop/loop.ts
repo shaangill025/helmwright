@@ -30,6 +30,11 @@ export interface LoopDeps {
   readonly executeTool: ExecuteTool;
   readonly clock: Clock;
   readonly emit: Emit;
+  /**
+   * Called synchronously each time the loop appends a message, before anything
+   * else happens (initial `messages` are not reported). A throw fails the run.
+   */
+  readonly onMessage?: (message: Message) => void;
   /** Timer used to abort an in-flight step. Defaults to setTimeout. */
   readonly schedule?: Schedule;
   /** Shared per-agent identical-call counters. Defaults to a fresh store. */
@@ -180,6 +185,10 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
   const schedule = deps.schedule ?? defaultSchedule;
   const counters = deps.counters ?? createCallCounters();
   const messages: Message[] = [...options.messages];
+  const add = (message: Message) => {
+    messages.push(message);
+    deps.onMessage?.(message);
+  };
   const turns: EngineTurn[] = [];
   const seenKeys = new Set<string>();
   let iterations = 0;
@@ -225,7 +234,7 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
   };
 
   const handoff = async (reason: IncompleteReason): Promise<string> => {
-    messages.push({ role: "system", text: handoffRequest(reason) });
+    add({ role: "system", text: handoffRequest(reason) });
     const bound = new AbortController();
     const signal = options.signal
       ? AbortSignal.any([bound.signal, options.signal])
@@ -252,7 +261,7 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
       return FALLBACK_SUMMARY;
     }
     turns.push(outcome.value);
-    messages.push({
+    add({
       role: "assistant",
       text: outcome.value.text,
       toolCalls: [],
@@ -311,7 +320,7 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
       const turn = stepped.value;
       turns.push(turn);
       lastText = turn.text;
-      messages.push({
+      add({
         role: "assistant",
         text: turn.text,
         toolCalls: turn.toolCalls,
@@ -348,10 +357,10 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
           status: result.status,
           count,
         });
-        messages.push(toolMessage(call, result.status, result.output));
+        add(toolMessage(call, result.status, result.output));
         const reminder = reminderFor(call.name, count);
         if (reminder !== undefined) {
-          messages.push({ role: "system", text: reminder });
+          add({ role: "system", text: reminder });
           emit("loop.reminder.sent", { agentId, name: call.name, count });
         }
         const timedOut = stopReason();
@@ -359,7 +368,7 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
       }
       const skipped = turn.toolCalls.slice(cap);
       for (const call of skipped) {
-        messages.push(toolMessage(call, "denied", SKIPPED_CALL_TEXT));
+        add(toolMessage(call, "denied", SKIPPED_CALL_TEXT));
         emit("loop.tool.skipped", ids(call));
       }
       if (skipped.length > 0) return halt("max_tool_calls");

@@ -51,6 +51,15 @@ switch (args[0]) {
   case "kill":
   case "rm":
     if (mode === "hang") hang();
+    if (args[0] === "rm" && (mode === "rm-race" || mode === "rm-fail")) {
+      // A concurrent reaper got there first (race), or a real failure.
+      process.stderr.write(
+        mode === "rm-race"
+          ? "Error response from daemon: removal of container aaa111 is already in progress\n"
+          : "Error response from daemon: cannot remove container aaa111: permission denied\n",
+      );
+      process.exitCode = 1;
+    }
     break;
   case "ps":
     if (args.includes("label=helmwright.sandbox")) {

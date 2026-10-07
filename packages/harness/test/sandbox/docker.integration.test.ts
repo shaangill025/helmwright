@@ -290,7 +290,9 @@ describe("runInSandbox (docker)", () => {
       const orphan = create(dead);
       const live = create(process.ppid);
       try {
-        expect(await reapSandboxContainers()).toBeGreaterThanOrEqual(1);
+        // Assert the outcome, not the count: a concurrent `helmwright run` (e2e tests) also reaps
+        // orphans at startup and may remove this one first.
+        expect(await reapSandboxContainers()).toBeGreaterThanOrEqual(0);
         expectNoContainer(orphan);
         const ps = ["ps", "-aq", "--filter", `name=${live}`];
         expect(spawnSync("docker", ps, { encoding: "utf8" }).stdout).not.toBe(

@@ -84,19 +84,26 @@ export type { Broker, BrokerContext } from "./broker/broker.ts";
 export {
   EXECUTE_TIMEOUT_MS,
   MAX_TOOL_OUTPUT_BYTES,
+  checkWorkspace,
   createBroker,
   sandboxToolResult,
 } from "./broker/broker.ts";
 export type {
+  ReapResult,
   ReplayResult,
+  RunOutcome,
+  RunSetup,
   RunTaskOptions,
   RunTaskResult,
   Task,
 } from "./run/run.ts";
 export {
+  CancelledError,
   UsageError,
   contextDigest,
+  executeRun,
   loadTask,
+  reapRuns,
   replayRun,
   runTask,
 } from "./run/run.ts";

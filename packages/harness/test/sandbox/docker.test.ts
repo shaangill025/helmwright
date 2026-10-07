@@ -74,8 +74,14 @@ const FAKE = fileURLToPath(
 function fakeDocker(mode: string) {
   const binary = join(root, `docker-${mode}`);
   const log = join(root, `calls-${mode}.jsonl`);
-  const script = `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' '${mode}' '${log}' "$@"\n`;
+  // The shell records each attempt at once; the node fake may be killed before it starts.
+  const tried = join(root, `attempts-${mode}.txt`);
+  const script =
+    `#!/bin/sh\nprintf '%s\\n' "$1" >> '${tried}'\n` +
+    `exec '${process.execPath}' '${FAKE}' '${mode}' '${log}' "$@"\n`;
   writeFileSync(binary, script, { mode: 0o755 });
+  const attempts = (): string[] =>
+    existsSync(tried) ? readFileSync(tried, "utf8").trim().split("\n") : [];
   const calls = (): Call[] =>
     existsSync(log)
       ? readFileSync(log, "utf8")
@@ -89,7 +95,7 @@ function fakeDocker(mode: string) {
     cleanupTimeoutMs: 1_500,
     containerName: NAME,
   };
-  return { binary, calls, deps };
+  return { binary, calls, attempts, deps };
 }
 
 const commands = (calls: Call[]) => calls.map((call) => call.args?.[0]);
@@ -444,9 +450,13 @@ describe("runInSandbox", () => {
     // kill, rm, client exit, rm, ps: each bounded by cleanupTimeoutMs.
     expect(Date.now() - started).toBeLessThan(10_000);
     expect(result).toMatchObject({ timedOut: true, cleanupFailed: true });
-    expect(commands(fake.calls())).toEqual(
-      expect.arrayContaining(["run", "kill", "rm", "ps"]),
-    );
+    // Every cleanup step was attempted, in order (recorded by the shell, not the slower
+    // node fake). The run client's shell may start after the kill's: both are async spawns.
+    const attempts = fake.attempts();
+    expect(attempts.filter((a) => a === "run")).toHaveLength(1);
+    expect(attempts.filter((a) => a !== "run")).toEqual([
+      ...["kill", "rm", "rm", "ps"],
+    ]);
   }, 15_000);
 
   it("rejects a workspace containing the endpoint's socket, without running", async () => {
@@ -497,6 +507,18 @@ describe("reapSandboxContainers", () => {
     ]);
     expect(rm).toEqual(["rm", "-f", "aaa111"]);
     expect(rest).toEqual([]);
+  });
+
+  it("treats a container a concurrent reaper is removing as reaped", async () => {
+    const fake = fakeDocker("rm-race");
+    await expect(reapSandboxContainers(fake.deps)).resolves.toBe(1);
+  });
+
+  it("still rejects any other removal failure", async () => {
+    const fake = fakeDocker("rm-fail");
+    await expect(reapSandboxContainers(fake.deps)).rejects.toThrow(
+      /docker rm failed .*permission denied/,
+    );
   });
 });
 
