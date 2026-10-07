@@ -35,8 +35,8 @@ export function hasControl(text: string, allowed = ""): boolean {
 export const caseFold = (text: string): string =>
   text.toUpperCase().toLowerCase();
 
-/** Unicode format characters (bidi, zero-width, BOM, soft hyphen) and line/paragraph separators. */
-export const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}]/u;
+/** Unicode format characters (bidi, zero-width, BOM, soft hyphen), line/paragraph separators and lone surrogates. */
+export const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
 
 /**
  * `futureRealpath`, except that a dangling symlink is followed (a write would follow

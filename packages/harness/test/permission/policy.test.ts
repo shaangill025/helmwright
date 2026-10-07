@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
@@ -29,9 +30,12 @@ let worktree: string;
 beforeAll(() => {
   worktree = join(mkdtempSync(join(tmpdir(), "helmwright-policy-")), "wt");
   mkdirSync(join(worktree, "src", "gh", "workflows"), { recursive: true });
-  mkdirSync(join(worktree, "packages", "harness", "src", "loop"), {
-    recursive: true,
-  });
+  mkdirSync(join(worktree, "hsrc", "loop"), { recursive: true });
+  mkdirSync(join(worktree, "packages", "harness"), { recursive: true });
+  mkdirSync(join(worktree, "foo", "evals"), { recursive: true });
+  // SF1: links at a leading part of a Ring 0 glob.
+  symlinkSync("../../hsrc", join(worktree, "packages", "harness", "src"));
+  symlinkSync("../foo", join(worktree, "packages", "foo"));
   for (const file of ["a.ts", "pkg.json"]) {
     writeFileSync(join(worktree, "src", file), "");
   }
@@ -120,6 +124,8 @@ describe("evaluate with the default policy", () => {
     ["fs.edit", p("src/../../x"), "ask", "fs.edit.outside"],
     ["commit", commit(branch, "src/a.ts"), "allow", "commit.run-branch"],
     ["commit", commit("main", "src/a.ts"), "ask", "default.ask"],
+    ["commit", commit("x/" + "a".repeat(255), "a"), "ask", "default.ask"],
+    ["commit", commit("refs/tags/v1", "src/a.ts"), "ask", "default.ask"],
     // Paths that cannot be checked file by file count as Ring 0.
     ["commit", commit(branch, "."), "alwaysAsk", "always-ask.ring0-path"],
     ["commit", commit(branch, "src"), "alwaysAsk", "always-ask.ring0-path"],
@@ -211,10 +217,27 @@ describe("evaluate with the default policy", () => {
       "/main",
       "@",
       "main:x",
+      // SF6c and the ASCII-only nit.
+      ...["HEAD", "FETCH_HEAD", "ORIG_HEAD", "MERGE_HEAD", "CHERRY_PICK_HEAD"],
+      "head",
+      "m\u00e4in",
+      "a\u00a0b",
+      "x/" + "a".repeat(256),
     ].flatMap((ref) => [
       ["push", to("origin", ref)] as [string, unknown],
       ["commit", commit(ref, "src/a.ts")] as [string, unknown],
     ]),
+    ["push", to("origin", "refs/remotes/origin/main")],
+    ["push", to("origin", "refs/tags/v1")],
+    ["push", to("origin", "Refs/Tags/v1")],
+    // SF5: an option where a destination or package name belongs.
+    ["push", to("--receive-pack=x")],
+    ["comment", { destination: "-x", body: "b" }],
+    ["publish", { destination: "--registry=x" }],
+    ["deploy", { destination: "-x" }],
+    ["deps.add", { packages: ["--config.registry=x"] }],
+    ["deps.add", { packages: ["left-pad", "-x"] }],
+    ["fs.edit", p("src/\ud800")],
   ])("denies the unknown action or invalid input %s %j", (action, input) => {
     expect(verdict(action, input).tier).toBe("deny");
   });
@@ -551,7 +574,15 @@ describe("evaluate on hostile requests (B9a-4)", () => {
 
   it("never allows an edit through an upper-cased worktree path", () => {
     const path = `${worktree.toUpperCase()}/package.json`;
-    expect(verdict("fs.edit", p(path)).tier).not.toBe("allow");
+    // The tier depends on the filesystem's case handling. Case-insensitive (this macOS
+    // APFS checkout, observed 2026-10-07): it resolves to the Ring 0 link package.json.
+    // Case-sensitive (Linux): a missing path outside the worktree.
+    const folds = existsSync(worktree.toUpperCase());
+    expect(verdict("fs.edit", p(path))).toEqual(
+      folds
+        ? { tier: "alwaysAsk", ruleId: R0_PATH }
+        : { tier: "ask", ruleId: "fs.edit.outside" },
+    );
   });
 });
 
@@ -572,16 +603,39 @@ describe("targets show the payload (S3)", () => {
       '"dark"',
     );
     const long = target("config.set", set("ui.theme", { a: "x".repeat(900) }));
-    expect(Array.from(long?.detail ?? "").length).toBeLessThanOrEqual(512);
-    expect(long?.detail).toMatch(/…\[truncated\]$/);
+    expect(long?.detail).toBe('{"a":"' + "x".repeat(506) + "…[truncated]");
     const body = {
       destination: "github.com",
       body: `ok\u202e\n${"y".repeat(900)}`,
     };
     const shown = target("comment", body);
     expect(shown?.value).toBe("github.com");
-    expect(Array.from(shown?.detail ?? "").length).toBeLessThanOrEqual(512);
-    expect(shown?.detail).toMatch(/^ok\\u\{202e\}\\u\{a\}y/);
+    expect(shown?.detail).toBe(
+      "ok\\u{202e}\\u{a}" + "y".repeat(508) + "…[truncated]",
+    );
+  });
+
+  const comment = (body: string) =>
+    target("comment", { destination: "github.com", body })?.detail;
+
+  it("escapes default-ignorable code points and non-ASCII spaces", () => {
+    expect(comment("a\u3164b\ufe0fc\u2003d e")).toBe(
+      "a\\u{3164}b\\u{fe0f}c\\u{2003}d e",
+    );
+  });
+
+  it("shows literal \\u{202e} text unlike a real U+202E", () => {
+    expect(comment("\\u{202e}")).toBe("\\\\u{202e}");
+    expect(comment("\u202e")).toBe("\\u{202e}");
+  });
+
+  it("cuts the raw text to 512 code points before escaping", () => {
+    const body = "y".repeat(511) + "\u202e" + "z".repeat(10);
+    expect(comment(body)).toBe("y".repeat(511) + "\\u{202e}…[truncated]");
+    expect(comment("\u202e".repeat(512))).toBe("\\u{202e}".repeat(512));
+    expect(comment("\u{1f600}".repeat(513))).toBe(
+      "\u{1f600}".repeat(512) + "…[truncated]",
+    );
   });
 });
 
@@ -600,6 +654,14 @@ describe("Ring 0 exports are frozen (S2)", () => {
     expect(() => (BASE.rules as unknown[]).unshift({})).toThrow(TypeError);
     expect(verdict("push", to("origin")).tier).toBe("alwaysAsk");
   });
+
+  it("freezes PERMISSION_ONLY_ACTIONS and resolvePolicy's result", () => {
+    expect(Object.isFrozen(PERMISSION_ONLY_ACTIONS)).toBe(true);
+    const resolved = resolvePolicy(BASE, BASE);
+    expect(Object.isFrozen(resolved)).toBe(true);
+    expect(Object.isFrozen(resolved.rules[0])).toBe(true);
+    expect(Object.isFrozen(resolved.ring0Paths)).toBe(true);
+  });
 });
 
 describe("pre-existing Ring 0 symlinks (#26)", () => {
@@ -613,6 +675,52 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
       ]),
     );
     expect(targets).not.toContain("src/a.ts/**");
+  });
+
+  it("adds the target of a link at a leading part of a Ring 0 glob (SF1)", () => {
+    const extraRing0Paths = ring0LinkTargets(worktree, RING0_PATHS);
+    expect(extraRing0Paths).toEqual(
+      expect.arrayContaining(["hsrc/**", "foo/**"]),
+    );
+    const run = { worktree, runId: "run_01" };
+    for (const [action, input] of [
+      ["fs.edit", p("hsrc/loop/x.ts")],
+      ["commit", commit(branch, "hsrc/loop/x.ts")],
+      ["fs.edit", p("foo/evals/x.json")],
+    ] as const) {
+      expect(evaluate(BASE, { ...run, action, input }).tier).toBe("allow");
+      expect(
+        evaluate(BASE, { ...run, action, input, extraRing0Paths }),
+      ).toMatchObject({ tier: "alwaysAsk", ruleId: R0_PATH });
+    }
+  });
+
+  it.each([
+    "a".repeat(129),
+    "café/**",
+    "a b",
+    "/abs",
+    "a//b",
+    "a/",
+    "../x",
+    "a/./b",
+    "**/x",
+    "a**",
+    "a/**b",
+  ])("denies an invalid extra Ring 0 glob %j", (glob) => {
+    const request = { action: "fs.read", input: p("src/a.ts"), worktree };
+    const extraRing0Paths = [glob];
+    expect(
+      evaluate(BASE, { ...request, runId: "r", extraRing0Paths }).tier,
+    ).toBe("deny");
+  });
+
+  it("accepts a 128-character extra Ring 0 glob", () => {
+    const request = { action: "fs.read", input: p("src/a.ts"), worktree };
+    const extraRing0Paths = ["a".repeat(128), "**"];
+    expect(
+      evaluate(BASE, { ...request, runId: "r", extraRing0Paths }).tier,
+    ).toBe("allow");
   });
 
   it("treats the run's extra Ring 0 paths as Ring 0", () => {
@@ -656,5 +764,77 @@ describe("resolvePolicy (B9a-4)", () => {
     };
     expect(() => resolvePolicy(base, override)).toThrow(RangeError);
     expect(() => resolvePolicy(base, override)).toThrow(/relaxes deps\.add/);
+  });
+});
+
+describe("Ring 0 link chains (SF2)", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "helmwright-chain-"));
+    mkdirSync(join(dir, "outside"));
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  /** A fresh worktree with a config directory and the given links. */
+  const tree = (name: string, links: [string, string][]) => {
+    const wt = join(dir, name);
+    mkdirSync(join(wt, "config"), { recursive: true });
+    for (const [from, target] of links) symlinkSync(target, join(wt, from));
+    return wt;
+  };
+
+  it("records each link in the chain, so a link later replaced by a file asks", () => {
+    const wt = tree("a", [
+      ["package.json", "a"],
+      ["a", "config/pkg.json"],
+    ]);
+    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    expect([...extraRing0Paths].sort()).toEqual(["a/**", "config/pkg.json/**"]);
+    rmSync(join(wt, "a"));
+    writeFileSync(join(wt, "a"), "");
+    const request = { action: "commit", input: commit(branch, "a") };
+    const run = { ...request, worktree: wt, runId: "run_01" };
+    expect(evaluate(BASE, run).tier).toBe("allow");
+    expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
+      tier: "alwaysAsk",
+      ruleId: R0_PATH,
+    });
+  });
+
+  it("keeps the links inside the worktree when the last hop leaves it", () => {
+    const outside = join(dir, "outside", "x");
+    const wt = tree("b", [
+      ["package.json", "b"],
+      ["b", outside],
+    ]);
+    expect(ring0LinkTargets(wt, RING0_PATHS)).toEqual(["b/**"]);
+  });
+
+  it("refuses the run when a link target's name is not a valid Ring 0 glob", () => {
+    const wt = tree("odd", [["package.json", "my pkg.json"]]);
+    expect(() => ring0LinkTargets(wt, RING0_PATHS)).toThrow(
+      /unsupported names.*my pkg\.json/,
+    );
+  });
+
+  it("records a symlinked directory along the way", () => {
+    const wt = tree("c", [
+      ["d", "config"],
+      ["package.json", "d/pkg.json"],
+    ]);
+    expect([...ring0LinkTargets(wt, RING0_PATHS)].sort()).toEqual([
+      "config/pkg.json/**",
+      "d/**",
+    ]);
+  });
+
+  it("throws on a link loop rather than walking it", () => {
+    const wt = tree("d", [
+      ["package.json", "l1"],
+      ["l1", "l2"],
+      ["l2", "l1"],
+    ]);
+    expect(() => ring0LinkTargets(wt, RING0_PATHS)).toThrow();
   });
 });
