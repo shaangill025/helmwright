@@ -233,7 +233,7 @@ async function runAtTty(turns: string, answer: string) {
   });
   clearInterval(timer);
   stdin.destroy();
-  const shown = readFileSync(terminal, "utf8").replaceAll("\r\n", "\n");
+  const shown = readFileSync(terminal, "utf8").split("\r\n").join("\n");
   const lines = readFileSync(stdoutFile, "utf8").trim().split("\n");
   expect(lines, shown).toHaveLength(1);
   return { status, shown, out: JSON.parse(lines[0] ?? "") as RunOutput };
