@@ -68,14 +68,21 @@ function rawInsert(
 ): void {
   raw
     .prepare(
-      `${verb} INTO events (seq, event_id, graph_id, run_id, node_id, type, at,
-        payload, schema_version) VALUES (?, ?, 'g', 'r', 'n', 'x.y', ?, '{}', ?)`,
+      verb +
+        " INTO events (seq, event_id, graph_id, run_id, node_id, type, at," +
+        " payload, schema_version) VALUES (?, ?, 'g', 'r', 'n', 'x.y', ?, ?, ?)",
     )
-    .run(seq, eventId, new Date().toISOString(), version ?? 1);
+    .run(seq, eventId, new Date().toISOString(), "{}", version ?? 1);
 }
-function runNode(script: string) {
+/** Runs a child ES module; values reach it through env, never by splicing them into code. */
+function runNode(
+  lines: readonly string[],
+  env: Readonly<Record<string, string>>,
+) {
+  const script = lines.join("\n");
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, HW_MODULE: MODULE, HW_FILE: file, ...env },
   });
   let stderr = "";
   child.stderr.on("data", (chunk: Buffer) => {
@@ -274,14 +281,18 @@ describe("transaction", () => {
 
   it("leaves no unhandled rejection when an async callback rejects", async () => {
     openLog();
-    const { done } = runNode(`
-      const { openSessionLog } = await import(${JSON.stringify(MODULE)});
-      const log = openSessionLog(${JSON.stringify(file)});
-      try {
-        log.transaction(() => Promise.reject(new Error("late failure")));
-      } catch {}
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      log.close();`);
+    const { done } = runNode(
+      [
+        "const { openSessionLog } = await import(process.env.HW_MODULE);",
+        "const log = openSessionLog(process.env.HW_FILE);",
+        "try {",
+        '  log.transaction(() => Promise.reject(new Error("late failure")));',
+        "} catch {}",
+        "await new Promise((resolve) => setTimeout(resolve, 10));",
+        "log.close();",
+      ],
+      {},
+    );
     expect(await done).toEqual({ code: 0, stderr: "" });
   });
 });
@@ -294,17 +305,20 @@ describe("cross-process", () => {
     const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
     const log = openLog();
     log.append(input());
-    const script = `
-      const { openSessionLog } = await import(${JSON.stringify(MODULE)});
-      const log = openSessionLog(${JSON.stringify(file)});
-      for (let i = 0; i < ${String(CHILD_EVENTS)}; i++) {
-        log.append({ eventId: "child-" + i, graphId: "graph-1", runId: "child",
-          nodeId: "node-1", type: "test.child", at: new Date().toISOString(),
-          payload: { i } });
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
-      log.close();`;
-    const { child, done } = runNode(script);
+    const { child, done } = runNode(
+      [
+        "const { openSessionLog } = await import(process.env.HW_MODULE);",
+        "const log = openSessionLog(process.env.HW_FILE);",
+        "for (let i = 0; i < Number(process.env.HW_COUNT); i++) {",
+        '  log.append({ eventId: "child-" + i, graphId: "graph-1", runId: "child",',
+        '    nodeId: "node-1", type: "test.child", at: new Date().toISOString(),',
+        "    payload: { i } });",
+        "  await new Promise((resolve) => setTimeout(resolve, 1));",
+        "}",
+        "log.close();",
+      ],
+      { HW_COUNT: String(CHILD_EVENTS) },
+    );
     let parentEvents = 1;
     while (child.exitCode === null && child.signalCode === null) {
       log.append(input({ runId: "parent" }));
