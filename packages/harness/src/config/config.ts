@@ -18,13 +18,71 @@ import {
 export const CONFIG_FILE = "helmwright.config.json";
 /** The largest config file read (256 KiB). */
 export const MAX_CONFIG_BYTES = 262_144;
-/** No repo hooks: a hook would run on the host, outside the sandbox. */
-export const NO_HOOKS: readonly string[] = ["-c", "core.hooksPath=/dev/null"];
+/** The bound on one git call; `worktree add` (a checkout) gets GIT_CHECKOUT_TIMEOUT_MS. */
+export const GIT_TIMEOUT_MS = 30_000;
+export const GIT_CHECKOUT_TIMEOUT_MS = 120_000;
+/**
+ * Before every git subcommand: no repo hooks and no fsmonitor (each would run a program
+ * on the host, outside the sandbox), no LFS download, no replace objects.
+ */
+const GIT_SAFETY: readonly string[] = [
+  ...["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"],
+  ...["-c", "filter.lfs.smudge=", "-c", "filter.lfs.process="],
+  ...["-c", "filter.lfs.required=false", "--no-replace-objects"],
+];
+/** Set after every inherited GIT_* variable is removed. */
+const GIT_ENV = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_LFS_SKIP_SMUDGE: "1",
+  GIT_CONFIG_NOSYSTEM: "1",
+};
+
+/** A git call outlived its bound; its message is fixed text. */
+class GitTimeoutError extends Error {}
+
+/**
+ * Runs `git -C repo <safety options> ...args` and returns its stdout. No inherited
+ * GIT_* variable (GIT_DIR, GIT_CONFIG_PARAMETERS, ...) reaches git, so it reads `repo`
+ * and the owner's own config. The repo's .git/config and the user's global config are
+ * trusted: a filter driver they define can still run during a checkout.
+ * @throws Error with fixed text after `timeoutMs` (default GIT_TIMEOUT_MS); else
+ * execFileSync's error.
+ */
+export function runGit(
+  repo: string,
+  args: readonly string[],
+  options: {
+    readonly maxBuffer?: number | undefined;
+    readonly timeoutMs?: number;
+  } = {},
+): Buffer {
+  const { maxBuffer = 65_536, timeoutMs = GIT_TIMEOUT_MS } = options;
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+  );
+  try {
+    return execFileSync("git", ["-C", repo, ...GIT_SAFETY, ...args], {
+      env: { ...env, ...GIT_ENV },
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer,
+      timeout: timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code !== "ETIMEDOUT") throw error;
+    const what = `git ${args[0] ?? ""} timed out after ${String(timeoutMs)} ms`;
+    throw new GitTimeoutError(what);
+  }
+}
 
 /** The run's config could not be loaded or is not admitted (the run is refused). */
 export class ConfigError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
+  /** N3: never a cause, which could hold git's raw output or unescaped text. */
+  constructor(message: string) {
+    super(message);
     this.name = "ConfigError";
   }
 }
@@ -37,8 +95,9 @@ export interface ConfigRecord {
   readonly sha256: string;
   /**
    * sha256 (hex) of the canonical JSON of the Ring 0 settings after defaults are
-   * applied: an object keyed by each RING0_CONFIG_KEYS name, `permissions` with its
-   * resolved policy.
+   * applied: `{format: RING0_FORMAT}` plus each RING0_CONFIG_KEYS name, `permissions`
+   * with its resolved policy. A change to the harness's default policy (or to a
+   * default Ring 0 setting) changes it too.
    */
   readonly ring0Sha256: string;
 }
@@ -51,6 +110,8 @@ export interface RunConfig {
   readonly record: ConfigRecord;
 }
 
+/** The version of the object hashed for `ring0Sha256`. */
+export const RING0_FORMAT = "ring0/v1";
 const OID = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MODES = new Map([
   ["100755", "an executable file"],
@@ -67,13 +128,8 @@ const sha256 = (data: string | Uint8Array) =>
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-function git(repo: string, args: readonly string[], maxBuffer = 65_536) {
-  return execFileSync(
-    "git",
-    ["-C", repo, ...NO_HOOKS, "--literal-pathspecs", ...args],
-    { stdio: ["ignore", "pipe", "pipe"], maxBuffer },
-  );
-}
+const git = (repo: string, args: readonly string[], maxBuffer?: number) =>
+  runGit(repo, ["--literal-pathspecs", ...args], { maxBuffer });
 
 /** The index past the closing quote of the JSON string that starts at `start`. */
 function stringEnd(text: string, start: number): number {
@@ -163,9 +219,7 @@ function settle(policyOverride: unknown): {
       policy = resolvePolicy(DEFAULT_PERMISSION_POLICY, policyOverride);
     } catch (error) {
       const why = displayText(errorMessage(error));
-      throw new ConfigError(`${CONFIG_FILE}: ${POLICY_SETTING}: ${why}`, {
-        cause: error,
-      });
+      throw new ConfigError(`${CONFIG_FILE}: ${POLICY_SETTING}: ${why}`);
     }
   }
   // Every other present setting equals its default, so this is the whole config.
@@ -183,7 +237,12 @@ function settle(policyOverride: unknown): {
       );
     return [key, value] as const;
   });
-  return { policy, ring0Sha256: sha256(canonical(Object.fromEntries(ring0))) };
+  return {
+    policy,
+    ring0Sha256: sha256(
+      canonical({ format: RING0_FORMAT, ...Object.fromEntries(ring0) }),
+    ),
+  };
 }
 
 /** Validates and admits the file's raw bytes. @throws ConfigError */
@@ -222,7 +281,7 @@ function admit(bytes: Uint8Array): unknown {
  * and no `__proto__`, `constructor` or `prototype` key at any level, valid against
  * its schema, with every setting at its default (07 rule 1) except
  * `permissions.policy`, which may only make the default policy stricter.
- * Every git call runs without repo hooks.
+ * Every git call goes through `runGit`.
  * @throws ConfigError naming the file (or HEAD) and the first problem, escaped; it
  * never quotes the file's raw content.
  */
@@ -232,7 +291,8 @@ export function loadRunConfig(repo: string): RunConfig {
     const args = ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"];
     baseCommit = git(repo, args).toString("utf8").trim();
   } catch (error) {
-    throw new ConfigError("task.repo has no commit at HEAD", { cause: error });
+    if (error instanceof GitTimeoutError) throw new ConfigError(error.message);
+    throw new ConfigError("task.repo has no commit at HEAD");
   }
   if (!OID.test(baseCommit)) {
     throw new ConfigError("task.repo has no commit at HEAD");
@@ -242,20 +302,14 @@ export function loadRunConfig(repo: string): RunConfig {
       return git(repo, args, max);
     } catch (error) {
       const why = displayText(errorMessage(error));
-      throw new ConfigError(`${CONFIG_FILE}: cannot read: ${why}`, {
-        cause: error,
-      });
+      throw new ConfigError(`${CONFIG_FILE}: cannot read: ${why}`);
     }
   };
-  const lsTree = [
-    "ls-tree",
-    "-z",
-    "--full-tree",
-    baseCommit,
-    "--",
-    CONFIG_FILE,
-  ];
-  const entries = read(lsTree).toString("utf8").split("\0").filter(Boolean);
+  const lsTree = ["ls-tree", "-z", "--full-tree", baseCommit, "--"];
+  const entries = read([...lsTree, CONFIG_FILE])
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
   if (entries.length === 0) {
     const { policy, ring0Sha256 } = settle(undefined);
     const sha = sha256(canonical(CONFIG_DEFAULTS));
