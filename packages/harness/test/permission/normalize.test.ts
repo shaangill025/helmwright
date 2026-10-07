@@ -39,6 +39,8 @@ beforeAll(() => {
   link("missing/../src", "dangling-dotdot");
   link("/workspace/src/x.ts", "ws-file");
   link("/workspace", "ws-root");
+  // A relative target whose .. climbs out of the worktree (SF-D).
+  link(`${"../".repeat(12)}workspace/package.json`, "climb");
 });
 
 afterAll(() => {
@@ -118,6 +120,10 @@ describe("normalizePath", () => {
   it("rejects a symlink loop, and `..` after a missing component", () => {
     expect(() => normalizePath("loop-a/x", worktree)).toThrow(TypeError);
     expect(() => normalizePath("dangling-dotdot", worktree)).toThrow(TypeError);
+  });
+
+  it("rejects a link whose target's .. climbs above the worktree (SF-D)", () => {
+    expect(() => normalizePath("climb", worktree)).toThrow(TypeError);
   });
 });
 

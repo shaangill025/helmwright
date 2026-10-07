@@ -46,8 +46,8 @@ export const INVISIBLE = /[\p{Cf}\p{Zl}\p{Zp}\p{Cs}]/u;
  * to or under the sandbox's `/workspace` continues from `worktreeReal`. It stops at
  * the first missing or non-directory component and appends the remaining parts.
  * @returns the links followed and the final path (its existing part a realpath), or
- * undefined past 40 links (Linux's limit) or if `..` follows a missing or
- * non-directory component.
+ * undefined past 40 links (Linux's limit), if `..` follows a missing or
+ * non-directory component, or if a link target's `..` leaves the worktree.
  * @throws an fs error.
  */
 export function walkPath(
@@ -63,7 +63,14 @@ export function walkPath(
   for (let part = pending.shift(); part !== undefined; part = pending.shift()) {
     if (part === "" || part === ".") continue;
     if (part === "..") {
-      current = dirname(current);
+      // Only link targets bring `..` here (the input is normalized first). One that leaves
+      // the worktree reaches `/` in the sandbox, where `workspace` is the worktree again,
+      // but the host's parent here: the two views differ, so the path does not resolve.
+      const up = dirname(current);
+      if (contains(worktreeReal, current) && !contains(worktreeReal, up)) {
+        return undefined;
+      }
+      current = up;
       continue;
     }
     if (sandboxRoot && part === CONTAINER_PATH.slice(1)) {

@@ -880,6 +880,13 @@ describe("Ring 0 link chains (SF2)", () => {
     }
   });
 
+  it("refuses the run when a link target's .. climbs above the worktree (SF-D)", () => {
+    // In the sandbox this reaches /workspace/hsrc again; on the host it leaves the tree.
+    const up = `${"../".repeat(12)}workspace/hsrc`;
+    const wt = tree("up", [["packages/harness/src", up]]);
+    expect(() => ring0LinkTargets(wt, RING0_PATHS)).toThrow();
+  });
+
   it("maps an absolute target under /workspace onto the worktree (SF-B)", () => {
     const wt = tree("f", [["packages/harness/src", "/workspace/hsrc"]]);
     mkdirSync(join(wt, "hsrc", "loop"), { recursive: true });
