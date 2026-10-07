@@ -7,11 +7,10 @@ it with pinned tools; no scanning job runs PR code. Jobs that run PR code stay o
 remain a backstop: `verify`, and the Grype image build (it runs the PR's Dockerfile). The harness's
 own sensor floor (B3) runs trusted, pinned tools on candidate trees outside the candidate's control.
 
-Transition: the change ships in two PRs. CI1a adds `pull_request_target`; until CI1b removes
-`pull_request` from `sensors.yml`, every PR also gets same-name scanning runs from its own copy, so
-the guarantee above holds only after CI1b merges. CI1b merges directly after CI1a, with no other PR
-in between. CI1a itself is gated only by its own copy (`main`'s copy has no `pull_request_target`
-trigger yet), the same as before this change.
+History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
+`pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.
+CI1a was gated only by its own copy, the same as before the change; CI1b was the first PR gated by
+`main`'s copy.
 
 ## What CI enforces
 
