@@ -1,4 +1,5 @@
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
+import { join, posix, resolve } from "node:path";
 import {
   validatePermissionPolicy,
   type PermissionAction,
@@ -12,7 +13,9 @@ import {
   isDependencyInstall,
   isRing0Path,
   normalizePath,
+  type NormalizedPath,
 } from "./normalize.ts";
+import { CONTAINER_PATH, contains } from "../sandbox/docker.ts";
 
 /** True for an existing directory, and for anything that cannot be checked (fail safe). */
 function isDirectory(real: string): boolean {
@@ -21,6 +24,44 @@ function isDirectory(real: string): boolean {
   } catch {
     return true;
   }
+}
+
+/** True if a path below `base` has an existing component that is a symlink, or cannot be checked (fail safe). */
+function hasLink(base: string, relative: string): boolean {
+  let path = base;
+  for (const part of relative.split("/").filter(Boolean)) {
+    path = join(path, part);
+    try {
+      const stat = lstatSync(path, { throwIfNoEntry: false });
+      if (stat === undefined) return false;
+      if (stat.isSymbolicLink()) return true;
+    } catch {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The input's worktree-relative path before symlinks are followed: NFC, `.` and `..`
+ * collapsed, `/workspace` mapped onto the worktree. Undefined if it is outside.
+ */
+function lexical(
+  input: string,
+  worktree: string,
+): { base: string; relative: string } | undefined {
+  const path = posix.normalize(input.normalize("NFC"));
+  const real = realpathSync.native(worktree);
+  const mapped =
+    path === CONTAINER_PATH || path.startsWith(CONTAINER_PATH + "/");
+  const host = mapped
+    ? join(real, path.slice(CONTAINER_PATH.length))
+    : resolve(real, path);
+  // An absolute input may name the worktree by its given path rather than its realpath.
+  const base = [real, resolve(worktree)].find((dir) => contains(dir, host));
+  return base === undefined
+    ? undefined
+    : { base, relative: posix.relative(base, host) };
 }
 
 /** One action call to rule on. `action` and `input` are untrusted. */
@@ -112,13 +153,16 @@ export const RING0_PATHS: NonEmpty<string> = [
   "package.json",
   "pnpm-workspace.yaml",
   ".node-version",
+  // Owner decision 2026-10-06: harness config and package-manager hooks.
+  "helmwright.config.json",
+  ".npmrc",
+  ".pnpmfile.cjs",
 ];
 
-/** The Ring 0 settings of design 08, plus the spend cap (raising it always asks, Q51). */
+/** The Ring 0 settings of design 08, every permissions setting (owner, 2026-10-06), and the spend cap (Q51). */
 export const RING0_SETTINGS: NonEmpty<string> = [
   "intake.classification",
-  "permissions.governance",
-  "permissions.untrustedContent",
+  "permissions",
   "harnessLoop.selfImprovementModel",
   "harnessLoop.codeEvolution",
   "harnessLoop.evalMix",
@@ -264,6 +308,16 @@ function factsFor(
     relative !== undefined &&
     relative !== "" &&
     isRing0Path(relative, ring0Paths);
+  // B1: git commits a link as a link and tools follow it, so a write is Ring 0 if the
+  // path before or after symlinks is, or if it passes through any link (even dangling).
+  const isRing0Write = (input: string, resolved: NormalizedPath) => {
+    const named = lexical(input, request.worktree);
+    // Lexically outside but resolved into the worktree: a link outside leads in.
+    if (named === undefined) return resolved.relative !== undefined;
+    return (
+      isRing0(resolved) || isRing0(named) || hasLink(named.base, named.relative)
+    );
+  };
   const normalize = (p: string) => {
     try {
       return normalizePath(p, request.worktree);
@@ -274,16 +328,27 @@ function factsFor(
   const runBranch = `helmwright/run/${request.runId}`;
   const resolved = typeof path === "string" ? normalize(path) : undefined;
   let ring0: Facts["ring0"];
-  if (requested !== "fs.read" && resolved !== undefined && isRing0(resolved)) {
+  if (
+    requested !== "fs.read" &&
+    typeof path === "string" &&
+    resolved !== undefined &&
+    isRing0Write(path, resolved)
+  ) {
     ring0 = "path";
   } else if (
     Array.isArray(paths) &&
-    (paths as string[]).map(normalize).some(
-      // A path that is the root, a directory or not strictly inside the worktree cannot be
-      // checked file by file, so it counts as Ring 0 (B8 builds commit paths from the diff).
-      (p) =>
-        !p.inside || p.relative === "" || isDirectory(p.real) || isRing0(p),
-    )
+    (paths as string[])
+      .map((input) => [input, normalize(input)] as const)
+      .some(([input, p]) => {
+        // A path that is the root, a directory or not strictly inside the worktree cannot be
+        // checked file by file, so it counts as Ring 0 (B8 builds commit paths from the diff).
+        return (
+          !p.inside ||
+          p.relative === "" ||
+          isDirectory(p.real) ||
+          isRing0Write(input, p)
+        );
+      })
   ) {
     ring0 = "path";
   } else if (typeof setting === "string") {

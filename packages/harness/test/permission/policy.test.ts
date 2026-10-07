@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,9 +25,18 @@ import {
 let worktree: string;
 beforeAll(() => {
   worktree = join(mkdtempSync(join(tmpdir(), "helmwright-policy-")), "wt");
-  mkdirSync(join(worktree, "src"), { recursive: true });
-  mkdirSync(join(worktree, ".github", "workflows"), { recursive: true });
-  symlinkSync(".github/workflows/new.yml", join(worktree, "to-ring0"));
+  mkdirSync(join(worktree, "src", "gh", "workflows"), { recursive: true });
+  for (const file of ["a.ts", "pkg.json"]) {
+    writeFileSync(join(worktree, "src", file), "");
+  }
+  symlinkSync("tsconfig.base.json", join(worktree, "to-ring0"));
+  // B1: Ring 0 names that are links to ordinary paths (one dangling), and a linked file.
+  symlinkSync("src/pkg.json", join(worktree, "package.json"));
+  symlinkSync("src/missing.js", join(worktree, "eslint.config.js"));
+  symlinkSync("src/gh", join(worktree, ".github"));
+  symlinkSync("a.ts", join(worktree, "src", "link.ts"));
+  // A link outside the worktree that leads into it.
+  symlinkSync("wt", join(worktree, "..", "alias"));
   symlinkSync("src/esc\u001b[2Kname.ts", join(worktree, "to-esc"));
 });
 afterAll(() => {
@@ -55,6 +70,18 @@ const alwaysAsked: [string, unknown][] = [
   ["spend.raiseCap", { capUsd: 50 }],
   ["config.set", set("permissions.governance", "policy")],
   ["config.set", set("permissions")],
+  ["config.set", set("permissions.rules", [])],
+  ["config.set", set("permissions.alwaysAsk", [])],
+  ["config.set", set("permissions.ring0Paths", [])],
+  ["fs.edit", p("helmwright.config.json")],
+  ["fs.edit", p(".npmrc")],
+  ["fs.edit", p(".pnpmfile.cjs")],
+  ["commit", commit(branch, "package.json")],
+  ["commit", commit(branch, "eslint.config.js")],
+  ["commit", commit(branch, "src/link.ts")],
+  ["commit", commit(branch, ".github")],
+  ["fs.edit", p("package.json")],
+  ["fs.delete", p("/workspace/package.json")],
   ["fs.delete", p("../outside.txt")],
   ["fs.delete", p(".git/config")],
   ["fs.edit", p(".GitHub/workflows/ci.yml")],
@@ -97,6 +124,17 @@ describe("evaluate with the default policy", () => {
     ["fs.edit", p(".GitHub/workflows/ci.yml"), "alwaysAsk", R0_PATH],
     ["fs.edit", p("to-ring0"), "alwaysAsk", R0_PATH],
     ["fs.read", p("to-ring0"), "allow", "fs.read.worktree"],
+    // B1: a Ring 0 name that is a link (even dangling), or any link, is Ring 0 for writes.
+    ["commit", commit(branch, "package.json"), "alwaysAsk", R0_PATH],
+    ["commit", commit(branch, "eslint.config.js"), "alwaysAsk", R0_PATH],
+    ["commit", commit(branch, "src/link.ts"), "alwaysAsk", R0_PATH],
+    ["commit", commit(branch, ".github"), "alwaysAsk", R0_PATH],
+    ["fs.edit", p("package.json"), "alwaysAsk", R0_PATH],
+    ["fs.delete", p("package.json"), "alwaysAsk", R0_PATH],
+    ["fs.edit", p("../alias/package.json"), "alwaysAsk", R0_PATH],
+    ["fs.read", p("package.json"), "allow", "fs.read.worktree"],
+    ["config.set", set("permissions.rules"), "alwaysAsk", R0_SETTING],
+    ["fs.edit", p(".npmrc"), "alwaysAsk", R0_PATH],
     ["config.set", set("security.sensorSet"), "alwaysAsk", R0_SETTING],
     // The worktree root itself: not inside it, and not a Ring 0 path.
     ["fs.read", p("."), "ask", "fs.read.outside"],
@@ -191,6 +229,7 @@ describe("isRing0Path with RING0_PATHS", () => {
     packages/harness/sandbox/Dockerfile packages/schema/schemas/a.schema.json
     eslint.config.js tsconfig.base.json TSCONFIG.json vitest.config.ts
     .prettierrc.json package.json pnpm-workspace.yaml .node-version
+    helmwright.config.json .npmrc .pnpmfile.cjs
     evals/ac8.json packages/harness/evals/x.json`.split(/\s+/),
   )("matches %j, case-folded", (path) => {
     expect(isRing0Path(path, RING0_PATHS)).toBe(true);
