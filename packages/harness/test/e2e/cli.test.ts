@@ -198,8 +198,11 @@ const PROMPT_END = "Approve? [y/N] ";
 /** Runs the CLI on a pty and types `answer` once the ask's prompt is shown. */
 async function runAtTty(turns: string, answer: string) {
   if (SCRIPT === undefined) throw new Error("script(1) not found");
-  const terminal = join(tmp, "pty.out");
-  const stdoutFile = join(tmp, "stdout.json");
+  // A fresh directory per call: a result left by an earlier call in the same test
+  // would look like this run's result and end input before the prompt is shown.
+  const dir = mkdtempSync(join(tmp, "tty-"));
+  const terminal = join(dir, "pty.out");
+  const stdoutFile = join(dir, "stdout.json");
   const fd = openSync(terminal, "w+");
   const env = {
     ...process.env,
