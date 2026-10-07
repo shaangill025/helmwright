@@ -4,10 +4,9 @@ name: sensors
 # come from main and a PR cannot weaken the scans that gate it. Each job checks out the PR head as
 # data and reads it with pinned tools; no job runs code from the PR. The token is read-only, no job
 # uses a secret or the Actions cache. The sandbox image build runs the PR's Dockerfile, so it lives
-# in image.yml on pull_request. `pull_request` stays here only until main carries this file (CI1a);
-# the follow-up PR (CI1b) removes it, and the guarantee above holds only after that.
+# in image.yml on pull_request. There is deliberately no pull_request trigger here: it would run
+# the PR's own copy of these jobs under the same check names.
 on:
-  pull_request:
   pull_request_target:
     branches: [main]
   push:
