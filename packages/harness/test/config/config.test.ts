@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONFIG_DEFAULTS, RING0_CONFIG_KEYS } from "@helmwright/schema";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONFIG_FILE,
   ConfigError,
@@ -12,6 +12,7 @@ import {
   RING0_SETTINGS,
   canonicalJson,
   loadRunConfig,
+  runGit,
 } from "../../src/index.ts";
 
 // Real git in a temp repo; no Docker. The CLI path is covered in test/e2e/cli.test.ts.
@@ -43,10 +44,94 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   rmSync(repo, { recursive: true, force: true });
 });
 
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+const thrown = (act: () => unknown): unknown => {
+  try {
+    act();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+};
+
+describe("runGit", () => {
+  // A fake git first on PATH prints its argv and its GIT_* environment, or hangs.
+  beforeEach(() => {
+    const bin = join(repo, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "git"),
+      '#!/bin/sh\n[ "$HW_FAKE_GIT" = hang ] && exec sleep 10\nprintf "%s\\n" "$@"\nenv | grep "^GIT_" | sort\n',
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PATH", `${bin}:${process.env["PATH"] ?? ""}`);
+  });
+
+  it("scrubs GIT_* from the environment and pins the safety options", () => {
+    vi.stubEnv("GIT_DIR", "/elsewhere/.git");
+    vi.stubEnv("GIT_CONFIG_PARAMETERS", "'core.hooksPath'='/tmp/hooks'");
+    vi.stubEnv("GIT_CONFIG_COUNT", "1");
+    const out = runGit("/r", ["ls-tree", "HEAD"]).toString("utf8");
+    expect(out.trimEnd().split("\n")).toEqual([
+      ...["-C", "/r", "-c", "core.hooksPath=/dev/null"],
+      ...["-c", "core.fsmonitor=false", "-c", "filter.lfs.smudge="],
+      ...["-c", "filter.lfs.process=", "-c", "filter.lfs.required=false"],
+      ...["--no-replace-objects", "ls-tree", "HEAD"],
+      "GIT_CONFIG_NOSYSTEM=1",
+      "GIT_LFS_SKIP_SMUDGE=1",
+      "GIT_NO_LAZY_FETCH=1",
+      "GIT_NO_REPLACE_OBJECTS=1",
+      "GIT_TERMINAL_PROMPT=0",
+    ]);
+  });
+
+  it("fails closed with a fixed message on a timeout", () => {
+    vi.stubEnv("HW_FAKE_GIT", "hang");
+    expect(() => runGit("/r", ["status"], { timeoutMs: 300 })).toThrow(
+      /^git status timed out after 300 ms$/,
+    );
+  });
+});
+
 describe("loadRunConfig", () => {
+  it("tags the Ring 0 digest with its format", () => {
+    const ring0 = {
+      format: "ring0/v1",
+      "intake.classification": "rubric",
+      permissions: {
+        ...CONFIG_DEFAULTS.permissions,
+        policy: DEFAULT_PERMISSION_POLICY,
+      },
+    };
+    expect(loadRunConfig(repo).record.ring0Sha256).toBe(
+      sha256(canonicalJson(ring0)),
+    );
+  });
+
+  it("gives a ConfigError no cause (N3)", () => {
+    const relax = {
+      ...DEFAULT_PERMISSION_POLICY,
+      version: "lax-1",
+      alwaysAsk: ["push"],
+    };
+    commit(file(JSON.stringify({ permissions: { policy: relax } })));
+    const relaxed = thrown(() => loadRunConfig(repo)) as ConfigError;
+    expect(relaxed).toBeInstanceOf(ConfigError);
+    expect(relaxed.message).toContain("override relaxes alwaysAsk");
+    expect(relaxed.cause).toBeUndefined();
+    rmSync(join(repo, ".git"), { recursive: true });
+    git("init", "--quiet");
+    const empty = thrown(() => loadRunConfig(repo)) as ConfigError;
+    expect(empty).toBeInstanceOf(ConfigError);
+    expect(empty.message).toBe("task.repo has no commit at HEAD");
+    expect(empty.cause).toBeUndefined();
+  });
+
   it("names each Ring 0 config key as a Ring 0 setting of the policy", () => {
     for (const key of RING0_CONFIG_KEYS) expect(RING0_SETTINGS).toContain(key);
     for (const key of RING0_CONFIG_KEYS) {
@@ -62,9 +147,7 @@ describe("loadRunConfig", () => {
     );
     const { record, policy } = loadRunConfig(repo);
     expect(policy).toBe(DEFAULT_PERMISSION_POLICY);
-    const sha = createHash("sha256")
-      .update(canonicalJson(CONFIG_DEFAULTS))
-      .digest("hex");
+    const sha = sha256(canonicalJson(CONFIG_DEFAULTS));
     expect(record).toMatchObject({ source: "default", sha256: sha });
     // An empty file object is the same Ring 0 configuration.
     commit(file("{}"));

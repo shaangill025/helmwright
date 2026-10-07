@@ -80,8 +80,12 @@ export type { ConfigRecord, RunConfig } from "./config/config.ts";
 export {
   CONFIG_FILE,
   ConfigError,
+  GIT_CHECKOUT_TIMEOUT_MS,
+  GIT_TIMEOUT_MS,
   MAX_CONFIG_BYTES,
+  RING0_FORMAT,
   loadRunConfig,
+  runGit,
 } from "./config/config.ts";
 export type { ScriptedTurn } from "./engine/scripted.ts";
 export {

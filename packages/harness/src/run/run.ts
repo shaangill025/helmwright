@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -17,8 +16,9 @@ import {
 } from "../broker/broker.ts";
 import {
   ConfigError,
-  NO_HOOKS,
+  GIT_CHECKOUT_TIMEOUT_MS,
   loadRunConfig,
+  runGit,
   type RunConfig,
 } from "../config/config.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
@@ -138,12 +138,8 @@ function checkRepoRoot(repo: string): void {
   let real: string;
   try {
     real = realpathSync(repo);
-    const args = ["-C", repo, "rev-parse", "--show-toplevel"];
-    const out = execFileSync("git", args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    top = realpathSync(out.trim());
+    const out = runGit(repo, ["rev-parse", "--show-toplevel"]);
+    top = realpathSync(out.toString("utf8").trim());
   } catch (error) {
     const why = errorMessage(error);
     throw new UsageError(`task.repo is not a git repository: ${why}`);
@@ -193,7 +189,7 @@ export interface RunSetup {
   readonly nodeId: string;
   readonly title: string;
   readonly limits: LoopLimits;
-  /** Further `run.started` fields (task, repo, workspace, image, engine). */
+  /** Further `run.started` fields (task, repo, workspace, image, engine, baseCommit, config). */
   readonly started: Readonly<Record<string, unknown>>;
   readonly engine: Engine;
   readonly tools: readonly ToolSpec[];
@@ -501,14 +497,11 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       if (options.signal?.aborted === true) {
         throw new CancelledError("cancelled before the run started");
       }
-      // No repo hooks: a post-checkout hook would run on the host, outside the sandbox.
-      execFileSync(
-        "git",
-        [
-          ...["-C", task.repo, ...NO_HOOKS],
-          ...["worktree", "add", "--quiet", "--detach", workspace, baseCommit],
-        ],
-        { stdio: ["ignore", "ignore", "pipe"] },
+      // runGit: no repo hooks or fsmonitor, which would run on the host.
+      runGit(
+        task.repo,
+        ["worktree", "add", "--quiet", "--detach", workspace, baseCommit],
+        { timeoutMs: GIT_CHECKOUT_TIMEOUT_MS },
       );
     } catch (error) {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
@@ -668,11 +661,7 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
     try {
       const own = join(realpathSync(join(root, WORKSPACES)), runId);
       if (realpathSync(workspace) !== own) continue;
-      execFileSync(
-        "git",
-        ["-C", repo, ...NO_HOOKS, "worktree", "remove", "--force", own],
-        { stdio: ["ignore", "ignore", "pipe"] },
-      );
+      runGit(repo, ["worktree", "remove", "--force", own]);
       worktrees.push(runId);
     } catch (error) {
       failures.push({ target: runId, error: errorMessage(error) });

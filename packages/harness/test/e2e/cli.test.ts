@@ -93,10 +93,16 @@ afterEach(() => {
 });
 
 function cli(...args: string[]) {
+  return cliWith({}, ...args);
+}
+
+/** The CLI with `env` added to the test's environment. */
+function cliWith(env: Record<string, string>, ...args: string[]) {
   const started = performance.now();
   const result = spawnSync(process.execPath, [CLI, ...args], {
     encoding: "utf8",
     timeout: T,
+    env: { ...process.env, ...env },
   });
   const ms = performance.now() - started;
   return {
@@ -1058,7 +1064,14 @@ describe("helmwright CLI (e2e)", () => {
     const task = writeTask("write-file.turns.json");
     const result = cli("run", task, "--state-dir", stateDir);
     expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("unable to read sha1 file of README.md");
     expect(readdirSync(join(stateDir, "workspaces"))).toEqual([]);
+    const listed = git("-C", repo, "worktree", "list", "--porcelain");
+    expect(listed.split("\n").filter((l) => l.startsWith("worktree "))).toEqual(
+      ["worktree " + repo],
+    );
+    const admin = join(repo, ".git", "worktrees");
+    expect(existsSync(admin) ? readdirSync(admin) : []).toEqual([]);
   });
 
   it("fails a run whose engine runs out of turns", { timeout: T }, () => {
@@ -1194,6 +1207,37 @@ function startedOf(runId: string): Record<string, unknown> | undefined {
 }
 
 describe("helmwright.config.json (e2e)", () => {
+  it(
+    "reads task.repo, not GIT_DIR, and runs no fsmonitor (S1, S3)",
+    { timeout: T },
+    () => {
+      const other = join(tmp, "other");
+      git("init", "--quiet", other);
+      writeFileSync(join(other, CONFIG), '{"topology": "allSeparate"}');
+      git("-C", other, "add", CONFIG);
+      git(
+        ...["-C", other, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "other"],
+      );
+      const marker = join(tmp, "fsmonitor-ran");
+      const monitor = join(tmp, "fsmonitor.sh");
+      writeFileSync(monitor, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+      git("-C", repo, "config", "core.fsmonitor", monitor);
+      const task = writeTask("write-file.turns.json");
+      const env = { GIT_DIR: join(other, ".git") };
+      const result = cliWith(env, "run", task, "--state-dir", stateDir);
+      expect(result.status, result.stderr).toBe(0);
+      const { runId } = JSON.parse(result.stdout) as RunOutput;
+      expect(startedOf(runId)).toMatchObject({
+        baseCommit: git("-C", repo, "rev-parse", "HEAD").trim(),
+        config: { source: "default" },
+      });
+      expect(existsSync(marker)).toBe(false);
+      const listed = git("-C", other, "worktree", "list", "--porcelain");
+      expect(listed).not.toContain(join(stateDir, "workspaces"));
+    },
+  );
+
   it(
     "refuses a malformed config before the run starts (AC1)",
     { timeout: T },
