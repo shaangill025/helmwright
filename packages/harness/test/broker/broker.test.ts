@@ -399,6 +399,30 @@ describe("broker with the run's log", () => {
     },
   );
 
+  // SF2: a run of spaces cannot pad the view; N6: the summary splits no escape.
+  it(
+    "marks space runs in the view and keeps escapes whole in the summary",
+    { timeout: T },
+    async () => {
+      const requests: PresenceRequest[] = [];
+      const presence: Presence = {
+        ask(request) {
+          requests.push(request);
+          return Promise.resolve({ answer: "denied", by: "tty" });
+        },
+      };
+      const body = "x".repeat(118) + "\n␠a" + " ".repeat(10_000) + "b";
+      const input = { destination: "github.com", body };
+      await run(engineOf([call("comment", input)]), log, undefined, presence);
+      const { prompt, view } = requests[0] ?? { prompt: "" };
+      const shown = "x".repeat(118) + "\\u{a}\\u{2420}a␠×10000b";
+      expect(view).toBe("full detail:\n" + JSON.stringify(shown));
+      expect(prompt).toContain(
+        "  detail: " + JSON.stringify("x".repeat(118)) + " … [10126 code",
+      );
+    },
+  );
+
   // S-3: past 64 KiB of code points there is no full form to view: no ask.
   it(
     "denies a target over 64 KiB without asking (S-3)",

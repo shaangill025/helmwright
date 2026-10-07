@@ -548,19 +548,27 @@ describe("helmwright CLI (e2e)", () => {
     async () => {
       const end =
         "Approve comment (always-ask.comment, alwaysAsk)? [v=view, y/N] ";
-      const more = "-- more: space/Enter next, q stop --";
+      const more = "-- more (page ";
+      const last = "-- end of view: Enter --";
       const first = windowOpen(end, 1);
       const second = windowOpen(end, 2);
       let step = 0;
       let pages = 0;
+      let markers = 0;
+      let markerAt = 0;
       const drive: Driver = (text, type) => {
+        const shownMarkers = count(text, more) + count(text, last);
         if (step === 0 && first(text)) {
           step = 1;
           type("v\r");
         } else if (step === 1 && count(text, end) < 2) {
-          if (count(text, more) > pages) {
-            pages += 1;
-            type(" ");
+          if (shownMarkers > markers) {
+            markers = shownMarkers;
+            markerAt = performance.now();
+          } else if (markers > pages && performance.now() - markerAt > 300) {
+            // Keys typed within 150 ms of a page are dropped (SF1).
+            pages = markers;
+            type(text.includes(last) ? "\r" : " ");
             // Type-ahead for the window after the view (a paging key otherwise).
             type("x");
           }
@@ -575,7 +583,10 @@ describe("helmwright CLI (e2e)", () => {
         drive,
       );
       expect(status, shown).toBe(0);
-      expect(pages, shown).toBeGreaterThan(0);
+      expect(pages, shown).toBeGreaterThan(1);
+      // B1: after the view only the target and Approve lines are shown again.
+      expect(count(shown, "helmwright: allow comment?"), shown).toBe(1);
+      expect(shown).toContain('  target (remote): "github.com"\n' + end);
       const events = logEvents().filter((e) => e.runId === out.runId);
       const payload = (type: string) =>
         events.find((e) => e.type === type)?.payload;
