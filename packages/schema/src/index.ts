@@ -4,6 +4,8 @@ export type {
   PermissionAction,
   PermissionPolicy,
   PermissionRule,
+  PermissionRuleId,
+  PermissionScope,
   PermissionTier,
 } from "../generated/permission-policy.ts";
 export { validate as validatePermissionPolicy } from "../generated/permission-policy.validate.js";
