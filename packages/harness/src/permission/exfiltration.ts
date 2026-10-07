@@ -180,12 +180,12 @@ function lastSegment(token: string): string {
   return token.slice(at);
 }
 
-/** The part of `token` from `from` up to the next separator or `&`. */
+/** The part of `token` from `from` up to `&`, at most 64 code units (later separators stay in it). */
 function valueFrom(token: string, from: number): string {
   let end = from;
   while (end < token.length) {
     const c = token.charAt(end);
-    if (SEPARATORS.has(c) || c === "&") break;
+    if (c === "&" || end - from >= 64) break;
     end += 1;
   }
   return token.slice(from, end);
