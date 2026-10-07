@@ -155,19 +155,29 @@ export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
 );
 
 /**
- * S-2: the most code points of escaped text one prompt value (target, detail) may
- * have. A target or detail that was cut, or is longer, is not shown: S-3 denies it.
+ * SF-A: the most code points a target may have as shown (escaped, then as a JSON
+ * string literal, quotes included). With MAX_PROMPT_DETAIL the two values fill at
+ * most 800 code points: 10 rows at 80 columns, plus their labels (a wide character
+ * takes two columns). A target or detail that was cut, or is longer, is not shown:
+ * S-3 denies it.
  */
-export const MAX_PROMPT_VALUE = 4096;
+export const MAX_PROMPT_TARGET = 320;
+/** SF-A: the most code points a detail may have as shown (see MAX_PROMPT_TARGET). */
+export const MAX_PROMPT_DETAIL = 480;
 /** The cap on the reason shown, in code points; the reason only explains. */
 const MAX_PROMPT_REASON = 512;
 
-/** S-3: the prompt shows the whole target, or there is no ask. */
+const quoted = (text: string) => JSON.stringify(text);
+const fits = (text: string, max: number) =>
+  Array.from(quoted(text)).length <= max;
+
+/** S-3: the prompt shows the whole target and detail, or there is no ask. */
 function showable(verdict: EvaluatedVerdict): boolean {
   const { value, detail, truncated } = verdict.target;
-  const fits = (text: string) => Array.from(text).length <= MAX_PROMPT_VALUE;
   return (
-    truncated !== true && fits(value) && (detail === undefined || fits(detail))
+    truncated !== true &&
+    fits(value, MAX_PROMPT_TARGET) &&
+    (detail === undefined || fits(detail, MAX_PROMPT_DETAIL))
   );
 }
 
@@ -176,16 +186,15 @@ function showable(verdict: EvaluatedVerdict): boolean {
  * reason) are escaped by the policy and then shown as JSON string literals, so
  * their edges and spaces are visible; the target and detail are shown in full
  * (`showable`), the reason cut to MAX_PROMPT_REASON. Every other part is fixed text,
- * an action name, a rule ID or a run ID. The last line names the action, rule and
- * tier, so padding in a value cannot push what is approved off the screen.
+ * an action name, a rule ID or a run ID. The last two lines are the target and
+ * "Approve <action> (<rule>, <tier>)?", so no value can push what is approved off
+ * the screen (SF-A).
  */
 function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
   const { action, requested, target, ruleId, reason, tier } = verdict;
   const as = requested === action ? "" : " (requested as " + requested + ")";
   const detail =
-    target.detail === undefined
-      ? []
-      : ["  detail: " + JSON.stringify(target.detail)];
+    target.detail === undefined ? [] : ["  detail: " + quoted(target.detail)];
   const why = Array.from(reason);
   const shownReason =
     why.length <= MAX_PROMPT_REASON
@@ -193,16 +202,10 @@ function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
       : why.slice(0, MAX_PROMPT_REASON).join("") + "…[truncated]";
   return [
     "helmwright: allow " + action + as + "?",
-    "  target (" + target.kind + "): " + JSON.stringify(target.value),
     ...detail,
-    "  rule: " +
-      ruleId +
-      ", tier " +
-      tier +
-      " (" +
-      JSON.stringify(shownReason) +
-      ")",
+    "  rule: " + ruleId + ", tier " + tier + " (" + quoted(shownReason) + ")",
     "  run: " + runId,
+    "  target (" + target.kind + "): " + quoted(target.value),
     "Approve " + action + " (" + ruleId + ", " + tier + ")? [y/N] ",
   ].join("\n");
 }
@@ -236,9 +239,10 @@ async function askOwner(
  * goes to `permission.presence`: the ruling and `permission.asked` are logged before
  * the prompt is shown, and `permission.answered` before any handler runs. Without a
  * presence an ask is denied as noPresence. S-3: an ask whose target or detail the
- * prompt cannot show in full (cut by the policy, or over MAX_PROMPT_VALUE) is denied
- * with fixed text, without asking: only the ruling is logged, no `permission.asked`
- * or `permission.answered`. A ruling that cannot be built denies with
+ * prompt cannot show in full (cut by the policy, or over MAX_PROMPT_TARGET or
+ * MAX_PROMPT_DETAIL as shown) is denied with fixed text, without asking: only the
+ * ruling is logged, no `permission.asked` or `permission.answered`. A ruling that
+ * cannot be built denies with
  * fixed text; one whose append fails also halts the broker and the run.
  * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or

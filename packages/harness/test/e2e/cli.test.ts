@@ -194,12 +194,14 @@ const PTY_ARGV =
     : ["-c", 'cat | exec script -q /dev/null /bin/sh -c "$0"', IN_PTY];
 
 const PROMPT_END = "Approve deploy (always-ask.deploy, alwaysAsk)? [y/N] ";
+const DISCARDED = "(input discarded; answer again)";
 
 /**
  * Runs the CLI on a pty, types `early` at once (before any prompt), and types
- * `answer` and Enter (CR) once the ask's prompt is shown.
+ * `answer` and Enter (CR) once the ask's window has observably opened: `early`
+ * is type-ahead, so the CLI says it was discarded as the window opens.
  */
-async function runAtTty(turns: string, answer: string, early = "") {
+async function runAtTty(turns: string, answer: string, early = "x") {
   if (SCRIPT === undefined) throw new Error("script(1) not found");
   // A fresh directory per call: a result left by an earlier call in the same test
   // would look like this run's result and end input before the prompt is shown.
@@ -220,15 +222,25 @@ async function runAtTty(turns: string, answer: string, early = "") {
   closeSync(fd);
   const { stdin } = child;
   if (stdin === null) throw new Error("no stdin pipe");
-  if (early !== "") stdin.write(early);
-  // Types the answer only after the prompt is shown and its grace window (250 ms)
-  // has passed; ends input only once the CLI has written its result, so the answer
-  // never races end of input.
+  stdin.write(early);
+  // Types the answer only once the prompt is shown and the CLI said the early keys
+  // were discarded (its grace window has opened, however late); ends input only once
+  // the CLI has written its result, so the answer never races end of input.
   let answered = false;
+  let promptAt: number | undefined;
   const timer = setInterval(() => {
-    if (!answered && readFileSync(terminal, "utf8").includes(PROMPT_END)) {
+    const text = readFileSync(terminal, "utf8");
+    if (text.includes(PROMPT_END)) promptAt ??= performance.now();
+    // The fallback (no notice 3 s after the prompt) only lets a broken build fail
+    // on its answer rather than time out.
+    const late = promptAt !== undefined && performance.now() - promptAt > 3000;
+    if (
+      !answered &&
+      promptAt !== undefined &&
+      (text.includes(DISCARDED) || late)
+    ) {
       answered = true;
-      setTimeout(() => stdin.write(answer + "\r"), 500);
+      stdin.write(answer + "\r");
     }
     if (existsSync(stdoutFile) && readFileSync(stdoutFile, "utf8") !== "") {
       clearInterval(timer);
@@ -357,12 +369,20 @@ describe("helmwright CLI (e2e)", () => {
     { timeout: T },
     () => {
       const limits = { ...LIMITS, timeoutMs: 1500 };
-      const { status, stderr, out, ms } = runTask("slow.turns.json", limits);
+      const { status, stderr, out } = runTask("slow.turns.json", limits);
       expect(status, stderr).toBe(2);
       expect(out.terminal).toEqual({ kind: "incomplete", reason: "timeout" });
       expect(out.summary.startsWith("INCOMPLETE (timeout)")).toBe(true);
-      expect(ms).toBeLessThan(9000); // the 10 s engine turn was abandoned
       const events = expectWellFormedLog(out.runId);
+      // FLAKE-2: the timeout, not the turn, ended the run. The 10 s turn was never
+      // logged, and by the log's own clock the run lasted at least the limit but less
+      // than that turn's delay, which a run that waited for it could not.
+      const texts = deriveMessages(events, out.runId).map((m) => m.text);
+      expect(texts).not.toContain("This turn arrives too late.");
+      const at = (i: number) => Date.parse(events.at(i)?.at ?? "");
+      const lasted = at(-1) - at(0);
+      expect(lasted).toBeGreaterThanOrEqual(limits.timeoutMs - 100);
+      expect(lasted).toBeLessThan(10_000);
       expect(events.at(-1)?.payload["terminal"]).toEqual(out.terminal);
       expectReplayMatches(out.runId, events);
     },
@@ -663,6 +683,14 @@ describe("helmwright CLI (e2e)", () => {
     expect(cli("launch").status).toBe(64);
     expect(cli().status).toBe(64);
     expect(cli("reap").status).toBe(64);
+  });
+
+  // Nit-6: an error that echoes input cannot send control characters to stderr.
+  it("escapes control characters in error output", { timeout: T }, () => {
+    const { status, stderr } = cli("\u001b]0;x\u0007", "--state-dir", stateDir);
+    expect(status).toBe(64);
+    for (const c of ["\u0007", "\u001b"]) expect(stderr).not.toContain(c);
+    expect(stderr).toContain("unknown command: \\u{1b}]0;x\\u{7}");
   });
 
   it("rejects a repo subdirectory or unsafe state dir", { timeout: T }, () => {

@@ -110,7 +110,7 @@ export function createTtyPresence(
   };
   // Q5: an error or end between asks never crashes; it ends input.
   input.on("error", markEnded).on("end", markEnded);
-  /** Set after an overlong line: drop input up to the next line end. */
+  /** After an overlong line: drop input to the next line end (a TTY ask resets it). */
   let skipping = false;
   let queue: Promise<unknown> = Promise.resolve();
 
@@ -218,7 +218,11 @@ export function createTtyPresence(
     let read: Read;
     try {
       tty?.setRawMode(true);
-      if (tty !== undefined) process.on("exit", restore);
+      if (tty !== undefined) {
+        process.on("exit", restore);
+        // Nit-1: in raw mode no terminal line is left over: each ask starts fresh.
+        skipping = false;
+      }
       output.write(request.prompt);
       read = await readLine(signal, tty !== undefined);
     } finally {
@@ -233,6 +237,8 @@ export function createTtyPresence(
         if (read.kind === "interrupt") process.kill(process.pid, "SIGINT");
         return CANCELLED;
       case "eof":
+        // Nit-2: Ctrl-D too ends input, so every later ask is denied at once.
+        ended = true;
         output.write("\n");
         return CANCELLED;
       case "line":

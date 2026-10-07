@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { errorMessage } from "./loop/terminal.ts";
+import { displayText } from "./permission/policy.ts";
 import { createTtyPresence } from "./permission/presence.ts";
 import {
   CancelledError,
@@ -82,7 +83,9 @@ async function main(args: readonly string[]): Promise<number> {
       const result = await reapRuns(stateDir);
       console.log(jsonLine(result));
       for (const { target, error } of result.failures) {
-        console.error("helmwright: reap " + target + ": " + error);
+        console.error(
+          "helmwright: reap " + displayText(target) + ": " + displayText(error),
+        );
       }
       return result.failures.length === 0 ? EXIT.ok : EXIT.failed;
     }
@@ -111,7 +114,8 @@ async function main(args: readonly string[]): Promise<number> {
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
   } catch (error) {
-    console.error("helmwright: " + errorMessage(error));
+    // Nit-6: an error may echo input; escaped, it cannot drive the terminal.
+    console.error("helmwright: " + displayText(errorMessage(error)));
     if (error instanceof CancelledError) return EXIT.incomplete;
     if (!(error instanceof UsageError)) return EXIT.failed;
     console.error(USAGE);

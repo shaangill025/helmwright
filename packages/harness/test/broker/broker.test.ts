@@ -123,6 +123,15 @@ function owner(answer: PresenceAnswer, ms = 0) {
   return { presence, prompts };
 }
 
+/** MAX_PROMPT_TARGET: a target's most code points as shown, quotes included. */
+const TARGET_CAP = 320;
+
+const call = (name: string, input: Record<string, unknown>): ToolCall => ({
+  id: "call-1",
+  name,
+  input,
+});
+
 /** Runs a file write that execute reclassifies as deps.add, which asks. */
 const install = (id: string, file: string): ToolCall => ({
   id,
@@ -272,15 +281,37 @@ describe("broker with the run's log", () => {
     },
   );
 
-  // S-3: the prompt shows the target, so a target it cannot show is never approved.
-  it(
-    "denies an ask whose target is too long to show, without asking",
+  // S-3, SF-A: the prompt shows the whole target, on its second-last line, so a
+  // target or detail it cannot show in full is never asked. Each value here is
+  // under the policy's cut (512 raw code points) but over its shown cap.
+  const cases: [string, ToolCall, string][] = [
+    [
+      "an argv cut by the policy (S-3)",
+      call("execute", { argv: ["npm", "install", "x", "a".repeat(600)] }),
+      "asks (deps.add)",
+    ],
+    [
+      "an argv with 200 tabs (SF-A)",
+      call("execute", { argv: ["npm", "install", "x" + "\t".repeat(200)] }),
+      "asks (deps.add)",
+    ],
+    [
+      "a body with 300 newlines (SF-A)",
+      call("comment", { destination: "github.com", body: "\n".repeat(300) }),
+      "always asks (always-ask.comment)",
+    ],
+    [
+      "a target one over its cap (SF-A)",
+      call("deploy", { destination: "a".repeat(TARGET_CAP - 1) }),
+      "always asks (always-ask.deploy)",
+    ],
+  ];
+  it.each(cases)(
+    "denies %s without asking",
     { timeout: T },
-    async () => {
+    async (_, toolCall, rule) => {
       const { presence, prompts } = owner({ answer: "approved", by: "tty" });
-      const argv = ["npm", "install", "x", "a".repeat(600)];
-      const call = { id: "call-1", name: "execute", input: { argv } };
-      await run(engineOf([call]), log, undefined, presence);
+      await run(engineOf([toolCall]), log, undefined, presence);
       expect(prompts).toEqual([]);
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([
         "permission.evaluated",
@@ -289,7 +320,27 @@ describe("broker with the run's log", () => {
         m.role === "tool" ? [m.text] : [],
       );
       expect(tools).toEqual([
-        "denied: asks (deps.add); the target is too long to show for approval",
+        "denied: " + rule + "; the target is too long to show for approval",
+      ]);
+    },
+  );
+
+  it(
+    "asks for a target at its cap, shown on the second-last line (SF-A)",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner({ answer: "denied", by: "tty" });
+      const destination = "a".repeat(TARGET_CAP - 2); // quoted: at the cap
+      await run(
+        engineOf([call("deploy", { destination })]),
+        log,
+        undefined,
+        presence,
+      );
+      const lines = (prompts[0] ?? "").split("\n");
+      expect(lines.slice(-2)).toEqual([
+        '  target (remote): "' + destination + '"',
+        "Approve deploy (always-ask.deploy, alwaysAsk)? [y/N] ",
       ]);
     },
   );
