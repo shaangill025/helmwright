@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SANDBOX_CLEANUP_FAILED,
   errorMessage,
@@ -297,14 +298,16 @@ describe("executeRun", () => {
       },
     };
     const outcome = await run(engine, true);
-    expect(outcome.summary).toBe("FAILED: engine broke");
-    expect(terminated()?.payload["terminal"]).toEqual({
-      kind: "failed",
-      error: "engine broke",
-    });
+    // N-3: the final desync stays visible after the loop's own failure.
+    expect(outcome.summary).toMatch(
+      /^FAILED: engine broke; also: context desync at message index 1 /,
+    );
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
   });
 
   it("refuses appends from a call that settles after the run ended", async () => {
+    // N-2 (#35): no transaction even begins after the run ended.
+    const exec = vi.spyOn(DatabaseSync.prototype, "exec");
     const thrown: string[] = [];
     const { promise: late, resolve: settle } =
       Promise.withResolvers<undefined>();
@@ -336,7 +339,11 @@ describe("executeRun", () => {
           }),
       { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
     );
+    const begunAtEnd = exec.mock.calls.length;
     await late;
+    const begun = exec.mock.calls.slice(begunAtEnd).map(([sql]) => sql);
+    exec.mockRestore();
+    expect(begun.filter((sql) => sql.includes("BEGIN"))).toEqual([]);
     expect(outcome.summary).toContain("sandbox cleanup unconfirmed");
     expect(thrown).toEqual(["the run has ended", "the run has ended"]);
     expect(terminated()?.type).toBe("run.terminated");

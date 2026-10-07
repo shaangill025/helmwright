@@ -155,21 +155,55 @@ export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
 );
 
 /**
- * What an ask shows, and what `permission.asked` hashes: every value in it is
- * escaped (target and reason by the policy) or matches a fixed pattern.
+ * S-2: the most code points of escaped text one prompt value (target, detail) may
+ * have. A target or detail that was cut, or is longer, is not shown: S-3 denies it.
+ */
+export const MAX_PROMPT_VALUE = 4096;
+/** The cap on the reason shown, in code points; the reason only explains. */
+const MAX_PROMPT_REASON = 512;
+
+/** S-3: the prompt shows the whole target, or there is no ask. */
+function showable(verdict: EvaluatedVerdict): boolean {
+  const { value, detail, truncated } = verdict.target;
+  const fits = (text: string) => Array.from(text).length <= MAX_PROMPT_VALUE;
+  return (
+    truncated !== true && fits(value) && (detail === undefined || fits(detail))
+  );
+}
+
+/**
+ * What an ask shows, and what `permission.asked` hashes. Values (target, detail,
+ * reason) are escaped by the policy and then shown as JSON string literals, so
+ * their edges and spaces are visible; the target and detail are shown in full
+ * (`showable`), the reason cut to MAX_PROMPT_REASON. Every other part is fixed text,
+ * an action name, a rule ID or a run ID. The last line names the action, rule and
+ * tier, so padding in a value cannot push what is approved off the screen.
  */
 function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
   const { action, requested, target, ruleId, reason, tier } = verdict;
   const as = requested === action ? "" : " (requested as " + requested + ")";
   const detail =
-    target.detail === undefined ? [] : ["  detail: " + target.detail];
+    target.detail === undefined
+      ? []
+      : ["  detail: " + JSON.stringify(target.detail)];
+  const why = Array.from(reason);
+  const shownReason =
+    why.length <= MAX_PROMPT_REASON
+      ? reason
+      : why.slice(0, MAX_PROMPT_REASON).join("") + "…[truncated]";
   return [
     "helmwright: allow " + action + as + "?",
-    "  target (" + target.kind + "): " + target.value,
+    "  target (" + target.kind + "): " + JSON.stringify(target.value),
     ...detail,
-    "  rule: " + ruleId + ", tier " + tier + " (" + reason + ")",
+    "  rule: " +
+      ruleId +
+      ", tier " +
+      tier +
+      " (" +
+      JSON.stringify(shownReason) +
+      ")",
     "  run: " + runId,
-    "Approve? [y/N] ",
+    "Approve " + action + " (" + ruleId + ", " + tier + ")? [y/N] ",
   ].join("\n");
 }
 
@@ -201,7 +235,10 @@ async function askOwner(
  * an ask the owner approved, runs its handler, on the ruled input snapshot. An ask
  * goes to `permission.presence`: the ruling and `permission.asked` are logged before
  * the prompt is shown, and `permission.answered` before any handler runs. Without a
- * presence an ask is denied as noPresence. A ruling that cannot be built denies with
+ * presence an ask is denied as noPresence. S-3: an ask whose target or detail the
+ * prompt cannot show in full (cut by the policy, or over MAX_PROMPT_VALUE) is denied
+ * with fixed text, without asking: only the ruling is logged, no `permission.asked`
+ * or `permission.answered`. A ruling that cannot be built denies with
  * fixed text; one whose append fails also halts the broker and the run.
  * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or
@@ -253,9 +290,12 @@ export function createBroker(context: BrokerContext): Broker {
         runId: permission.runId,
         extraRing0Paths: permission.ring0,
       });
-      const asks =
+      const asking =
         verdict.kind === "evaluated" &&
         (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
+      // S-3: a target the prompt cannot show in full is denied without an ask.
+      const unshowable = asking && !showable(verdict);
+      const asks = asking && !unshowable;
       let entries: PermissionLogEntry[];
       let shown = "";
       try {
@@ -292,6 +332,14 @@ export function createBroker(context: BrokerContext): Broker {
         case "ask":
         case "alwaysAsk": {
           const what = verdict.tier === "ask" ? "asks" : "always asks";
+          if (unshowable) {
+            return denied(
+              "denied: " +
+                what +
+                rule +
+                "; the target is too long to show for approval",
+            );
+          }
           if (presence === undefined) {
             return denied(
               "denied: " + what + rule + "; nobody present to approve",

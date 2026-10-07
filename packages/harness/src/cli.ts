@@ -33,6 +33,26 @@ const COMMANDS = new Map([
   ["reap", 0],
 ]);
 
+/**
+ * S-4: control, format, surrogate, private-use, unassigned, line/paragraph
+ * separator and default-ignorable code points. Outside ASCII they occur only
+ * inside JSON strings, so escaping them keeps the line valid JSON.
+ */
+const UNSAFE =
+  /[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** `value` as one JSON line that sends no control or invisible character to a terminal. */
+function jsonLine(value: unknown): string {
+  return JSON.stringify(value).replace(UNSAFE, (c) => {
+    let escaped = "";
+    // A code point beyond the BMP becomes its two UTF-16 escapes.
+    for (let i = 0; i < c.length; i += 1) {
+      escaped += "\\u" + c.charCodeAt(i).toString(16).padStart(4, "0");
+    }
+    return escaped;
+  });
+}
+
 function command(args: readonly string[]) {
   let parsed;
   try {
@@ -60,7 +80,7 @@ async function main(args: readonly string[]): Promise<number> {
     const { name, target, stateDir } = command(args);
     if (name === "reap") {
       const result = await reapRuns(stateDir);
-      console.log(JSON.stringify(result));
+      console.log(jsonLine(result));
       for (const { target, error } of result.failures) {
         console.error("helmwright: reap " + target + ": " + error);
       }
@@ -68,7 +88,7 @@ async function main(args: readonly string[]): Promise<number> {
     }
     if (name === "replay") {
       const result = replayRun(target, stateDir);
-      console.log(JSON.stringify(result));
+      console.log(jsonLine(result));
       if (!result.terminated) return EXIT.unterminated;
       return result.match ? EXIT.ok : EXIT.mismatch;
     }
@@ -88,7 +108,7 @@ async function main(args: readonly string[]): Promise<number> {
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
         : {}),
     });
-    console.log(JSON.stringify({ runId, terminal, summary }));
+    console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
   } catch (error) {
     console.error("helmwright: " + errorMessage(error));

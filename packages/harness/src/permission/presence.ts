@@ -1,4 +1,5 @@
 import type { Readable, Writable } from "node:stream";
+import { displayText } from "./policy.ts";
 
 /** One ask: the call it is for and the exact text to show, already escaped. */
 export interface PresenceRequest {
@@ -21,14 +22,14 @@ export interface Presence {
 const APPROVED: PresenceAnswer = { answer: "approved", by: "tty" };
 const DENIED: PresenceAnswer = { answer: "denied", by: "tty" };
 const CANCELLED: PresenceAnswer = { answer: "denied", by: "cancelled" };
-/** Longer lines deny at once; their rest, up to the next newline, is dropped. */
+/** Longer lines deny at once; their rest, up to the next line end, is dropped. */
 const MAX_LINE = 1024;
 /** Default window after a prompt is shown in which typed input is dropped. */
 export const PRESENCE_GRACE_MS = 250;
 const MAX_GRACE_MS = 10_000;
 
 export interface TtyPresenceOptions {
-  /** Input arriving within this many ms after a prompt is shown is dropped: an integer in [0, 10000]. */
+  /** Input read within this many ms after a prompt is shown is discarded: an integer in [0, 10000]. */
   readonly graceMs?: number;
 }
 
@@ -41,19 +42,53 @@ export function isApproval(line: string): boolean {
 }
 
 type Read =
-  { kind: "line"; text: string } | { kind: "eof" } | { kind: "aborted" };
+  | { kind: "line"; text: string }
+  | { kind: "eof" }
+  | { kind: "aborted" }
+  | { kind: "interrupt" };
+
+/** A terminal input (`tty.ReadStream`): it can switch to raw mode. */
+interface RawInput {
+  readonly isRaw?: boolean;
+  setRawMode(raw: boolean): unknown;
+}
+const rawInput = (input: Readable): RawInput | undefined =>
+  typeof (input as Partial<RawInput>).setRawMode === "function"
+    ? (input as Readable & RawInput)
+    : undefined;
+
+const CTRL_C = "\u0003";
+const CTRL_D = "\u0004";
+const CONTROL = /\p{Cc}/u;
+const DISCARDED = "(input discarded; answer again)\n";
 
 /**
  * The owner at a terminal: each ask writes its prompt to `output` and waits for one
  * line on `input`. Asks are served one at a time, in order; there is no
- * approve-for-session. End of input denies this and every later ask. `input` is
- * read only while an ask waits, so it never keeps the process alive.
+ * approve-for-session. End of input, or an input error, denies this and every later
+ * ask as "cancelled" (the owner did not answer). `input` is read only while an ask
+ * waits, so it never keeps the process alive.
  *
- * Type-ahead never answers (no approve-for-session): a line answers an ask only if
- * its first character arrives more than `graceMs` after the prompt was written.
- * Node cannot flush a terminal's input queue (no tcflush); input typed earlier is
- * delivered right after the read resumes, inside the window, so it is dropped, as is
- * anything left over from an earlier ask and any line begun before the window ended.
+ * Type-ahead never answers. Every byte read after the prompt is written and before
+ * the window opens is discarded, a partial line too, and so is anything left from an
+ * earlier ask. The window opens in a setImmediate scheduled by a timer that fires at
+ * least `graceMs` after the prompt was written, so at least one poll phase that
+ * discards input runs after `graceMs`: input the terminal queued earlier, or that a
+ * blocked event loop delivers late, is discarded. Discarding is told to the owner
+ * once per ask. Node cannot flush a terminal's input queue (no tcflush), so a byte
+ * the kernel delivers only after that poll phase can still count.
+ *
+ * At a TTY (`input` has setRawMode) an ask waits in raw mode, so the terminal holds
+ * no partial line that an Enter after the window would complete: keys are echoed
+ * here (escaped; control keys never), Backspace and DEL erase, Enter (CR or LF) ends
+ * the line, Ctrl-D on an empty line is end of input, and Ctrl-C cancels the ask (at
+ * any time) and then raises SIGINT for the process. The previous mode is restored
+ * when the ask ends in any way, and on process exit while it waits. Other inputs
+ * end a line at LF.
+ *
+ * N-5: presence is a TTY, not proof of a human: a program that drives a pty
+ * (`yes | script …`) approves once the window opens. Each answer's attestation
+ * stays "none" until slice SIG.
  * @throws RangeError unless `graceMs` is an integer in [0, 10000].
  */
 export function createTtyPresence(
@@ -69,66 +104,77 @@ export function createTtyPresence(
   }
   input.setEncoding("utf8");
   input.pause();
-  let buffered = "";
   let ended = false;
-  /** Set after an overlong line: drop input up to the next newline. */
+  const markEnded = () => {
+    ended = true;
+  };
+  // Q5: an error or end between asks never crashes; it ends input.
+  input.on("error", markEnded).on("end", markEnded);
+  /** Set after an overlong line: drop input up to the next line end. */
   let skipping = false;
-  /** When the current prompt's grace window ends (performance.now()). */
-  let windowEnd = 0;
   let queue: Promise<unknown> = Promise.resolve();
 
-  /** The next complete line in `buffered`, an overlong one, or undefined. */
-  const take = (): Read | undefined => {
-    for (;;) {
-      const at = buffered.indexOf("\n");
-      if (skipping) {
-        if (at === -1) {
-          buffered = "";
-          return undefined;
-        }
-        buffered = buffered.slice(at + 1);
-        skipping = false;
-        continue;
-      }
-      if (at !== -1) {
-        const text = buffered.slice(0, at);
-        buffered = buffered.slice(at + 1);
-        return { kind: "line", text: text.length > MAX_LINE ? "" : text };
-      }
-      if (buffered.length > MAX_LINE) {
-        buffered = "";
-        skipping = true;
-        return { kind: "line", text: "" };
-      }
-      return undefined;
-    }
-  };
-
-  const readLine = (signal: AbortSignal) =>
+  const readLine = (signal: AbortSignal, raw: boolean) =>
     new Promise<Read>((done) => {
-      const ready = take();
-      if (ready !== undefined) {
-        done(ready);
-        return;
-      }
-      if (ended) {
-        done({ kind: "eof" });
-        return;
-      }
+      const shownAt = performance.now();
+      let open = false;
+      let discarded = false;
+      let timer: NodeJS.Timeout | undefined;
+      let immediate: NodeJS.Immediate | undefined;
+      /** The line's code points, and how many columns each echoed. */
+      const keys: string[] = [];
+      const echoed: number[] = [];
+      const lineEnd = (c: string) => c === "\n" || (raw && c === "\r");
       const finish = (read: Read) => {
+        clearTimeout(timer);
+        if (immediate !== undefined) clearImmediate(immediate);
         input.off("data", onData).off("end", onEnd).off("error", onEnd);
         signal.removeEventListener("abort", onAbort);
         input.pause();
         done(read);
       };
-      const onData = (chunk: string) => {
-        if (performance.now() < windowEnd) {
+      const key = (c: string): Read | undefined => {
+        if (raw && c === CTRL_C) return { kind: "interrupt" };
+        if (!open) {
           // Type-ahead: never an answer, nor the start of one.
-          skipping = !chunk.endsWith("\n");
-          return;
+          discarded = true;
+          if (lineEnd(c)) skipping = false;
+          return undefined;
         }
-        buffered += chunk;
-        const read = take();
+        if (skipping) {
+          if (lineEnd(c)) skipping = false;
+          return undefined;
+        }
+        if (lineEnd(c)) {
+          if (raw) output.write("\n");
+          return { kind: "line", text: keys.join("") };
+        }
+        if (raw && c === CTRL_D) {
+          return keys.length === 0 ? { kind: "eof" } : undefined;
+        }
+        if (raw && (c === "\u007f" || c === "\b")) {
+          keys.pop();
+          output.write("\b \b".repeat(echoed.pop() ?? 0));
+          return undefined;
+        }
+        if (keys.length >= MAX_LINE) {
+          skipping = true;
+          return { kind: "line", text: "" };
+        }
+        keys.push(c);
+        // A control key is never echoed; it stays in the line, which then denies.
+        const shown = !raw || CONTROL.test(c) ? "" : displayText(c);
+        if (shown !== "") output.write(shown);
+        echoed.push(Array.from(shown).length);
+        return undefined;
+      };
+      const onData = (chunk: string) => {
+        let read: Read | undefined;
+        for (const c of chunk) {
+          if (read === undefined) read = key(c);
+          // The rest of the chunk is dropped, but it may end an overlong line.
+          else if (skipping && lineEnd(c)) skipping = false;
+        }
         if (read !== undefined) finish(read);
       };
       const onEnd = () => {
@@ -138,6 +184,21 @@ export function createTtyPresence(
       const onAbort = () => {
         finish({ kind: "aborted" });
       };
+      // The loop's cached time can lag: re-arm until graceMs has really passed.
+      const arm = (ms: number) => {
+        timer = setTimeout(() => {
+          const left = shownAt + graceMs - performance.now();
+          if (left > 0) {
+            arm(Math.ceil(left));
+            return;
+          }
+          immediate = setImmediate(() => {
+            open = true;
+            if (discarded) output.write(DISCARDED);
+          });
+        }, ms);
+      };
+      arm(graceMs);
       input.on("data", onData).once("end", onEnd).once("error", onEnd);
       signal.addEventListener("abort", onAbort, { once: true });
       input.resume();
@@ -148,21 +209,35 @@ export function createTtyPresence(
     signal: AbortSignal,
   ): Promise<PresenceAnswer> => {
     if (signal.aborted) return CANCELLED;
-    // Whatever is left from before this prompt is type-ahead, a partial line too.
-    skipping ||= buffered !== "" && !buffered.endsWith("\n");
-    buffered = "";
-    output.write(request.prompt);
-    windowEnd = performance.now() + graceMs;
-    const read = await readLine(signal);
-    if (read.kind === "aborted") {
-      output.write("\nhelmwright: ask cancelled\n");
-      return CANCELLED;
+    if (ended || input.readableEnded || input.destroyed) return CANCELLED;
+    const tty = rawInput(input);
+    const was = tty?.isRaw === true;
+    const restore = () => {
+      tty?.setRawMode(was);
+    };
+    let read: Read;
+    try {
+      tty?.setRawMode(true);
+      if (tty !== undefined) process.on("exit", restore);
+      output.write(request.prompt);
+      read = await readLine(signal, tty !== undefined);
+    } finally {
+      process.off("exit", restore);
+      restore();
     }
-    if (read.kind === "eof") {
-      output.write("\n");
-      return DENIED;
+    switch (read.kind) {
+      case "aborted":
+      case "interrupt":
+        output.write("\nhelmwright: ask cancelled\n");
+        // Ctrl-C in raw mode raised no signal: raise it, so the run cancels as before.
+        if (read.kind === "interrupt") process.kill(process.pid, "SIGINT");
+        return CANCELLED;
+      case "eof":
+        output.write("\n");
+        return CANCELLED;
+      case "line":
+        return isApproval(read.text) ? APPROVED : DENIED;
     }
-    return isApproval(read.text) ? APPROVED : DENIED;
   };
 
   return {

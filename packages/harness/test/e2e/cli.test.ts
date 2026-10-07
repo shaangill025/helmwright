@@ -193,10 +193,13 @@ const PTY_ARGV =
     ? ["-c", 'cat | exec script -qec "$0" /dev/null', IN_PTY]
     : ["-c", 'cat | exec script -q /dev/null /bin/sh -c "$0"', IN_PTY];
 
-const PROMPT_END = "Approve? [y/N] ";
+const PROMPT_END = "Approve deploy (always-ask.deploy, alwaysAsk)? [y/N] ";
 
-/** Runs the CLI on a pty and types `answer` once the ask's prompt is shown. */
-async function runAtTty(turns: string, answer: string) {
+/**
+ * Runs the CLI on a pty, types `early` at once (before any prompt), and types
+ * `answer` and Enter (CR) once the ask's prompt is shown.
+ */
+async function runAtTty(turns: string, answer: string, early = "") {
   if (SCRIPT === undefined) throw new Error("script(1) not found");
   // A fresh directory per call: a result left by an earlier call in the same test
   // would look like this run's result and end input before the prompt is shown.
@@ -217,6 +220,7 @@ async function runAtTty(turns: string, answer: string) {
   closeSync(fd);
   const { stdin } = child;
   if (stdin === null) throw new Error("no stdin pipe");
+  if (early !== "") stdin.write(early);
   // Types the answer only after the prompt is shown and its grace window (250 ms)
   // has passed; ends input only once the CLI has written its result, so the answer
   // never races end of input.
@@ -224,7 +228,7 @@ async function runAtTty(turns: string, answer: string) {
   const timer = setInterval(() => {
     if (!answered && readFileSync(terminal, "utf8").includes(PROMPT_END)) {
       answered = true;
-      setTimeout(() => stdin.write(answer + "\n"), 500);
+      setTimeout(() => stdin.write(answer + "\r"), 500);
     }
     if (existsSync(stdoutFile) && readFileSync(stdoutFile, "utf8") !== "") {
       clearInterval(timer);
@@ -428,7 +432,11 @@ describe("helmwright CLI (e2e)", () => {
           shown.indexOf(PROMPT_END) + PROMPT_END.length,
         );
         expect(from, shown).toBeGreaterThanOrEqual(0);
-        for (const part of ["remote): prod", "always-ask.deploy", out.runId]) {
+        for (const part of [
+          'remote): "prod"',
+          "always-ask.deploy",
+          out.runId,
+        ]) {
           expect(prompt).toContain(part);
         }
         expect(prompt).toContain("  rule: always-ask.deploy, tier alwaysAsk (");
@@ -441,9 +449,10 @@ describe("helmwright CLI (e2e)", () => {
           by: "tty",
           attestation: { kind: "none" },
         });
-        expect(payload("permission.answered")?.["waitMs"]).toEqual(
-          expect.any(Number),
-        );
+        // N-6: no answer is taken inside the grace window.
+        expect(
+          payload("permission.answered")?.["waitMs"],
+        ).toBeGreaterThanOrEqual(250);
         expect(payload("loop.tool.called")).toMatchObject({
           name: "deploy",
           status: "denied",
@@ -461,6 +470,45 @@ describe("helmwright CLI (e2e)", () => {
         expect(replay.status, replay.stderr).toBe(0);
         expect(JSON.parse(replay.stdout)).toMatchObject({ match: true });
       }
+    },
+  );
+
+  // S-1: a "y" typed ahead (no Enter) sits in no line buffer: raw mode, so the
+  // window discards it and a later Enter answers an empty line.
+  it.skipIf(NO_PTY)(
+    "never completes a line typed ahead of the prompt (S-1)" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      const { status, shown, out } = await runAtTty(
+        "deploy.turns.json",
+        "",
+        "y",
+      );
+      expect(status, shown).toBe(0);
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      const answered = events.find((e) => e.type === "permission.answered");
+      expect(answered?.payload).toMatchObject({ answer: "denied", by: "tty" });
+      const tool = deriveMessages(events, out.runId).find(
+        (m) => m.role === "tool",
+      );
+      expect(tool?.text).toBe(
+        "denied: always asks (always-ask.deploy); the owner did not approve",
+      );
+      expect(shown).toContain("(input discarded; answer again)");
+    },
+  );
+
+  // S-4: agent text cannot send C1, BEL or bidi controls to the terminal.
+  it(
+    "escapes control and format characters on stdout (S-4)",
+    { timeout: T },
+    () => {
+      const { stdout, out } = runTask("control.turns.json");
+      for (const c of ["\u009d", "\u0007", "\u202e"]) {
+        expect(stdout).not.toContain(c);
+      }
+      expect(out.summary).toBe("a\u009d]8;;x\u0007b\u202ec");
     },
   );
 
