@@ -19,9 +19,10 @@
       "required": [
         "kind",
         "agentId",
-        "callId",
+        "toolCallId",
         "action",
         "requested",
+        "inputSha256",
         "target",
         "tier",
         "guard",
@@ -31,15 +32,19 @@
       ],
       "properties": {
         "kind": { "const": "permission.evaluated" },
-        "agentId": { "$ref": "#/$defs/id" },
-        "callId": { "$ref": "#/$defs/id" },
+        "agentId": { "$ref": "#/$defs/agentId" },
+        "toolCallId": { "$ref": "#/$defs/toolCallId" },
         "action": { "$ref": "#/$defs/action" },
         "requested": { "$ref": "#/$defs/action" },
+        "inputSha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "Lowercase hex SHA-256 of the canonical JSON (sorted keys, no whitespace) of the input snapshot that was ruled on, so the log binds the verdict to the exact input even when the shown target is truncated."
+        },
         "target": { "$ref": "#/$defs/target" },
         "tier": { "$ref": "#/$defs/tier" },
         "guard": {
-          "description": "The guard that decided: input parsing, the exfiltration check or the policy.",
-          "enum": ["schema", "exfiltration", "policy"]
+          "description": "The guard that decided: the exfiltration check or the policy. Schema denials are `permission.rejected`.",
+          "enum": ["exfiltration", "policy"]
         },
         "ruleId": { "$ref": "#/$defs/ruleId" },
         "policyVersion": {
@@ -55,21 +60,28 @@
       "description": "A call denied before evaluation (unknown action, invalid input or invalid policy), so there is no ruled action, target or trusted policy version. A rejection is always a denial.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "agentId", "callId", "guard", "ruleId", "reason"],
+      "required": [
+        "kind",
+        "agentId",
+        "toolCallId",
+        "guard",
+        "ruleId",
+        "reason"
+      ],
       "properties": {
         "kind": { "const": "permission.rejected" },
-        "agentId": { "$ref": "#/$defs/id" },
-        "callId": { "$ref": "#/$defs/id" },
+        "agentId": { "$ref": "#/$defs/agentId" },
+        "toolCallId": { "$ref": "#/$defs/toolCallId" },
         "guard": {
           "description": "`schema`: unknown action or invalid input. `policy`: invalid policy.",
           "enum": ["schema", "policy"]
         },
-        "ruleId": { "$ref": "#/$defs/ruleId" },
+        "ruleId": { "$ref": "#/$defs/rejectedRuleId" },
         "reason": { "$ref": "#/$defs/text" },
-        "requested": {
-          "description": "The requested action name as shown: escaped, already truncated, at most 256 code points. Absent when the request had no string action.",
+        "requestedName": {
+          "description": "The requested action name as shown: cut to 64 code points, then escaped (at most 9 characters each) plus a truncation marker, so at most 640 code points. Absent when the request had no string action.",
           "type": "string",
-          "pattern": "^[\\s\\S]{0,256}$"
+          "pattern": "^[\\s\\S]{0,640}$"
         }
       }
     },
@@ -78,43 +90,75 @@
       "description": "The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "callId", "presence", "promptSha256"],
+      "required": ["kind", "toolCallId", "presence", "promptSha256"],
       "properties": {
         "kind": { "const": "permission.asked" },
-        "callId": { "$ref": "#/$defs/id" },
+        "toolCallId": { "$ref": "#/$defs/toolCallId" },
         "presence": {
           "description": "`tty`: an interactive terminal could show the prompt. `none`: no one can answer, so the ask is denied.",
           "enum": ["tty", "none"]
         },
-        "promptSha256": {
-          "description": "Lowercase hex SHA-256.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
+        "promptSha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "answered": {
       "title": "PermissionAnswered",
-      "description": "How an ask ended. Every answer but an approval from the TTY is a denial.",
+      "description": "How an ask ended: an approval, which only the owner at the TTY can give, or a denial.",
+      "oneOf": [
+        { "$ref": "#/$defs/answeredApproved" },
+        { "$ref": "#/$defs/answeredDenied" }
+      ]
+    },
+    "answeredApproved": {
+      "title": "PermissionAnsweredApproved",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "callId", "answer", "by", "waitMs", "attestation"],
+      "required": [
+        "kind",
+        "toolCallId",
+        "answer",
+        "by",
+        "waitMs",
+        "attestation"
+      ],
       "properties": {
         "kind": { "const": "permission.answered" },
-        "callId": { "$ref": "#/$defs/id" },
-        "answer": { "enum": ["approved", "denied"] },
-        "by": {
-          "description": "Who or what ended the ask: the owner at the TTY, no presence to ask, cancellation, or the prompt timeout.",
-          "enum": ["tty", "noPresence", "cancelled", "timeout"]
-        },
-        "waitMs": {
-          "description": "Milliseconds between the ask and the answer.",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
+        "toolCallId": { "$ref": "#/$defs/toolCallId" },
+        "answer": { "const": "approved" },
+        "by": { "const": "tty" },
+        "waitMs": { "$ref": "#/$defs/waitMs" },
         "attestation": { "$ref": "#/$defs/attestation" }
       }
+    },
+    "answeredDenied": {
+      "title": "PermissionAnsweredDenied",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "toolCallId",
+        "answer",
+        "by",
+        "waitMs",
+        "attestation"
+      ],
+      "properties": {
+        "kind": { "const": "permission.answered" },
+        "toolCallId": { "$ref": "#/$defs/toolCallId" },
+        "answer": { "const": "denied" },
+        "by": {
+          "description": "`tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.",
+          "enum": ["tty", "noPresence", "cancelled"]
+        },
+        "waitMs": { "$ref": "#/$defs/waitMs" },
+        "attestation": { "$ref": "#/$defs/attestation" }
+      }
+    },
+    "waitMs": {
+      "description": "Milliseconds between the ask and the answer.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "attestation": {
       "title": "PermissionAttestation",
@@ -130,7 +174,7 @@
     },
     "target": {
       "title": "PermissionEventTarget",
-      "description": "What the action acts on, normalized and escaped for display; handlers never act on it.",
+      "description": "What the action acts on, normalized and escaped for display; handlers never act on it. `truncated` is true when `value` or `detail` was cut to fit; `inputSha256` still covers the whole input.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "value"],
@@ -139,7 +183,8 @@
           "enum": ["path", "ref", "remote", "setting", "argv", "amount"]
         },
         "value": { "$ref": "#/$defs/text" },
-        "detail": { "$ref": "#/$defs/text" }
+        "detail": { "$ref": "#/$defs/text" },
+        "truncated": { "type": "boolean" }
       }
     },
     "action": {
@@ -169,14 +214,32 @@
     },
     "ruleId": {
       "title": "PermissionEventRuleId",
-      "description": "A policy rule ID, or an ID a guard records: `always-ask.<action or reason>` (segments may be camelCase, like spend.raiseCap), `default.ask`, `policy.*` or `schema.*`. No regex nests unbounded quantifiers (ReDoS).",
+      "description": "A policy rule ID, `default.ask`, or an always-ask floor ID, `always-ask.<action or reason>` (segments may be camelCase, like spend.raiseCap). The `schema.` and `policy.` IDs belong to rejections. No regex nests unbounded quantifiers (ReDoS).",
       "type": "string",
-      "pattern": "^(always-ask(\\.[a-z][A-Za-z0-9-]{0,31}){1,3}|[a-z][a-z0-9-]{0,31}(\\.[a-z][a-z0-9-]{0,31}){0,3})$"
+      "pattern": "^(always-ask(\\.[a-z][A-Za-z0-9-]{0,31}){1,3}|[a-z][a-z0-9-]{0,31}(\\.[a-z][a-z0-9-]{0,31}){0,3})$",
+      "not": { "pattern": "^(schema|policy)\\." }
     },
-    "id": {
-      "description": "Agent or tool-call identifier.",
+    "rejectedRuleId": {
+      "title": "PermissionRejectedRuleId",
+      "description": "`schema.*` or `policy.*`, otherwise like a policy rule ID.",
+      "type": "string",
+      "pattern": "^(schema|policy)(\\.[a-z][a-z0-9-]{0,31}){1,3}$"
+    },
+    "agentId": {
+      "description": "Agent identifier.",
+      "$comment": "Wider than event.schema.json's `id` (adds `.` and `:`) so that namespaced agent IDs of later milestones fit; every envelope ID (M1 uses the node ID) still matches.",
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "toolCallId": {
+      "description": "The engine's tool call ID, as in the loop events: printable ASCII without spaces, 1 to 256 characters.",
+      "type": "string",
+      "pattern": "^[!-~]{1,256}$"
+    },
+    "sha256": {
+      "description": "Lowercase hex SHA-256.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "text": {
       "description": "Escaped display text, at most 8192 code points.",

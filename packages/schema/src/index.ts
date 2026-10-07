@@ -11,11 +11,16 @@ export type {
 export { validate as validatePermissionPolicy } from "../generated/permission-policy.validate.js";
 export type {
   PermissionAnswered,
+  PermissionAnsweredApproved,
+  PermissionAnsweredDenied,
   PermissionAsked,
   PermissionAttestation,
+  PermissionAttestationNone,
   PermissionEvaluated,
   PermissionEvent,
+  PermissionEventRuleId,
   PermissionEventTarget,
   PermissionRejected,
+  PermissionRejectedRuleId,
 } from "../generated/permission-event.ts";
 export { validate as validatePermissionEvent } from "../generated/permission-event.validate.js";

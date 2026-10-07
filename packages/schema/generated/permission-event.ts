@@ -9,9 +9,13 @@ export type PermissionEvent =
   | PermissionAsked
   | PermissionAnswered;
 /**
- * Agent or tool-call identifier.
+ * Agent identifier.
  */
-export type Id = string;
+export type AgentId = string;
+/**
+ * The engine's tool call ID, as in the loop events: printable ASCII without spaces, 1 to 256 characters.
+ */
+export type ToolCallId = string;
 export type PermissionAction =
   | "execute"
   | "fs.read"
@@ -33,9 +37,26 @@ export type PermissionAction =
 export type Text = string;
 export type PermissionTier = "allow" | "ask" | "deny" | "alwaysAsk";
 /**
- * A policy rule ID, or an ID a guard records: `always-ask.<action or reason>` (segments may be camelCase, like spend.raiseCap), `default.ask`, `policy.*` or `schema.*`. No regex nests unbounded quantifiers (ReDoS).
+ * A policy rule ID, `default.ask`, or an always-ask floor ID, `always-ask.<action or reason>` (segments may be camelCase, like spend.raiseCap). The `schema.` and `policy.` IDs belong to rejections. No regex nests unbounded quantifiers (ReDoS).
  */
 export type PermissionEventRuleId = string;
+/**
+ * `schema.*` or `policy.*`, otherwise like a policy rule ID.
+ */
+export type PermissionRejectedRuleId = string;
+/**
+ * Lowercase hex SHA-256.
+ */
+export type Sha256 = string;
+/**
+ * How an ask ended: an approval, which only the owner at the TTY can give, or a denial.
+ */
+export type PermissionAnswered =
+  PermissionAnsweredApproved | PermissionAnsweredDenied;
+/**
+ * Milliseconds between the ask and the answer.
+ */
+export type WaitMs = number;
 /**
  * Proof of who approved. Until slice SIG only `none` exists; SIG adds `{kind: "presence", …}`, a signed owner-presence attestation.
  */
@@ -46,78 +67,82 @@ export type PermissionAttestation = PermissionAttestationNone;
  */
 export interface PermissionEvaluated {
   kind: "permission.evaluated";
-  agentId: Id;
-  callId: Id;
+  agentId: AgentId;
+  toolCallId: ToolCallId;
   action: PermissionAction;
   requested: PermissionAction;
+  /**
+   * Lowercase hex SHA-256 of the canonical JSON (sorted keys, no whitespace) of the input snapshot that was ruled on, so the log binds the verdict to the exact input even when the shown target is truncated.
+   */
+  inputSha256: string;
   target: PermissionEventTarget;
   tier: PermissionTier;
   /**
-   * The guard that decided: input parsing, the exfiltration check or the policy.
+   * The guard that decided: the exfiltration check or the policy. Schema denials are `permission.rejected`.
    */
-  guard: "schema" | "exfiltration" | "policy";
+  guard: "exfiltration" | "policy";
   ruleId: PermissionEventRuleId;
   policyVersion: string;
   reason: Text;
 }
 /**
- * What the action acts on, normalized and escaped for display; handlers never act on it.
+ * What the action acts on, normalized and escaped for display; handlers never act on it. `truncated` is true when `value` or `detail` was cut to fit; `inputSha256` still covers the whole input.
  */
 export interface PermissionEventTarget {
   kind: "path" | "ref" | "remote" | "setting" | "argv" | "amount";
   value: Text;
   detail?: Text;
+  truncated?: boolean;
 }
 /**
  * A call denied before evaluation (unknown action, invalid input or invalid policy), so there is no ruled action, target or trusted policy version. A rejection is always a denial.
  */
 export interface PermissionRejected {
   kind: "permission.rejected";
-  agentId: Id;
-  callId: Id;
+  agentId: AgentId;
+  toolCallId: ToolCallId;
   /**
    * `schema`: unknown action or invalid input. `policy`: invalid policy.
    */
   guard: "schema" | "policy";
-  ruleId: PermissionEventRuleId;
+  ruleId: PermissionRejectedRuleId;
   reason: Text;
   /**
-   * The requested action name as shown: escaped, already truncated, at most 256 code points. Absent when the request had no string action.
+   * The requested action name as shown: cut to 64 code points, then escaped (at most 9 characters each) plus a truncation marker, so at most 640 code points. Absent when the request had no string action.
    */
-  requested?: string;
+  requestedName?: string;
 }
 /**
  * The owner was asked to approve a call. `promptSha256` is the SHA-256 of the exact prompt shown, so an approval can be bound to what was seen.
  */
 export interface PermissionAsked {
   kind: "permission.asked";
-  callId: Id;
+  toolCallId: ToolCallId;
   /**
    * `tty`: an interactive terminal could show the prompt. `none`: no one can answer, so the ask is denied.
    */
   presence: "tty" | "none";
-  /**
-   * Lowercase hex SHA-256.
-   */
-  promptSha256: string;
+  promptSha256: Sha256;
 }
-/**
- * How an ask ended. Every answer but an approval from the TTY is a denial.
- */
-export interface PermissionAnswered {
+export interface PermissionAnsweredApproved {
   kind: "permission.answered";
-  callId: Id;
-  answer: "approved" | "denied";
-  /**
-   * Who or what ended the ask: the owner at the TTY, no presence to ask, cancellation, or the prompt timeout.
-   */
-  by: "tty" | "noPresence" | "cancelled" | "timeout";
-  /**
-   * Milliseconds between the ask and the answer.
-   */
-  waitMs: number;
+  toolCallId: ToolCallId;
+  answer: "approved";
+  by: "tty";
+  waitMs: WaitMs;
   attestation: PermissionAttestation;
 }
 export interface PermissionAttestationNone {
   kind: "none";
+}
+export interface PermissionAnsweredDenied {
+  kind: "permission.answered";
+  toolCallId: ToolCallId;
+  answer: "denied";
+  /**
+   * `tty`: the owner denied. `noPresence`: no one could be asked. `cancelled`: the ask ended without an answer.
+   */
+  by: "tty" | "noPresence" | "cancelled";
+  waitMs: WaitMs;
+  attestation: PermissionAttestation;
 }
