@@ -100,6 +100,10 @@ export function normalizePath(input: string, worktree: string): NormalizedPath {
       : resolve(worktreeReal, path),
   );
   if (real === undefined) throw new TypeError("path does not resolve");
+  // A harmless input can resolve through a symlink to a name that spoofs the prompt.
+  if (hasControl(real) || INVISIBLE.test(real)) {
+    throw new TypeError("resolved path has control or invisible characters");
+  }
   const within = contains(worktreeReal, real);
   return {
     real,
@@ -228,29 +232,30 @@ export function normalizeArgv(argv: readonly string[], depth = 0): string[][] {
 }
 
 /** Each package manager's add, install and update verbs (with npm's aliases and typos). */
-const INSTALL_VERBS: Readonly<Record<string, ReadonlySet<string>>> =
-  Object.fromEntries(
-    Object.entries({
-      npm: `ins inst insta instal isnt isnta isntal isntall it cit ic clean-install
-        install-clean install-test update udpate up upgrade`,
-      pnpm: "update up upgrade",
-      yarn: "up upgrade",
-      bun: "a",
-    }).map(([manager, verbs]) => [
-      manager,
-      new Set(`add i in install isntall ci ${verbs}`.split(/\s+/)),
-    ]),
-  );
+// A Map, so command names such as `toString` or `__proto__` find nothing.
+const INSTALL_VERBS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  Object.entries({
+    npm: `ins inst insta instal isnt isnta isntal isntall it cit ic clean-install
+      install-clean install-test update udpate up upgrade`,
+    pnpm: "update up upgrade",
+    yarn: "up upgrade",
+    bun: "a",
+  }).map(([manager, verbs]) => [
+    manager,
+    new Set(`add i in install isntall ci ${verbs}`.split(/\s+/)),
+  ]),
+);
 
 /** True if any command in argv runs a package manager's add, install or update. */
 export function isDependencyInstall(argv: readonly string[]): boolean {
   return normalizeArgv(argv).some(([head = "", ...rest]) => {
     // corepack runs `pnpm@10.0.0` as pnpm.
-    const verbs = INSTALL_VERBS[head.replace(/@.*$/s, "")];
+    const manager = head.replace(/@.*$/s, "");
+    const verbs = INSTALL_VERBS.get(manager);
     // Bare `yarn` installs; an install verb anywhere counts, even after options.
     return (
       verbs !== undefined &&
-      ((head === "yarn" && rest.length === 0) ||
+      ((manager === "yarn" && rest.length === 0) ||
         rest.some((arg) => verbs.has(arg)))
     );
   });

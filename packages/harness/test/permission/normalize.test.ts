@@ -28,6 +28,9 @@ beforeAll(() => {
   link(".github/workflows/new.yml", "to-ring0");
   link("loop-b", "loop-a");
   link("loop-a", "loop-b");
+  // Harmless names whose resolved targets carry an escape sequence or a bidi override.
+  link("src/esc\u001b[2Kname.ts", "to-esc");
+  link("src/‮evil.ts", "to-bidi");
 });
 
 afterAll(() => {
@@ -35,6 +38,13 @@ afterAll(() => {
 });
 
 describe("normalizePath", () => {
+  it.each(["to-esc", "to-bidi"])(
+    "rejects %j, whose resolved path has a control or invisible character",
+    (input) => {
+      expect(() => normalizePath(input, worktree)).toThrow(TypeError);
+    },
+  );
+
   it.each([
     ["src/a.ts", true, "src/a.ts"],
     ["./src/../src/a.ts", true, "src/a.ts"],
@@ -220,8 +230,16 @@ describe("argv normalization", () => {
     ["sh", "-c", "grep -r 'npm install' ."],
     ["echo", "pnpm", "add"],
     ["node", "install.js"],
+    ["toString", "x"],
+    ["constructor", "a"],
+    ["__proto__", "add"],
+    ["sh", "-c", "valueOf x"],
   ])("does not treat %j as a dependency install", (...argv) => {
     expect(isDependencyInstall(argv)).toBe(false);
+  });
+
+  it("treats a bare versioned yarn as a dependency install", () => {
+    expect(isDependencyInstall(["yarn@4"])).toBe(true);
   });
 
   it("strips wrappers and splits shell scripts into commands", () => {
