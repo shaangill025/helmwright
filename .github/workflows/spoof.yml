@@ -1,0 +1,21 @@
+name: spoof
+
+# TEST ONLY (never merged): do same-name pull_request jobs satisfy required checks whose real
+# pull_request_target runs fail?
+on: pull_request
+
+permissions: {}
+
+jobs:
+  late-success:
+    name: scanner config guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: sleep 90
+  skipped:
+    name: actionlint + zizmor
+    if: false
+    runs-on: ubuntu-24.04
+    steps:
+      - run: exit 1

@@ -1,0 +1,12 @@
+name: extra
+
+# TEST ONLY (never merged): a second pull_request_target workflow, so the real zizmor check fails.
+on: pull_request_target
+
+permissions: {}
+
+jobs:
+  noop:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: "true"

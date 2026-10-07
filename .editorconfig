@@ -1,0 +1,2 @@
+# TEST ONLY (never merged): the config guard rejects this file, so the real guard check fails.
+root = true
