@@ -50,6 +50,7 @@ export {
   SANDBOX_DOCKERFILE_DIR,
   SANDBOX_LABEL,
   buildSandboxImage,
+  checkWorkspacePaths,
   dockerClientEnv,
   dockerRunArgs,
   reapSandboxContainers,

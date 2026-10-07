@@ -184,7 +184,15 @@ function resolveWorkspace(workspace: string, workspaceRoot: string): string {
   if (lstatSync(workspace).isSymbolicLink()) {
     throw fail("workspace", `must not be a symlink: ${workspace}`);
   }
-  const root = realDirectory("workspaceRoot", workspaceRoot);
+  checkWorkspacePaths(real, realDirectory("workspaceRoot", workspaceRoot));
+  return real;
+}
+
+/**
+ * The sandbox's rules for a workspace and its root, given their realpaths (which
+ * need not exist yet). @throws RangeError
+ */
+export function checkWorkspacePaths(real: string, root: string): void {
   let home = homedir();
   try {
     home = realpathSync.native(home);
@@ -201,7 +209,6 @@ function resolveWorkspace(workspace: string, workspaceRoot: string): string {
   if (/[,"'\n\r]/.test(real)) {
     throw fail("workspace", `path must not contain , " ' or newlines: ${real}`);
   }
-  return real;
 }
 
 function checkEnv(env: Readonly<Record<string, string>>): [string, string][] {
@@ -598,14 +605,17 @@ function alive(pid: number): boolean {
 }
 
 /**
- * Force-removes containers named `helmwright-sandbox-…` and labelled SANDBOX_LABEL that
- * belong to this process's instance or to an owner pid that no longer runs. Resolves
- * with how many were removed (by this call or a concurrent one: a container already
- * gone or already being removed counts as reaped). Idempotent.
+ * Force-removes containers named `helmwright-sandbox-…` and labelled SANDBOX_LABEL whose
+ * owner pid no longer runs and, unless `includeOwn` is false, every container of this
+ * process's instance (live ones included: call it when none of this process's sandboxes
+ * should survive). Pass `includeOwn: false` while other sandboxes of this process may be
+ * running. Resolves with how many were removed (by this call or a concurrent one: a
+ * container already gone or already being removed counts as reaped). Idempotent.
  * @throws Error if docker cannot list them, or fails to remove one for another reason.
  */
 export async function reapSandboxContainers(
   deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
+  { includeOwn = true }: { readonly includeOwn?: boolean } = {},
 ): Promise<number> {
   const docker = await dockerContext(deps);
   // Docker Go template, built by concatenation so its braces aren't read as JS placeholders.
@@ -623,7 +633,7 @@ export async function reapSandboxContainers(
   const ids = out.split("\n").flatMap((line) => {
     const [id = "", name = "", instance, pid = ""] = line.split("\t");
     const orphan =
-      instance === INSTANCE ||
+      (includeOwn && instance === INSTANCE) ||
       (/^[1-9]\d{0,9}$/.test(pid) && !alive(Number(pid)));
     return /^[0-9a-f]+$/.test(id) && name.startsWith(NAME_PREFIX) && orphan
       ? [id]

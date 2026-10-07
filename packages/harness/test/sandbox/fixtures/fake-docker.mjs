@@ -69,6 +69,12 @@ switch (args[0]) {
           "bbb222\thelmwright-sandbox-b\tother\t1\n" +
           "ccc333\tsomeone-else\tother\t2147483646\n",
       );
+      // Mode "own-<instance>": also a live container of the caller's own instance.
+      if (mode.startsWith("own-")) {
+        process.stdout.write(
+          "ddd444\thelmwright-sandbox-d\t" + mode.slice(4) + "\t1\n",
+        );
+      }
     } else if (mode === "hang" || mode === "signal") {
       process.stdout.write("aaa111\n");
     }

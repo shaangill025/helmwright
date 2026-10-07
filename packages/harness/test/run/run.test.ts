@@ -64,9 +64,9 @@ function mutatingEngine(mutateAt: number) {
   return { engine, seen };
 }
 
-function run(engine: Engine, checkDesync: boolean) {
+function run(engine: Engine, checkDesync: boolean, runLog = log) {
   return executeRun({
-    ...{ log, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
+    ...{ log: runLog, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
     ...{ title: "task", limits: LIMITS, started: {}, engine },
     tools: [{ name: "t", description: "test tool" }],
     executeTool: () => Promise.resolve({ status: "ok", output: "out" }),
@@ -115,5 +115,27 @@ describe("executeRun", () => {
       terminal: outcome.terminal,
       contextDigest: outcome.contextDigest,
     });
+  });
+
+  it("reports the original error when logging a message fails", async () => {
+    let messages = 0;
+    const full: SessionLog = {
+      append(input) {
+        if (input.type === "message.appended" && ++messages === 2) {
+          throw new Error("database or disk is full (SQLITE_FULL)");
+        }
+        return log.append(input);
+      },
+      transaction: (fn) => log.transaction(fn),
+      events: (query) => log.events(query),
+      lastSeq: () => log.lastSeq(),
+      close: () => {
+        log.close();
+      },
+    };
+    const outcome = await run(mutatingEngine(0).engine, true, full);
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(outcome.summary).toContain("SQLITE_FULL");
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
   });
 });

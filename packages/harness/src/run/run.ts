@@ -5,7 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
-  rmdirSync,
+  rmSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Event } from "@helmwright/schema";
@@ -186,16 +186,24 @@ export interface RunOutcome {
  */
 export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const { log, graphId, runId, nodeId, tools } = setup;
-  const append = (type: string, payload: Record<string, unknown>): Event =>
-    log.append({
-      eventId: randomUUID(),
-      graphId,
-      runId,
-      nodeId,
-      type,
-      at: new Date().toISOString(),
-      payload,
-    });
+  // The first failed append is the cause; a later desync is only its effect.
+  let logFailure: { error: unknown } | undefined;
+  const append = (type: string, payload: Record<string, unknown>): Event => {
+    try {
+      return log.append({
+        eventId: randomUUID(),
+        graphId,
+        runId,
+        nodeId,
+        type,
+        at: new Date().toISOString(),
+        payload,
+      });
+    } catch (error) {
+      logFailure ??= { error };
+      throw error;
+    }
+  };
   const logMessage = (message: Message) => {
     append(MESSAGE_APPENDED, { message });
   };
@@ -253,7 +261,8 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     append("run.terminated", { agentId: nodeId, ...ended });
     return ended;
   } catch (error) {
-    const terminal: Terminal = { kind: "failed", error: errorMessage(error) };
+    const cause = logFailure?.error ?? error;
+    const terminal: Terminal = { kind: "failed", error: errorMessage(cause) };
     const ended = outcome(terminal, summarize(terminal, ""));
     try {
       append("run.terminated", { agentId: nodeId, ...ended });
@@ -302,46 +311,45 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   }
   checkRepoRoot(task.repo);
   const stateDir = resolve(options.stateDir);
+  const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
+    (kind) => kind + "-" + randomUUID(),
+  ) as [string, string, string];
+  const workspaceRoot = join(stateDir, WORKSPACES);
+  // Every argument is validated before anything is created or any docker work.
+  try {
+    checkWorkspace(join(workspaceRoot, runId), workspaceRoot);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    throw new UsageError(`--state-dir: ${errorMessage(error)}`);
+  }
   const log = openSessionLog(join(stateDir, LOG_FILE));
   try {
-    const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
-      (kind) => kind + "-" + randomUUID(),
-    ) as [string, string, string];
-    const workspaceRoot = join(stateDir, WORKSPACES);
     mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
     const workspace = join(realpathSync(workspaceRoot), runId);
     mkdirSync(workspace, { mode: 0o700 });
     let broker: Broker;
     let image: string;
     try {
-      // Every argument is validated before any docker work.
-      try {
-        checkWorkspace(workspace, workspaceRoot);
-      } catch (error) {
-        if (!(error instanceof RangeError || error instanceof TypeError)) {
-          throw error;
-        }
-        throw new UsageError(`--state-dir: ${errorMessage(error)}`);
-      }
-      await reapSandboxContainers();
+      // Only orphans: other runs in this process may have live sandboxes.
+      await reapSandboxContainers({}, { includeOwn: false });
       image = await buildSandboxImage();
       if (options.signal?.aborted === true) {
         throw new CancelledError("cancelled before the run started");
       }
       broker = createBroker({ image, workspace, workspaceRoot });
+      // No repo hooks: a post-checkout hook would run on the host, outside the sandbox.
+      execFileSync(
+        "git",
+        [
+          ...["-C", task.repo, ...NO_HOOKS],
+          ...["worktree", "add", "--quiet", "--detach", workspace],
+        ],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
     } catch (error) {
-      rmdirSync(workspace); // still empty: no worktree yet
+      rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
-    // No repo hooks: a post-checkout hook would run on the host, outside the sandbox.
-    execFileSync(
-      "git",
-      [
-        ...["-C", task.repo, ...NO_HOOKS],
-        ...["worktree", "add", "--quiet", "--detach", workspace],
-      ],
-      { stdio: ["ignore", "ignore", "pipe"] },
-    );
     const outcome = await executeRun({
       log,
       graphId,
@@ -425,15 +433,19 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
 export interface ReapResult {
   /** Run IDs whose worktrees were removed. */
   readonly worktrees: string[];
-  /** Orphaned sandbox containers removed. */
-  readonly containers: number;
+  /** Orphaned sandbox containers removed; null if reaping them failed. */
+  readonly containers: number | null;
+  /** What could not be reaped (a run ID or "containers"), and why. */
+  readonly failures: { readonly target: string; readonly error: string }[];
 }
 
 /**
  * Removes the worktrees of terminated runs (only those under
- * `<stateDir>/workspaces`), prunes each repo's worktree list, then reaps
- * orphaned sandbox containers. Runs without `run.terminated` are left alone.
- * @throws Error if git or docker fails.
+ * `<stateDir>/workspaces`; `worktree remove` also drops git's entry for each, so
+ * the user's repo is never pruned), then reaps orphaned sandbox containers. Runs
+ * without `run.terminated` are left alone. A failure is recorded in `failures`
+ * and the rest still proceeds.
+ * @throws Error only if the session log cannot be read.
  */
 export async function reapRuns(stateDir: string): Promise<ReapResult> {
   const root = resolve(stateDir);
@@ -451,26 +463,30 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
     events.filter((e) => e.type === "run.terminated").map((e) => e.runId),
   );
   const worktrees: string[] = [];
-  const repos = new Set<string>();
+  const failures: { target: string; error: string }[] = [];
   for (const { type, runId, payload } of events) {
     const { repo, workspace } = payload;
     if (type !== "run.started" || !ended.has(runId)) continue;
     if (typeof repo !== "string" || typeof workspace !== "string") continue;
     if (!existsSync(workspace)) continue;
-    const own = join(realpathSync(join(root, WORKSPACES)), runId);
-    if (realpathSync(workspace) !== own) continue;
-    execFileSync(
-      "git",
-      ["-C", repo, ...NO_HOOKS, "worktree", "remove", "--force", own],
-      { stdio: ["ignore", "ignore", "pipe"] },
-    );
-    worktrees.push(runId);
-    repos.add(repo);
+    try {
+      const own = join(realpathSync(join(root, WORKSPACES)), runId);
+      if (realpathSync(workspace) !== own) continue;
+      execFileSync(
+        "git",
+        ["-C", repo, ...NO_HOOKS, "worktree", "remove", "--force", own],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
+      worktrees.push(runId);
+    } catch (error) {
+      failures.push({ target: runId, error: errorMessage(error) });
+    }
   }
-  for (const repo of repos) {
-    execFileSync("git", ["-C", repo, ...NO_HOOKS, "worktree", "prune"], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+  let containers: number | null = null;
+  try {
+    containers = await reapSandboxContainers();
+  } catch (error) {
+    failures.push({ target: "containers", error: errorMessage(error) });
   }
-  return { worktrees, containers: await reapSandboxContainers() };
+  return { worktrees, containers, failures };
 }
