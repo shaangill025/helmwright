@@ -1,13 +1,13 @@
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   validatePermissionPolicy,
   type PermissionPolicy,
@@ -230,6 +230,11 @@ describe("evaluate with the default policy", () => {
     ["push", to("origin", "refs/remotes/origin/main")],
     ["push", to("origin", "refs/tags/v1")],
     ["push", to("origin", "Refs/Tags/v1")],
+    // SF-C: only branches are pushed.
+    ...`tags/v1 remotes/origin/main refs/meta/config refs/for/main refs/notes/x
+      stash REBASE_HEAD AUTO_MERGE heads/x`
+      .split(/\s+/)
+      .map((ref) => ["push", to("origin", ref)] as [string, unknown]),
     // SF5: an option where a destination or package name belongs.
     ["push", to("--receive-pack=x")],
     ["comment", { destination: "-x", body: "b" }],
@@ -577,13 +582,33 @@ describe("evaluate on hostile requests (B9a-4)", () => {
     // The tier depends on the filesystem's case handling. Case-insensitive (this macOS
     // APFS checkout, observed 2026-10-07): it resolves to the Ring 0 link package.json.
     // Case-sensitive (Linux): a missing path outside the worktree.
-    const folds = existsSync(worktree.toUpperCase());
+    const folds = (() => {
+      try {
+        const upper = realpathSync.native(worktree.toUpperCase());
+        return upper === realpathSync.native(worktree);
+      } catch {
+        return false;
+      }
+    })();
     expect(verdict("fs.edit", p(path))).toEqual(
       folds
         ? { tier: "alwaysAsk", ruleId: R0_PATH }
         : { tier: "ask", ruleId: "fs.edit.outside" },
     );
   });
+});
+
+describe("push refs (SF-C)", () => {
+  it.each(["main", "refs/heads/main"])(
+    "asks to push %j and shows refs/heads/main",
+    (ref) => {
+      const input = to("origin", ref);
+      const request = { action: "push", input, worktree, runId: "r" };
+      const { tier, target } = evaluate(BASE, request);
+      expect(tier).toBe("alwaysAsk");
+      expect(target?.value).toBe("origin refs/heads/main");
+    },
+  );
 });
 
 describe("targets show the payload (S3)", () => {
@@ -780,7 +805,10 @@ describe("Ring 0 link chains (SF2)", () => {
   const tree = (name: string, links: [string, string][]) => {
     const wt = join(dir, name);
     mkdirSync(join(wt, "config"), { recursive: true });
-    for (const [from, target] of links) symlinkSync(target, join(wt, from));
+    for (const [from, target] of links) {
+      mkdirSync(dirname(join(wt, from)), { recursive: true });
+      symlinkSync(target, join(wt, from));
+    }
     return wt;
   };
 
@@ -826,6 +854,51 @@ describe("Ring 0 link chains (SF2)", () => {
     expect([...ring0LinkTargets(wt, RING0_PATHS)].sort()).toEqual([
       "config/pkg.json/**",
       "d/**",
+    ]);
+  });
+
+  it("resolves a dangling target one component at a time (SF-A)", () => {
+    const wt = tree("e", [
+      ["d", "sub/inner"],
+      ["package.json", "d/../config/pkg.json"],
+    ]);
+    mkdirSync(join(wt, "sub", "inner"), { recursive: true });
+    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    expect([...extraRing0Paths].sort()).toEqual([
+      "d/**",
+      "sub/config/pkg.json/**",
+    ]);
+    const run = { worktree: wt, runId: "run_01" };
+    for (const [action, input] of [
+      ["fs.edit", p("sub/config/pkg.json")],
+      ["commit", commit(branch, "sub/config/pkg.json")],
+    ] as const) {
+      expect(evaluate(BASE, { ...run, action, input }).tier).toBe("allow");
+      expect(
+        evaluate(BASE, { ...run, action, input, extraRing0Paths }),
+      ).toMatchObject({ tier: "alwaysAsk", ruleId: R0_PATH });
+    }
+  });
+
+  it("maps an absolute target under /workspace onto the worktree (SF-B)", () => {
+    const wt = tree("f", [["packages/harness/src", "/workspace/hsrc"]]);
+    mkdirSync(join(wt, "hsrc", "loop"), { recursive: true });
+    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    expect(extraRing0Paths).toEqual(["hsrc/**"]);
+    const input = p("hsrc/loop/x.ts");
+    const run = { action: "fs.edit", input, worktree: wt, runId: "run_01" };
+    expect(evaluate(BASE, run).tier).toBe("allow");
+    expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
+      tier: "alwaysAsk",
+      ruleId: R0_PATH,
+    });
+    const chain = tree("g", [
+      ["package.json", "b"],
+      ["b", "/workspace/config/pkg.json"],
+    ]);
+    expect([...ring0LinkTargets(chain, RING0_PATHS)].sort()).toEqual([
+      "b/**",
+      "config/pkg.json/**",
     ]);
   });
 
