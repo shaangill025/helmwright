@@ -31,6 +31,7 @@ import {
 } from "../permission/policy.ts";
 import type {
   Emit,
+  EmitAll,
   Engine,
   ExecuteTool,
   LoopLimits,
@@ -162,6 +163,8 @@ export function contextDigest(
 export interface RunHooks {
   /** Appends a validated event to the run's log; throws if it cannot. */
   readonly emit: Emit;
+  /** Appends validated events in one transaction, all or none; throws if it cannot. */
+  readonly emitAll: EmitAll;
   /** Ends the run as failed with `reason` before its next engine step. */
   readonly halt: (reason: string) => void;
 }
@@ -187,6 +190,37 @@ export interface RunSetup {
   readonly signal?: AbortSignal;
   /** Dev-mode desync check before every engine step and at the end. Default true. */
   readonly checkDesync?: boolean;
+  /** Bound on waiting for a tool call still in flight when the loop ends. Default SETTLE_TIMEOUT_MS. */
+  readonly settleMs?: number;
+}
+
+/**
+ * How long a run waits, after a timeout or cancel, for a tool call that is still in
+ * flight (SF-4): the sandbox's worst-case stop is five bounded 10 s docker steps and a
+ * 2 s kill settle, plus margin.
+ */
+export const SETTLE_TIMEOUT_MS = 60_000;
+const CLEANUP_UNCONFIRMED =
+  "sandbox cleanup unconfirmed: a tool call was still running when the run ended";
+
+/** Resolves true once every call in `pending` has settled, or false after `ms`. */
+async function settled(
+  pending: ReadonlySet<Promise<unknown>>,
+  ms: number,
+): Promise<boolean> {
+  if (pending.size === 0) return true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((done) => {
+    timer = setTimeout(() => {
+      done(false);
+    }, ms);
+  });
+  const all = Promise.allSettled([...pending]).then(() => true);
+  try {
+    return await Promise.race([all, late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export interface RunOutcome {
@@ -204,14 +238,22 @@ export interface RunOutcome {
  * the log, which (dev mode) must equal the loop's in-memory messages. Once
  * `run.started` is logged this never rejects: anything thrown later ends the run
  * as failed, with a best-effort `run.terminated`. A halt, or a failed append
- * (such as a permission ruling's), fails the run at its next engine step.
+ * (such as a permission ruling's), fails the run at its next engine step, and fails
+ * it at the end even if the loop stopped for another reason. A tool call still in
+ * flight when the loop ends (timeout, cancel) is awaited, bounded by `settleMs`,
+ * before `run.terminated`; past the bound the run fails as cleanup unconfirmed.
  * @throws if `run.started` cannot be logged.
  */
 export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const { log, graphId, runId, nodeId, tools } = setup;
   // The first failed append is the cause; a later desync is only its effect.
   let logFailure: { error: unknown } | undefined;
+  // Set once run.terminated is due: a late call may no longer append.
+  let ended = false;
   const append = (type: string, payload: Record<string, unknown>): Event => {
+    if (ended && type !== "run.terminated") {
+      throw new Error("the run has ended");
+    }
     try {
       return log.append({
         eventId: randomUUID(),
@@ -252,16 +294,41 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         ? null
         : contextDigest(result.transcript.messages, tools),
   });
+  const failed = (error: string): RunOutcome => {
+    const terminal: Terminal = { kind: "failed", error };
+    return outcome(terminal, summarize(terminal, ""));
+  };
   let halted: string | undefined;
+  const pending = new Set<Promise<unknown>>();
   try {
-    const executeTool = setup.connect({
+    const connected = setup.connect({
       emit: (type, payload) => {
         append(type, payload);
+      },
+      emitAll: (entries) => {
+        try {
+          log.transaction(() => {
+            for (const { type, payload } of entries) append(type, payload);
+          });
+        } catch (error) {
+          logFailure ??= { error };
+          throw error;
+        }
       },
       halt: (reason) => {
         halted ??= reason;
       },
     });
+    // Tracked so run.terminated waits for a call the loop stopped waiting for (SF-4).
+    const executeTool: ExecuteTool = (call, signal) => {
+      const running = connected(call, signal);
+      pending.add(running);
+      const done = () => {
+        pending.delete(running);
+      };
+      running.then(done, done);
+      return running;
+    };
     const first: Message = { role: "user", text: setup.title };
     logMessage(first);
     result = await runLoop(
@@ -290,20 +357,35 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         },
       },
     );
+    const unconfirmed = !(await settled(
+      pending,
+      setup.settleMs ?? SETTLE_TIMEOUT_MS,
+    ));
+    ended = true;
     derive(result.transcript.messages);
-    const ended = outcome(result.terminal, result.summary);
-    append("run.terminated", { agentId: nodeId, ...ended });
-    return ended;
+    // SF-3: a halt or failed append fails the run, whatever ended the loop.
+    const failure = unconfirmed
+      ? CLEANUP_UNCONFIRMED
+      : (halted ??
+        (logFailure === undefined
+          ? undefined
+          : errorMessage(logFailure.error)));
+    const done =
+      failure !== undefined &&
+      (unconfirmed || result.terminal.kind !== "failed")
+        ? failed(failure)
+        : outcome(result.terminal, result.summary);
+    append("run.terminated", { agentId: nodeId, ...done });
+    return done;
   } catch (error) {
-    const cause = logFailure?.error ?? error;
-    const terminal: Terminal = { kind: "failed", error: errorMessage(cause) };
-    const ended = outcome(terminal, summarize(terminal, ""));
+    ended = true;
+    const done = failed(errorMessage(logFailure?.error ?? error));
     try {
-      append("run.terminated", { agentId: nodeId, ...ended });
+      append("run.terminated", { agentId: nodeId, ...done });
     } catch {
       // Best effort: the log itself may be what failed.
     }
-    return ended;
+    return done;
   }
 }
 
@@ -401,7 +483,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       },
       engine,
       tools: BROKER_TOOLS,
-      connect: ({ emit, halt }) => {
+      connect: ({ emitAll, halt }) => {
         let ring0: RunRing0;
         try {
           ring0 = runRing0(workspace, policy);
@@ -411,7 +493,13 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             cause: error,
           });
         }
-        const permission = { policy, worktree: workspace, runId, ring0, emit };
+        const permission = {
+          policy,
+          worktree: workspace,
+          runId,
+          ring0,
+          emitAll,
+        };
         return createBroker({
           ...{ image, workspace, workspaceRoot, halt },
           permission: { ...permission, agentId: nodeId },

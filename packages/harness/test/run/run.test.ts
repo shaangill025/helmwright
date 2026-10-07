@@ -72,6 +72,7 @@ function run(
   checkDesync: boolean,
   runLog = log,
   connect: RunSetup["connect"] = () => ok,
+  more: Partial<RunSetup> = {},
 ) {
   return executeRun({
     ...{ log: runLog, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
@@ -79,6 +80,7 @@ function run(
     tools: [{ name: "t", description: "test tool" }],
     connect,
     checkDesync,
+    ...more,
   });
 }
 
@@ -178,5 +180,66 @@ describe("executeRun", () => {
     expect(outcome.summary).toContain("run refused");
     const types = log.events({ runId: "run-1" }).map((e) => e.type);
     expect(types).toEqual(["run.started", "run.terminated"]);
+  });
+
+  it("fails a run halted in its last allowed iteration (SF-3)", async () => {
+    const { engine } = mutatingEngine(0);
+    const outcome = await run(
+      engine,
+      true,
+      log,
+      ({ halt }) =>
+        () => {
+          halt("sandbox cleanup failed");
+          return ok();
+        },
+      { limits: { ...LIMITS, maxIterations: 1 } },
+    );
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: "sandbox cleanup failed",
+    });
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("logs run.terminated only after a timed-out call settles (SF-4)", async () => {
+    const { engine } = mutatingEngine(0);
+    const outcome = await run(
+      engine,
+      true,
+      log,
+      ({ emit, halt }) =>
+        () =>
+          // Ignores the loop's abort; halts about 50 ms after the run's timeout.
+          new Promise((done) => {
+            setTimeout(() => {
+              emit("permission.test", { note: "late" });
+              halt("sandbox cleanup failed");
+              done({ status: "ok", output: "late" });
+            }, 150);
+          }),
+      { limits: { ...LIMITS, timeoutMs: 100 } },
+    );
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: "sandbox cleanup failed",
+    });
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types.slice(-2)).toEqual(["permission.test", "run.terminated"]);
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("fails a run whose timed-out call never settles (SF-4)", async () => {
+    const { engine } = mutatingEngine(0);
+    const outcome = await run(
+      engine,
+      true,
+      log,
+      () => () => new Promise(() => undefined),
+      { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
+    );
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(outcome.summary).toContain("sandbox cleanup unconfirmed");
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
   });
 });

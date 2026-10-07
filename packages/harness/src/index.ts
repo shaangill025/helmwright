@@ -1,6 +1,7 @@
 export type {
   Clock,
   Emit,
+  EmitAll,
   Engine,
   EngineTurn,
   ExecuteTool,
@@ -90,6 +91,7 @@ export {
   BROKER_TOOLS,
   EXECUTE_TIMEOUT_MS,
   MAX_TOOL_OUTPUT_BYTES,
+  PERMISSION_LOG_FAILED,
   SANDBOX_CLEANUP_FAILED,
   checkWorkspace,
   createBroker,
@@ -109,6 +111,7 @@ export {
   CancelledError,
   UsageError,
   contextDigest,
+  SETTLE_TIMEOUT_MS,
   executeRun,
   loadTask,
   reapRuns,

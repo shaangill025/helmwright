@@ -60,6 +60,14 @@ export type Schedule = (ms: number, fn: () => void) => () => void;
 
 export type Emit = (type: string, payload: Record<string, unknown>) => void;
 
+/** Appends `entries` in one transaction: all of them, or none and it throws. */
+export type EmitAll = (
+  entries: readonly {
+    readonly type: string;
+    readonly payload: Record<string, unknown>;
+  }[],
+) => void;
+
 export interface LoopLimits {
   readonly maxIterations: number;
   readonly maxToolCallsPerIteration: number;

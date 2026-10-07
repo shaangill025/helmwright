@@ -1,6 +1,6 @@
 import type { PermissionPolicy } from "@helmwright/schema";
 import type {
-  Emit,
+  EmitAll,
   ExecuteTool,
   ToolCall,
   ToolResult,
@@ -36,8 +36,8 @@ export interface PermissionContext {
   readonly agentId: string;
   /** `runRing0(worktree, policy)`, computed at run start. */
   readonly ring0: RunRing0;
-  /** The run's validated log append; the broker itself never touches the log. */
-  readonly emit: Emit;
+  /** The run's validated, all-or-nothing log append; the broker never touches the log. */
+  readonly emitAll: EmitAll;
 }
 
 /** Where the broker's effects happen: one run's sandboxed workspace. */
@@ -76,6 +76,8 @@ const denied = (output: string): ToolResult => ({ status: "denied", output });
 /** S6: a sandbox not confirmed removed may still touch the worktree. */
 export const SANDBOX_CLEANUP_FAILED = "sandbox cleanup failed";
 const LOG_DENIED = "denied: the permission ruling cannot be logged";
+/** SF-1: once a ruling's append fails, no later call in the run runs. */
+export const PERMISSION_LOG_FAILED = "permission log failed";
 
 function bounded(text: string): string {
   if (Buffer.byteLength(text) <= MAX_TOOL_OUTPUT_BYTES) return text;
@@ -166,10 +168,11 @@ const NOBODY = { answer: "denied", by: "noPresence" } as const;
 
 /**
  * Typed action dispatch through the permission layer: each call is ruled on by
- * `evaluate`, the ruling is logged with `permission.emit`, and only an `allow` runs
+ * `evaluate`, the ruling is logged with `permission.emitAll`, and only an `allow` runs
  * its handler, on the ruled input snapshot. Nobody is present to answer an ask
- * (B9b-3 adds the TTY), so ask and always-ask deny. A ruling that cannot be logged
- * denies with fixed text. After a sandbox cleanup failure every call is denied.
+ * (B9b-3 adds the TTY), so ask and always-ask deny. A ruling that cannot be built
+ * denies with fixed text; one whose append fails also halts the broker and the run.
+ * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or
  * workspace rules (checked up front, so a run fails before it starts).
  */
@@ -215,9 +218,19 @@ export function createBroker(context: BrokerContext): Broker {
         if (error instanceof PermissionLogError) return denied(LOG_DENIED);
         throw error;
       }
-      // Built before any append, so a ruling that cannot be built appends nothing.
-      for (const { type, payload } of entries) {
-        permission.emit(type, { ...payload });
+      // Built in full first, then appended in one transaction: a ruling that cannot be
+      // built appends nothing, and a failed append commits none of its entries.
+      try {
+        permission.emitAll(
+          entries.map(({ type, payload }) => ({
+            type,
+            payload: { ...payload },
+          })),
+        );
+      } catch {
+        // The run recorded the failure; latch before any later call can run (SF-1).
+        own.halt(PERMISSION_LOG_FAILED);
+        return denied(LOG_DENIED);
       }
       if (verdict.kind === "rejected") {
         const named = verdict.requestedName ?? "";
