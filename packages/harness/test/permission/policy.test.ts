@@ -191,13 +191,30 @@ describe("evaluate with the default policy", () => {
     ["push", to("origin main")],
     ["deps.add", { packages: ["left\u202epad"] }],
     ["config.set", set("permissions\u200b")],
-    ...`+main:main --force a..b main.lock main/ main. ma\tin a@{1} a\\b a~1 a^ a? a* a[b
-      refs/heads/.x a//b /main @ main:x`
-      .split(/[ \n]+/)
-      .flatMap((ref) => [
-        ["push", to("origin", ref)] as [string, unknown],
-        ["commit", commit(ref, "src/a.ts")] as [string, unknown],
-      ]),
+    ...[
+      "+main:main",
+      "--force",
+      "a..b",
+      "main.lock",
+      "main/",
+      "main.",
+      "ma\tin",
+      "a@" + "{1}",
+      "a\\b",
+      "a~1",
+      "a^",
+      "a?",
+      "a*",
+      "a[b",
+      "refs/heads/.x",
+      "a//b",
+      "/main",
+      "@",
+      "main:x",
+    ].flatMap((ref) => [
+      ["push", to("origin", ref)] as [string, unknown],
+      ["commit", commit(ref, "src/a.ts")] as [string, unknown],
+    ]),
   ])("denies the unknown action or invalid input %s %j", (action, input) => {
     expect(verdict(action, input).tier).toBe("deny");
   });
