@@ -31,3 +31,48 @@ export type {
   RotReviewTrigger,
 } from "../generated/rot-register.ts";
 export { validate as validateRotRegister } from "../generated/rot-register.validate.js";
+export type { HelmwrightConfig } from "../generated/helmwright-config.ts";
+export { validate as validateHelmwrightConfig } from "../generated/helmwright-config.validate.js";
+
+import type { HelmwrightConfig } from "../generated/helmwright-config.ts";
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null) {
+    for (const inner of Object.values(value)) deepFreeze(inner);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+/**
+ * The default of each setting in helmwright-config.schema.json: the value a missing key takes.
+ * permissions.policy is absent because its default is the harness's DEFAULT_PERMISSION_POLICY.
+ */
+export const CONFIG_DEFAULTS = deepFreeze({
+  intake: { classification: "rubric" },
+  friction: { defaultIntensity: "moderate", choreDowngrade: "on" },
+  decisions: {
+    detection: "floorAndSelfFlag",
+    pendingWork: "provisionalExceptArchitecture",
+    briefFormat: "terse",
+    evaluator: "freshContext",
+  },
+  permissions: {
+    untrustedContent: { mode: "exploreSplit", hintBytes: 1024 },
+  },
+  ownerLoop: {
+    preCommitment: "everyOwnedDecision",
+    consequences: "signalsAndReviews",
+    tutor: "justInTimeAndConceptMap",
+  },
+  topology: "sessionHarnessOneProcess",
+} as const satisfies HelmwrightConfig);
+
+/**
+ * The config's Ring 0 settings (08), named as in the permission policy's ring0Settings floor,
+ * where a setting also covers its children. Changing one is always-ask (Q51).
+ */
+export const RING0_CONFIG_KEYS = deepFreeze([
+  "intake.classification",
+  "permissions",
+] as const);

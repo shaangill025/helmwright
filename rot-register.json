@@ -270,6 +270,22 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/schema/schemas/helmwright-config.schema.json",
+    "ring": 0,
+    "assumption": "Design 08's per-project settings fit one JSON file whose every key is optional; each setting lists its default and its 08 alternatives, a policy override can only tighten the default policy, and the hint stays at most 1024 bytes.",
+    "evidence": [
+      "08 Configuration schema",
+      "07 rule 1",
+      "decisions Q51",
+      "decisions Q58",
+      "decisions Q51 owner answers",
+      "packages/schema/test/helmwright-config.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
     "component": "packages/schema/schemas/permission-event.schema.json",
     "ring": 0,
     "assumption": "Each ruling is logged with the policy version and the input's SHA-256, each ask with its prompt's SHA-256, and an approval's attestation is none until slice SIG.",

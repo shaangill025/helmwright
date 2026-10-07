@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/helmwright-config.schema.json",
+  "title": "HelmwrightConfig",
+  "description": "The project's helmwright.config.json (08, Q51). Every key is optional and a missing key takes its default. Each setting lists its default and the alternatives of design 08; the loader admits only the default until an alternative has its own fixture (07 rule 1). Changing a Ring 0 setting is always-ask (08, Q51).",
+  "$comment": "The `$comment` of each setting gives its default, whether it is Ring 0, the consumer slice and the design 08 row. RING0_CONFIG_KEYS in src/index.ts must name the Ring 0 settings as the permission policy floor does.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "intake": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "description": "Who classifies a task at intake: the deterministic rubric with owner override, logged (default); the owner by hand; or the model.",
+          "$comment": "Default \"rubric\". Ring 0: yes. Consumer: B10. 08 row Intake / Task classification.",
+          "enum": ["rubric", "owner", "model"],
+          "default": "rubric"
+        }
+      }
+    },
+    "friction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaultIntensity": {
+          "description": "Default friction: moderate (a brief at each architectural decision, sparring opt-in); minimal (stop only for permissions); low (one brief before work); high (sparring on for non-trivial work).",
+          "$comment": "Default \"moderate\". Ring 0: no. Consumer: A3, A5. 08 row Friction / Default intensity.",
+          "enum": ["moderate", "minimal", "low", "high"],
+          "default": "moderate"
+        },
+        "choreDowngrade": {
+          "description": "Whether chores drop to minimal friction automatically.",
+          "$comment": "Default \"on\". Ring 0: no. Consumer: B10. 08 row Friction / Chore downgrade.",
+          "enum": ["on", "off"],
+          "default": "on"
+        }
+      }
+    },
+    "decisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "detection": {
+          "description": "Decision detection: the structural floor plus model self-flagging, plan-time pass first (default); the floor only; self-flagging only; or at execution time only.",
+          "$comment": "Default \"floorAndSelfFlag\". Ring 0: no. Consumer: A2, A4. 08 row Decisions / Detection.",
+          "enum": [
+            "floorAndSelfFlag",
+            "floorOnly",
+            "selfFlagOnly",
+            "executionTimeOnly"
+          ],
+          "default": "floorAndSelfFlag"
+        },
+        "pendingWork": {
+          "description": "Dependent work while an owned decision is pending: a provisional branch for technology and scope, a hard stop for architecture (default); a hard stop for all; or provisional for all.",
+          "$comment": "Default \"provisionalExceptArchitecture\". Ring 0: no. Consumer: PB. 08 row Decisions / Pending dependent work.",
+          "enum": [
+            "provisionalExceptArchitecture",
+            "hardStopAll",
+            "provisionalAll"
+          ],
+          "default": "provisionalExceptArchitecture"
+        },
+        "briefFormat": {
+          "description": "Brief format: terse and expandable (default); a full memo; or the recommendation only.",
+          "$comment": "Default \"terse\". Ring 0: no. Consumer: A3. 08 row Decisions / Brief format.",
+          "enum": ["terse", "fullMemo", "recommendationOnly"],
+          "default": "terse"
+        },
+        "evaluator": {
+          "description": "Who decides done: a fresh-context evaluator that only reads and runs, whose verdict flips criteria (default); or generator self-reports (not recommended).",
+          "$comment": "Default \"freshContext\". Ring 0: no. Consumer: B15. 08 row Decisions / Evaluator.",
+          "enum": ["freshContext", "generatorSelfReports"],
+          "default": "freshContext"
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy": {
+          "description": "A permission policy override. It may only make the harness's default policy stricter; resolvePolicy validates it against permission-policy.schema.json and the floor. Absent means the default policy.",
+          "$comment": "Default: the harness's DEFAULT_PERMISSION_POLICY. Ring 0: yes. Consumer: B9 (resolvePolicy), loaded in B6-3. 08 row Permissions / Governance; the governance modes are in permission-policy.schema.json.",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "untrustedContent": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "description": "How third-party content is read: an explore-role session returns a bounded, screened hint to the acting engine (default); or a single engine reads everything (not recommended).",
+              "$comment": "Default \"exploreSplit\". Ring 0: yes. Consumer: B14. 08 row Permissions / Untrusted content; Q58.",
+              "enum": ["exploreSplit", "singleEngine"],
+              "default": "exploreSplit"
+            },
+            "hintBytes": {
+              "description": "The cap, in bytes, on the explore session's hint. A config may lower it, never raise it above Q58's 1024.",
+              "$comment": "Default 1024. Ring 0: yes. Consumer: B14. 08 row Permissions / Untrusted content; Q58.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1024,
+              "default": 1024
+            }
+          }
+        }
+      }
+    },
+    "ownerLoop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preCommitment": {
+          "description": "Pre-commitment: on for every owned decision, revision allowed after the reveal (default); on in sparring mode only; or off.",
+          "$comment": "Default \"everyOwnedDecision\". Ring 0: no. Consumer: A3. 08 row Owner loop / Pre-commitment.",
+          "enum": ["everyOwnedDecision", "sparringOnly", "off"],
+          "default": "everyOwnedDecision"
+        },
+        "consequences": {
+          "description": "Consequence loop: automatic signals and scheduled reviews, null outcomes recorded (default); signals only; or reviews only.",
+          "$comment": "Default \"signalsAndReviews\". Ring 0: no. Consumer: A7, C3. 08 row Owner loop / Consequence loop.",
+          "enum": ["signalsAndReviews", "signalsOnly", "reviewsOnly"],
+          "default": "signalsAndReviews"
+        },
+        "tutor": {
+          "description": "Tutor: just-in-time explanations and a concept map (default); just-in-time only; or both with spaced follow-ups (M2).",
+          "$comment": "Default \"justInTimeAndConceptMap\". Ring 0: no. Consumer: C2. 08 row Owner loop / Tutor.",
+          "enum": [
+            "justInTimeAndConceptMap",
+            "justInTimeOnly",
+            "withSpacedFollowUps"
+          ],
+          "default": "justInTimeAndConceptMap"
+        }
+      }
+    },
+    "topology": {
+      "description": "Process topology: session and harness in one process, the sandbox out of process (default); all in one process; or all separate. Moves to a deployment file in M5.",
+      "$comment": "Default \"sessionHarnessOneProcess\". Ring 0: no. Consumer: none in M1 (only the default is admitted, owner OQ3 2026-10-07); deployment file in M5 (T-06-35). 08 row Architecture / Topology; 06.",
+      "enum": ["sessionHarnessOneProcess", "allInOneProcess", "allSeparate"],
+      "default": "sessionHarnessOneProcess"
+    }
+  }
+}
