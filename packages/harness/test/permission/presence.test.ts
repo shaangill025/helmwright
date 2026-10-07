@@ -36,8 +36,12 @@ async function typeWhenOpen(
 }
 
 /** A presence on in-memory streams: what the owner types, and what was shown. */
-function terminal(graceMs = GRACE_MS, input = new PassThrough()) {
-  const output = new PassThrough();
+function terminal(
+  graceMs = GRACE_MS,
+  input = new PassThrough(),
+  size: { rows: number; columns: number } | object = {},
+) {
+  const output = Object.assign(new PassThrough(), size);
   let shown = "";
   output.setEncoding("utf8").on("data", (d: string) => (shown += d));
   return {
@@ -391,6 +395,128 @@ describe("TTY presence", () => {
       await type("n\r");
       await answer;
       expect(process.listeners("exit")).toEqual(before);
+    });
+  });
+
+  // B9b-3c: an ask with a full-value view approves only after the view was shown to its end.
+  describe("full-value view", () => {
+    const LAST = "Approve call-1? [v=view, y/N] ";
+    const HINT = "(view the full value first: v)\n";
+    const MORE = "-- more: space/Enter next, q stop --";
+    /** 5 lines at 10 columns: a label, then 40 code points wrapped to 4 lines. */
+    const view = 'label\n"' + "a".repeat(38) + '"';
+    const viewAsk = { toolCallId: "call-1", prompt: "call-1?\n" + LAST, view };
+    const count = (text: string, part: string) => text.split(part).length - 1;
+    const pending = (answer: Promise<unknown>) =>
+      Promise.race([answer, sleep(100).then(() => "pending")]);
+    async function until(done: () => boolean) {
+      const by = performance.now() + 3000;
+      while (!done()) {
+        if (performance.now() > by) throw new Error("timed out");
+        await tick();
+      }
+    }
+    /** Probes the window that just started, then waits until it has opened. */
+    async function opened(input: PassThrough, shown: () => string) {
+      const before = count(shown(), DISCARDED);
+      input.write(PROBE);
+      await until(() => count(shown(), DISCARDED) > before);
+    }
+
+    it("does not approve y before the view; it says so and waits", async () => {
+      const { input, presence, shown, type } = terminal();
+      const answer = presence.ask(viewAsk, never());
+      await type("y\n");
+      await until(() => shown().includes(HINT));
+      expect(shown().endsWith(HINT + LAST)).toBe(true);
+      await opened(input, shown);
+      expect(await pending(answer)).toBe("pending");
+      input.write("n\n");
+      expect(await answer).toEqual({
+        answer: "denied",
+        by: "tty",
+        viewed: false,
+      });
+    });
+
+    it("shows the whole view on a v line, then asks again", async () => {
+      const { input, presence, shown, type } = terminal();
+      const answer = presence.ask(viewAsk, never());
+      await type("v\n");
+      // Typed ahead of the prompt shown again: a new window discards it.
+      input.write("y\n");
+      await until(() => count(shown(), LAST) === 2);
+      expect(shown()).toContain(view + "\n" + viewAsk.prompt);
+      // One notice for the probe before "v", one for the discarded "y".
+      await until(() => count(shown(), DISCARDED) === 2);
+      expect(await pending(answer)).toBe("pending");
+      input.write("y\n");
+      expect(await answer).toEqual({
+        answer: "approved",
+        by: "tty",
+        viewed: true,
+      });
+    });
+
+    describe("at a TTY", () => {
+      /** A TTY presence whose output has `rows` rows of 10 columns. */
+      function tty(rows: number) {
+        const { input } = ttyInput();
+        return { ...terminal(GRACE_MS, input, { rows, columns: 10 }), input };
+      }
+
+      it("pages the view and approves y only after its end", async () => {
+        const { input, presence, shown, type } = tty(5);
+        const answer = presence.ask(viewAsk, never());
+        await type("v\r");
+        await until(() => shown().includes(MORE));
+        // Pages of rows - 2 = 3 lines, wrapped at 10 columns.
+        expect(shown()).toContain('v\nlabel\n"aaaaaaaaa\naaaaaaaaaa\n' + MORE);
+        input.write(" ");
+        await until(() => count(shown(), LAST) === 2);
+        expect(shown()).toContain('aaaaaaaaaa\naaaaaaaaa"\n' + viewAsk.prompt);
+        await type("y\r");
+        expect(await answer).toEqual({
+          answer: "approved",
+          by: "tty",
+          viewed: true,
+        });
+      });
+
+      it("does not count a view stopped with q", async () => {
+        const { input, presence, shown, type } = tty(5);
+        const answer = presence.ask(viewAsk, never());
+        await type("v\r");
+        await until(() => shown().includes(MORE));
+        input.write("q");
+        await until(() => count(shown(), LAST) === 2);
+        await opened(input, shown);
+        input.write("y\r");
+        await until(() => shown().includes(HINT));
+        await opened(input, shown);
+        expect(await pending(answer)).toBe("pending");
+        input.write("n\r");
+        expect(await answer).toEqual({
+          answer: "denied",
+          by: "tty",
+          viewed: false,
+        });
+      });
+
+      it("cancels on Ctrl-C while paging, then re-raises SIGINT", async () => {
+        const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+        try {
+          const { input, presence, shown, type } = tty(5);
+          const answer = presence.ask(viewAsk, never());
+          await type("v\r");
+          await until(() => shown().includes(MORE));
+          input.write("\u0003");
+          expect(await answer).toEqual({ ...CANCELLED, viewed: false });
+          expect(kill).toHaveBeenCalledWith(process.pid, "SIGINT");
+        } finally {
+          kill.mockRestore();
+        }
+      });
     });
   });
 
