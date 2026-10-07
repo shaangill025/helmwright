@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { Event } from "@helmwright/schema";
-import { checkWorkspace, createBroker, type Broker } from "../broker/broker.ts";
+import {
+  BROKER_TOOLS,
+  checkWorkspace,
+  createBroker,
+} from "../broker/broker.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import {
   MESSAGE_APPENDED,
@@ -20,7 +24,13 @@ import { openSessionLog, type SessionLog } from "../log/session-log.ts";
 import { runLoop, validateLimits, type LoopResult } from "../loop/loop.ts";
 import { canonicalJson } from "../loop/reminders.ts";
 import { errorMessage, summarize, type Terminal } from "../loop/terminal.ts";
+import {
+  DEFAULT_PERMISSION_POLICY,
+  runRing0,
+  type RunRing0,
+} from "../permission/policy.ts";
 import type {
+  Emit,
   Engine,
   ExecuteTool,
   LoopLimits,
@@ -148,6 +158,14 @@ export function contextDigest(
     .digest("hex");
 }
 
+/** What a run gives its tool executor once `run.started` is logged. */
+export interface RunHooks {
+  /** Appends a validated event to the run's log; throws if it cannot. */
+  readonly emit: Emit;
+  /** Ends the run as failed with `reason` before its next engine step. */
+  readonly halt: (reason: string) => void;
+}
+
 /** A set-up run: everything from `run.started` to `run.terminated`. */
 export interface RunSetup {
   readonly log: SessionLog;
@@ -160,7 +178,11 @@ export interface RunSetup {
   readonly started: Readonly<Record<string, unknown>>;
   readonly engine: Engine;
   readonly tools: readonly ToolSpec[];
-  readonly executeTool: ExecuteTool;
+  /**
+   * Makes the tool executor once `run.started` is logged. A throw refuses the run:
+   * it ends failed with that error before any engine step.
+   */
+  readonly connect: (hooks: RunHooks) => ExecuteTool;
   /** Aborting ends the run as incomplete("cancelled"). */
   readonly signal?: AbortSignal;
   /** Dev-mode desync check before every engine step and at the end. Default true. */
@@ -181,7 +203,8 @@ export interface RunOutcome {
  * logged when the loop creates it; the engine receives the context derived from
  * the log, which (dev mode) must equal the loop's in-memory messages. Once
  * `run.started` is logged this never rejects: anything thrown later ends the run
- * as failed, with a best-effort `run.terminated`.
+ * as failed, with a best-effort `run.terminated`. A halt, or a failed append
+ * (such as a permission ruling's), fails the run at its next engine step.
  * @throws if `run.started` cannot be logged.
  */
 export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
@@ -229,7 +252,16 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         ? null
         : contextDigest(result.transcript.messages, tools),
   });
+  let halted: string | undefined;
   try {
+    const executeTool = setup.connect({
+      emit: (type, payload) => {
+        append(type, payload);
+      },
+      halt: (reason) => {
+        halted ??= reason;
+      },
+    });
     const first: Message = { role: "user", text: setup.title };
     logMessage(first);
     result = await runLoop(
@@ -243,11 +275,13 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       {
         engine: {
           async step(input) {
+            if (logFailure !== undefined) throw logFailure.error;
+            if (halted !== undefined) throw new Error(halted);
             const messages = derive(input.messages);
             return setup.engine.step({ ...input, messages });
           },
         },
-        executeTool: setup.executeTool,
+        executeTool,
         clock: { now: () => performance.now() },
         onMessage: logMessage,
         // run.terminated is appended below, with the context digest.
@@ -327,7 +361,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
     const workspace = join(realpathSync(workspaceRoot), runId);
     mkdirSync(workspace, { mode: 0o700 });
-    let broker: Broker;
     let image: string;
     try {
       // Only orphans: other runs in this process may have live sandboxes.
@@ -336,7 +369,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       if (options.signal?.aborted === true) {
         throw new CancelledError("cancelled before the run started");
       }
-      broker = createBroker({ image, workspace, workspaceRoot });
       // No repo hooks: a post-checkout hook would run on the host, outside the sandbox.
       execFileSync(
         "git",
@@ -350,6 +382,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
+    const policy = DEFAULT_PERMISSION_POLICY;
     const outcome = await executeRun({
       log,
       graphId,
@@ -364,10 +397,26 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         workspace,
         image,
         engine: task.engine.kind,
+        policyVersion: policy.version,
       },
       engine,
-      tools: broker.tools,
-      executeTool: broker.executeTool,
+      tools: BROKER_TOOLS,
+      connect: ({ emit, halt }) => {
+        let ring0: RunRing0;
+        try {
+          ring0 = runRing0(workspace, policy);
+        } catch (error) {
+          const why = errorMessage(error);
+          throw new Error(`run refused: Ring 0 check of the worktree: ${why}`, {
+            cause: error,
+          });
+        }
+        const permission = { policy, worktree: workspace, runId, ring0, emit };
+        return createBroker({
+          ...{ image, workspace, workspaceRoot, halt },
+          permission: { ...permission, agentId: nodeId },
+        }).executeTool;
+      },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.checkDesync === undefined
         ? {}

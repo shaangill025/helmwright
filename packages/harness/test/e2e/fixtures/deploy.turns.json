@@ -1,0 +1,14 @@
+[
+  {
+    "text": "Deploying.",
+    "toolCalls": [
+      { "id": "call-1", "name": "deploy", "input": { "destination": "prod" } }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "The deploy was not approved.",
+    "toolCalls": [],
+    "claimsDone": false
+  }
+]

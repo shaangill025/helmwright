@@ -8,6 +8,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -229,10 +230,22 @@ describe("helmwright CLI (e2e)", () => {
       // Each message is logged when it is created: cause before effect.
       expect(events.map((e) => e.type)).toEqual([
         ...["run.started", "message.appended", "loop.iteration.started"],
-        ...["message.appended", "loop.tool.started", "loop.tool.called"],
-        ...["message.appended", "loop.iteration.started", "message.appended"],
-        "run.terminated",
+        ...["message.appended", "loop.tool.started", "permission.evaluated"],
+        ...["loop.tool.called", "message.appended", "loop.iteration.started"],
+        ...["message.appended", "run.terminated"],
       ]);
+      expect(events[0]?.payload["policyVersion"]).toBe("default-1");
+      // Allowed in the worktree without asking: one ruling, then the effect.
+      const evaluated = events.find((e) => e.type === "permission.evaluated");
+      expect(evaluated?.payload).toMatchObject({
+        toolCallId: "call-1",
+        action: "execute",
+        requested: "execute",
+        tier: "allow",
+        guard: "policy",
+        ruleId: "execute.worktree",
+        policyVersion: "default-1",
+      });
       const called = events.find((e) => e.type === "loop.tool.called");
       expect(called?.payload).toMatchObject({ name: "execute", status: "ok" });
       expect(deriveMessages(events, out.runId).map((m) => m.role)).toEqual([
@@ -290,8 +303,97 @@ describe("helmwright CLI (e2e)", () => {
     );
     expect(tool).toMatchObject({ status: "denied" });
     expect(tool?.text).toContain("deploy_production");
+    // Denied by the schema guard, before any rule: nothing to evaluate or ask.
+    const types = events.map((e) => e.type);
+    expect(types.filter((t) => t.startsWith("permission."))).toEqual([
+      "permission.rejected",
+    ]);
+    const rejected = events.find((e) => e.type === "permission.rejected");
+    expect(rejected?.payload).toMatchObject({
+      toolCallId: "call-1",
+      guard: "schema",
+      ruleId: "schema.unknown-action",
+      requestedName: "deploy_production",
+    });
     expectReplayMatches(out.runId, events);
   });
+
+  it(
+    "stops deploy in the permission layer when nobody is present (AC8)",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("deploy.turns.json");
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      const events = expectWellFormedLog(out.runId);
+      const types = events.map((e) => e.type);
+      const started = types.indexOf("loop.tool.started");
+      expect(
+        types.slice(started, types.indexOf("loop.tool.called") + 1),
+      ).toEqual([
+        ...["loop.tool.started", "permission.evaluated", "permission.asked"],
+        ...["permission.answered", "loop.tool.called"],
+      ]);
+      const payload = (type: string) =>
+        events.find((e) => e.type === type)?.payload;
+      expect(payload("permission.evaluated")).toMatchObject({
+        toolCallId: "call-1",
+        action: "deploy",
+        target: { kind: "remote", value: "prod" },
+        tier: "alwaysAsk",
+        guard: "policy",
+        ruleId: "always-ask.deploy",
+      });
+      expect(payload("permission.asked")).toMatchObject({
+        toolCallId: "call-1",
+        presence: "none",
+      });
+      expect(payload("permission.answered")).toMatchObject({
+        toolCallId: "call-1",
+        answer: "denied",
+        by: "noPresence",
+        attestation: { kind: "none" },
+      });
+      expect(payload("loop.tool.called")).toMatchObject({
+        name: "deploy",
+        status: "denied",
+      });
+      const tool = deriveMessages(events, out.runId).find(
+        (m) => m.role === "tool",
+      );
+      expect(tool).toMatchObject({ status: "denied" });
+      expect(tool?.text).toContain("always-ask.deploy");
+      expect(tool?.text).toContain("nobody present");
+      expect(tool?.text).not.toContain("unknown action");
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "refuses a run whose worktree has an unsupported Ring 0 link",
+    { timeout: T },
+    () => {
+      // package.json is Ring 0; its link target name is not a valid Ring 0 glob.
+      writeFileSync(join(repo, "a+b"), "{}\n");
+      symlinkSync("a+b", join(repo, "package.json"));
+      git("-C", repo, "add", "a+b", "package.json");
+      git(
+        ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "link"],
+      );
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal.kind).toBe("failed");
+      expect(out.summary).toContain("unsupported names");
+      const events = expectWellFormedLog(out.runId);
+      expect(events.map((e) => e.type)).toEqual([
+        "run.started",
+        "run.terminated",
+      ]);
+      const workspace = join(stateDir, "workspaces", out.runId);
+      expect(existsSync(join(workspace, "out.txt"))).toBe(false);
+    },
+  );
 
   it("exits 64 on usage errors", { timeout: T }, () => {
     const missing = join(tmp, "missing.json");

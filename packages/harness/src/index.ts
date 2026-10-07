@@ -81,10 +81,16 @@ export {
   loadScriptedEngine,
   parseScript,
 } from "./engine/scripted.ts";
-export type { Broker, BrokerContext } from "./broker/broker.ts";
+export type {
+  Broker,
+  BrokerContext,
+  PermissionContext,
+} from "./broker/broker.ts";
 export {
+  BROKER_TOOLS,
   EXECUTE_TIMEOUT_MS,
   MAX_TOOL_OUTPUT_BYTES,
+  SANDBOX_CLEANUP_FAILED,
   checkWorkspace,
   createBroker,
   sandboxToolResult,
@@ -92,6 +98,7 @@ export {
 export type {
   ReapResult,
   ReplayResult,
+  RunHooks,
   RunOutcome,
   RunSetup,
   RunTaskOptions,
