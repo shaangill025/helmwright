@@ -108,3 +108,13 @@ export {
   replayRun,
   runTask,
 } from "./run/run.ts";
+export type { NormalizedPath } from "./permission/normalize.ts";
+export {
+  caseFold,
+  isDependencyInstall,
+  isInsideWorktree,
+  isRing0Path,
+  normalizeArgv,
+  normalizeHost,
+  normalizePath,
+} from "./permission/normalize.ts";
