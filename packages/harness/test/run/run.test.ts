@@ -311,6 +311,9 @@ describe("executeRun", () => {
     const thrown: string[] = [];
     const { promise: late, resolve: settle } =
       Promise.withResolvers<undefined>();
+    // The call settles only once executeRun has returned, whatever the load.
+    const { promise: runEnded, resolve: endRun } =
+      Promise.withResolvers<undefined>();
     const outcome = await run(
       mutatingEngine(0).engine,
       true,
@@ -318,7 +321,7 @@ describe("executeRun", () => {
       ({ emit, emitAll }) =>
         () =>
           new Promise((done) => {
-            setTimeout(() => {
+            void runEnded.then(() => {
               for (const append of [
                 () => {
                   emit("permission.test", {});
@@ -335,11 +338,12 @@ describe("executeRun", () => {
               }
               done({ status: "ok", output: "late" });
               settle(undefined);
-            }, 200);
+            });
           }),
       { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
     );
     const begunAtEnd = exec.mock.calls.length;
+    endRun(undefined);
     await late;
     const begun = exec.mock.calls.slice(begunAtEnd).map(([sql]) => sql);
     exec.mockRestore();

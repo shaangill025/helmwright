@@ -5,8 +5,33 @@ import { createTtyPresence, isApproval } from "../../src/index.ts";
 const GRACE_MS = 40;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tick = () => sleep(10);
-/** Past the grace window after a prompt is shown. */
-const later = () => sleep(GRACE_MS + 30);
+const DISCARDED = "(input discarded; answer again)\n";
+/** A printable key, never an answer: typed ahead, it is discarded. */
+const PROBE = "x";
+
+/**
+ * Types `text` once the current ask's window has observably opened, however late:
+ * a probe key typed first is discarded as type-ahead, so the presence says so as
+ * the window opens. Call it before that ask's window opens.
+ * @throws Error if no new notice is shown within 3 s.
+ */
+async function typeWhenOpen(
+  input: PassThrough,
+  shown: () => string,
+  text: string,
+) {
+  const notices = () => shown().split(DISCARDED).length;
+  const before = notices();
+  input.write(PROBE);
+  const until = performance.now() + 3000;
+  while (notices() === before) {
+    if (performance.now() > until) {
+      throw new Error("no discard notice within 3 s: the window never opened");
+    }
+    await tick();
+  }
+  input.write(text);
+}
 
 /** A presence on in-memory streams: what the owner types, and what was shown. */
 function terminal(graceMs = GRACE_MS, input = new PassThrough()) {
@@ -17,16 +42,12 @@ function terminal(graceMs = GRACE_MS, input = new PassThrough()) {
     input,
     presence: createTtyPresence(input, output, { graceMs }),
     shown: () => shown,
-    /** Types `text` once the window after the latest prompt has passed. */
-    type: async (text: string) => {
-      await later();
-      input.write(text);
-    },
+    /** Types `text` once the latest ask's window has opened (see typeWhenOpen). */
+    type: (text: string) => typeWhenOpen(input, () => shown, text),
   };
 }
 
 const CANCELLED = { answer: "denied", by: "cancelled" };
-const DISCARDED = "(input discarded; answer again)\n";
 
 /** A fake TTY input: records each setRawMode call. */
 function ttyInput() {
@@ -122,10 +143,12 @@ describe("TTY presence", () => {
     const presence = createTtyPresence(input, output, { graceMs: GRACE_MS });
     input.write("y\n");
     const answer = presence.ask(ask("call-1"), never());
-    await later(); // ends with the block, inside the window
-    await later();
-    input.write("n\n");
+    // Not awaited first: an approval must fail on the answer, not on the notice.
+    const typed = typeWhenOpen(input, () => shown, "n\n").catch(
+      (error: unknown) => error,
+    );
     expect(await answer).toEqual({ answer: "denied", by: "tty" });
+    expect(await typed).toBeUndefined();
     expect(shown).toContain("call-1? ");
   });
 
@@ -138,10 +161,14 @@ describe("TTY presence", () => {
     input.write("y\n");
     await type("n\n");
     expect(await answer).toEqual({ answer: "denied", by: "tty" });
+    // Three discarded writes (two lines and the probe), one notice.
     expect(shown().split(DISCARDED)).toHaveLength(2);
+    // Nothing discarded, nothing said (no probe here: it would be discarded).
     const quiet = terminal();
-    const next = quiet.presence.ask(ask("call-2"), never());
-    await quiet.type("n\n");
+    const controller = new AbortController();
+    const next = quiet.presence.ask(ask("call-2"), controller.signal);
+    await sleep(GRACE_MS + 200);
+    controller.abort();
     await next;
     expect(quiet.shown()).not.toContain(DISCARDED);
   });
@@ -187,7 +214,7 @@ describe("TTY presence", () => {
     await type("y\n");
     expect(await first).toEqual({ answer: "approved", by: "tty" });
     await tick();
-    expect(shown()).toBe("call-1? call-2? ");
+    expect(shown()).toBe("call-1? " + DISCARDED + "call-2? ");
     await type("n\n");
     expect(await second).toEqual({ answer: "denied", by: "tty" });
   });
@@ -224,30 +251,26 @@ describe("TTY presence", () => {
   });
 
   it("drops a line typed within the grace window", async () => {
-    const { input, presence } = terminal();
+    const { input, presence, type } = terminal();
     const answer = presence.ask(ask("call-1"), never());
     await tick();
     input.write("y\n");
-    await later();
-    input.write("n\n");
+    await type("n\n");
     expect(await answer).toEqual({ answer: "denied", by: "tty" });
   });
 
   it("drops a line that starts in the window and ends after it", async () => {
-    const { input, presence } = terminal();
+    const { input, presence, type } = terminal();
     const answer = presence.ask(ask("call-1"), never());
     await tick();
     input.write("y");
-    await later();
-    input.write("\n");
-    input.write("n\n");
+    await type("\n"); // the line is "", not "y"
     expect(await answer).toEqual({ answer: "denied", by: "tty" });
   });
 
   it("takes a line typed after the grace window", async () => {
     const { presence, type } = terminal(100);
     const answer = presence.ask(ask("call-1"), never());
-    await sleep(140);
     await type("y\n");
     expect(await answer).toEqual({ answer: "approved", by: "tty" });
   });
@@ -286,6 +309,32 @@ describe("TTY presence", () => {
       }
     });
 
+    // Nit-1: in raw mode nothing is left of an earlier overlong line.
+    it("takes a fresh answer after an overlong line", async () => {
+      const { presence, type } = tty();
+      const first = presence.ask(ask("call-1"), never());
+      await type("x".repeat(2000));
+      expect(await first).toEqual({ answer: "denied", by: "tty" });
+      const second = presence.ask(ask("call-2"), never());
+      await type("y\r");
+      expect(
+        await Promise.race([second, sleep(1000).then(() => "hung")]),
+      ).toEqual({ answer: "approved", by: "tty" });
+    });
+
+    // Nit-2: Ctrl-D is end of input: every later ask is denied at once.
+    it("denies every ask after Ctrl-D at once", async () => {
+      const { presence, shown, type } = tty();
+      const first = presence.ask(ask("call-1"), never());
+      await type("\u0004");
+      expect(await first).toEqual(CANCELLED);
+      const second = presence.ask(ask("call-2"), never());
+      expect(
+        await Promise.race([second, sleep(500).then(() => "hung")]),
+      ).toEqual(CANCELLED);
+      expect(shown()).not.toContain("call-2");
+    });
+
     it("cancels on Ctrl-C, then re-raises SIGINT", async () => {
       const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
       try {
@@ -307,7 +356,13 @@ describe("TTY presence", () => {
       expect(await answer).toEqual({ answer: "approved", by: "tty" });
       const erase = (n: number) => "\b \b".repeat(n);
       expect(shown()).toBe(
-        "call-1? x" + erase(1) + "\\u{202e}" + erase(8) + "y\n",
+        "call-1? " +
+          DISCARDED +
+          "x" +
+          erase(1) +
+          "\\u{202e}" +
+          erase(8) +
+          "y\n",
       );
     });
 
@@ -316,7 +371,7 @@ describe("TTY presence", () => {
       const answer = presence.ask(ask("call-1"), never());
       await type("\u001b\u0007y\r");
       expect(await answer).toEqual({ answer: "denied", by: "tty" });
-      expect(shown()).toBe("call-1? y\n");
+      expect(shown()).toBe("call-1? " + DISCARDED + "y\n");
     });
 
     it("restores the mode if the process exits while an ask waits", async () => {
