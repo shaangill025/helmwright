@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/permission-policy.schema.json",
+  "title": "PermissionPolicy",
+  "description": "The permission policy the broker evaluates for every typed action (B9, Q51). The always-ask set is checked before any rule, in every governance mode (03); an override may add or tighten, never relax it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "governance",
+    "rules",
+    "alwaysAsk",
+    "ring0Paths",
+    "ring0Settings"
+  ],
+  "properties": {
+    "version": {
+      "description": "Policy version, recorded with every permission decision.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "governance": {
+      "description": "Governance mode (08, Ring 0). Only the default, tiered, until another mode has a fixture (07 rule 1).",
+      "const": "tiered"
+    },
+    "rules": {
+      "description": "Evaluated in order after the always-ask checks; the first match wins and no match asks.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "alwaysAsk": {
+      "description": "Actions that always ask, whatever the rules or governance mode.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "ring0Paths": {
+      "description": "Worktree-relative globs, matched case-folded, whose edits always ask. `*` matches within one segment; `/**` may only end a pattern and matches the directory and everything below it.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/pathGlob" }
+    },
+    "ring0Settings": {
+      "description": "Dotted setting names (08, Ring 0) whose change always asks, as do their parents and children.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/setting" }
+    }
+  },
+  "$defs": {
+    "action": {
+      "title": "PermissionAction",
+      "description": "A typed action name (Q6). Most have no M1 handler yet; they exist so that the policy can rule on them.",
+      "enum": [
+        "execute",
+        "fs.read",
+        "fs.edit",
+        "fs.delete",
+        "commit",
+        "deps.add",
+        "config.set",
+        "spend.raiseCap",
+        "push",
+        "pr.open",
+        "pr.merge",
+        "comment",
+        "publish",
+        "deploy"
+      ]
+    },
+    "tier": {
+      "title": "PermissionTier",
+      "enum": ["allow", "ask", "deny", "alwaysAsk"]
+    },
+    "rule": {
+      "title": "PermissionRule",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action", "scope", "tier"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.-]{0,63}$"
+        },
+        "action": { "$ref": "#/$defs/action" },
+        "scope": {
+          "description": "`worktree`: the target is strictly inside the run's worktree and not under `.git` (execute always runs there). `runBranch`: the ref is the run's own branch. `any`: every target.",
+          "enum": ["worktree", "runBranch", "any"]
+        },
+        "tier": { "$ref": "#/$defs/tier" }
+      }
+    },
+    "pathGlob": {
+      "description": "Relative, no `.` or `..` segments, no empty segments, and `**` only as the whole last segment. Split into simple patterns so no regex nests quantifiers (ReDoS).",
+      "type": "string",
+      "allOf": [
+        { "pattern": "^[A-Za-z0-9._*/-]{1,128}$" },
+        {
+          "not": {
+            "pattern": "^/|//|/$|(^|/)\\.\\.?(/|$)|\\*\\*[^/]|[^/]\\*\\*|\\*\\*/"
+          }
+        }
+      ]
+    },
+    "setting": {
+      "description": "Dotted camelCase setting name, e.g. `permissions.governance`; each segment starts with a lowercase letter.",
+      "type": "string",
+      "allOf": [
+        { "pattern": "^[a-z][A-Za-z0-9.]{0,127}$" },
+        { "not": { "pattern": "\\.\\.|\\.$|\\.[^a-z]" } }
+      ]
+    }
+  }
+}
