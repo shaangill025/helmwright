@@ -1,8 +1,14 @@
 # CI sensor floor: scope and known gaps
 
-Owner decision (2026-10-06, `docs/decisions.md`): the CI sensor floor is a backstop against
-accidental or casual bypass. The adversarial defense is the harness's own sensor floor (Slice B),
-which runs trusted, pinned tools on candidate trees outside the candidate's control.
+This page describes the CI setup on `main` today: every job runs on `pull_request`, so CI is a
+backstop against accidental or casual bypass. The harness's own sensor floor (B3) runs trusted,
+pinned tools on candidate trees outside the candidate's control.
+
+The owner revised the decision on 2026-10-06 (`docs/decisions.md`, CI sensor floor → Enforcement):
+the scanning jobs move to `pull_request_target`, so they run the workflow and configs from `main`.
+Jobs that execute PR code (`verify`, and the Grype image build unless proven safe) stay on
+`pull_request`. The CI1 PR makes that change and updates this page; the "backstop only" framing
+then no longer applies to the scanning jobs.
 
 ## What CI enforces
 
