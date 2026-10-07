@@ -9,6 +9,7 @@ import {
   type Engine,
   type EngineTurn,
   type Message,
+  type RunSetup,
   type SessionLog,
 } from "../../src/index.ts";
 
@@ -64,12 +65,19 @@ function mutatingEngine(mutateAt: number) {
   return { engine, seen };
 }
 
-function run(engine: Engine, checkDesync: boolean, runLog = log) {
+const ok = () => Promise.resolve({ status: "ok", output: "out" } as const);
+
+function run(
+  engine: Engine,
+  checkDesync: boolean,
+  runLog = log,
+  connect: RunSetup["connect"] = () => ok,
+) {
   return executeRun({
     ...{ log: runLog, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
     ...{ title: "task", limits: LIMITS, started: {}, engine },
     tools: [{ name: "t", description: "test tool" }],
-    executeTool: () => Promise.resolve({ status: "ok", output: "out" }),
+    connect,
     checkDesync,
   });
 }
@@ -137,5 +145,38 @@ describe("executeRun", () => {
     expect(outcome.terminal).toMatchObject({ kind: "failed" });
     expect(outcome.summary).toContain("SQLITE_FULL");
     expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("fails the run before the next step once the broker halts it (S6)", async () => {
+    const { engine, seen } = mutatingEngine(0);
+    const outcome = await run(engine, true, log, ({ emit, halt }) => () => {
+      emit("permission.test", { note: "logged by the executor" });
+      halt("sandbox cleanup failed");
+      return ok();
+    });
+    // The tool call of step 1 ran; step 2 was never taken.
+    expect(seen).toHaveLength(1);
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: "sandbox cleanup failed",
+    });
+    const events = log.events({ runId: "run-1" });
+    expect(events.map((e) => e.type)).toContain("permission.test");
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+    log.close();
+    expect(replayRun("run-1", dir)).toMatchObject({ match: true });
+    log = openSessionLog(join(dir, "session.sqlite"));
+  });
+
+  it("refuses the run when connect throws, before any engine step", async () => {
+    const { engine, seen } = mutatingEngine(0);
+    const outcome = await run(engine, true, log, () => {
+      throw new Error("run refused: Ring 0 check of the worktree: bad link");
+    });
+    expect(seen).toHaveLength(0);
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(outcome.summary).toContain("run refused");
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types).toEqual(["run.started", "run.terminated"]);
   });
 });
