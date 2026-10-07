@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/shaangill025/helmwright/schemas/permission-policy.schema.json",
   "title": "PermissionPolicy",
-  "description": "The permission policy the broker evaluates for every typed action (B9, Q51). The always-ask set is checked before any rule, in every governance mode (03); an override may add or tighten, never relax it.",
+  "description": "The permission policy the broker evaluates for every typed action (B9, Q51). The always-ask set is checked before any rule, in every governance mode (03). This schema checks shape and requires non-empty always-ask and Ring 0 lists; that an override never relaxes the base policy's lists is a relation between two policies, so resolvePolicy enforces it, together with unique rule IDs.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -32,18 +32,21 @@
     "alwaysAsk": {
       "description": "Actions that always ask, whatever the rules or governance mode.",
       "type": "array",
+      "minItems": 1,
       "maxItems": 64,
       "items": { "$ref": "#/$defs/action" }
     },
     "ring0Paths": {
       "description": "Worktree-relative globs, matched case-folded, whose edits always ask. `*` matches within one segment; `/**` may only end a pattern and matches the directory and everything below it.",
       "type": "array",
+      "minItems": 1,
       "maxItems": 256,
       "items": { "$ref": "#/$defs/pathGlob" }
     },
     "ring0Settings": {
       "description": "Dotted setting names (08, Ring 0) whose change always asks, as do their parents and children.",
       "type": "array",
+      "minItems": 1,
       "maxItems": 64,
       "items": { "$ref": "#/$defs/setting" }
     }
@@ -73,43 +76,43 @@
       "title": "PermissionTier",
       "enum": ["allow", "ask", "deny", "alwaysAsk"]
     },
+    "scope": {
+      "title": "PermissionScope",
+      "description": "`worktree`: the target is strictly inside the run's worktree and not under `.git` (execute always runs there). `runBranch`: the ref is the run's own branch. `any`: every target.",
+      "enum": ["worktree", "runBranch", "any"]
+    },
+    "ruleId": {
+      "title": "PermissionRuleId",
+      "description": "Dotted lowercase segments (like event types). The `always-ask.` prefix is reserved for the IDs the policy guard records for always-ask stops.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}(\\.[a-z][a-z0-9-]{0,31}){0,3}$",
+      "not": { "pattern": "^always-ask\\." }
+    },
     "rule": {
       "title": "PermissionRule",
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "action", "scope", "tier"],
       "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9.-]{0,63}$"
-        },
+        "id": { "$ref": "#/$defs/ruleId" },
         "action": { "$ref": "#/$defs/action" },
-        "scope": {
-          "description": "`worktree`: the target is strictly inside the run's worktree and not under `.git` (execute always runs there). `runBranch`: the ref is the run's own branch. `any`: every target.",
-          "enum": ["worktree", "runBranch", "any"]
-        },
+        "scope": { "$ref": "#/$defs/scope" },
         "tier": { "$ref": "#/$defs/tier" }
       }
     },
     "pathGlob": {
       "description": "Relative, no `.` or `..` segments, no empty segments, and `**` only as the whole last segment. Split into simple patterns so no regex nests quantifiers (ReDoS).",
       "type": "string",
-      "allOf": [
-        { "pattern": "^[A-Za-z0-9._*/-]{1,128}$" },
-        {
-          "not": {
-            "pattern": "^/|//|/$|(^|/)\\.\\.?(/|$)|\\*\\*[^/]|[^/]\\*\\*|\\*\\*/"
-          }
-        }
-      ]
+      "pattern": "^[A-Za-z0-9._*/-]{1,128}$",
+      "not": {
+        "pattern": "^/|//|/$|(^|/)\\.\\.?(/|$)|\\*\\*[^/]|[^/]\\*\\*|\\*\\*/"
+      }
     },
     "setting": {
       "description": "Dotted camelCase setting name, e.g. `permissions.governance`; each segment starts with a lowercase letter.",
       "type": "string",
-      "allOf": [
-        { "pattern": "^[a-z][A-Za-z0-9.]{0,127}$" },
-        { "not": { "pattern": "\\.\\.|\\.$|\\.[^a-z]" } }
-      ]
+      "pattern": "^[a-z][A-Za-z0-9.]{0,127}$",
+      "not": { "pattern": "\\.\\.|\\.$|\\.[^a-z]" }
     }
   }
 }
