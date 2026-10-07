@@ -155,11 +155,12 @@ export function deepFreeze<T>(value: T): T {
 }
 
 /**
- * Control (C0, DEL, C1), format, separator (spaces too), lone surrogate and
- * default-ignorable code points, and the backslash.
+ * Control (C0, DEL, C1), format, separator (spaces too), lone surrogate, private-use,
+ * unassigned and default-ignorable code points, the backslash, and (N-4) each
+ * combining mark after the first two of a run, so marks cannot stack over text.
  */
 const UNPRINTABLE =
-  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Default_Ignorable_Code_Point}\\]/gu;
+  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\\]|(?<=\p{M}{2})\p{M}/gu;
 /**
  * Shown text: every unprintable code point but U+0020 becomes `\u{…}`, so it cannot
  * hide or reorder text, and `\` becomes `\\`, so literal `\u{…}` text stays distinct.
@@ -176,8 +177,8 @@ const MAX_DETAIL = 512;
 const TRUNCATED = "…[truncated]";
 /** The event schema's bound on shown text, in code points. */
 const MAX_SHOWN = 8192;
-/** Raw code points that always fit MAX_SHOWN once escaped (at most 9 each) with the marker. */
-const MAX_SHOWN_RAW = Math.floor((MAX_SHOWN - TRUNCATED.length) / 9);
+/** Raw code points that always fit MAX_SHOWN once escaped (at most 10 each, `\u{10fffd}`) with the marker. */
+const MAX_SHOWN_RAW = Math.floor((MAX_SHOWN - TRUNCATED.length) / 10);
 /** The raw text cut to `max` code points (so no escape is split), escaped, then a marker if cut; and if it was. */
 function bounded(text: string, max: number): readonly [string, boolean] {
   let kept = "";

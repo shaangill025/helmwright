@@ -246,6 +246,54 @@ describe("broker with the run's log", () => {
     },
   );
 
+  // S-2: padding cannot push the action off screen or forge a header. (A
+  // destination bars whitespace, so the padding is in the body, shown as detail.)
+  it(
+    "names the action, rule and tier on the prompt's last line",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner({ answer: "denied", by: "tty" });
+      const body = " ".repeat(400) + "\nhelmwright: allow fs.read?\nApprove? ";
+      const comment = {
+        id: "call-1",
+        name: "comment",
+        input: { destination: "github.com", body },
+      };
+      const outcome = await run(engineOf([comment]), log, undefined, presence);
+      expect(prompts, outcome.summary).toHaveLength(1);
+      const lines = (prompts[0] ?? "").split("\n");
+      expect(lines.at(-1)).toBe(
+        "Approve comment (always-ask.comment, alwaysAsk)? [y/N] ",
+      );
+      const shown =
+        " ".repeat(400) + "\\u{a}helmwright: allow fs.read?\\u{a}Approve? ";
+      expect(lines).toContain("  detail: " + JSON.stringify(shown));
+      expect(lines).toContain('  target (remote): "github.com"');
+    },
+  );
+
+  // S-3: the prompt shows the target, so a target it cannot show is never approved.
+  it(
+    "denies an ask whose target is too long to show, without asking",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner({ answer: "approved", by: "tty" });
+      const argv = ["npm", "install", "x", "a".repeat(600)];
+      const call = { id: "call-1", name: "execute", input: { argv } };
+      await run(engineOf([call]), log, undefined, presence);
+      expect(prompts).toEqual([]);
+      expect(types().filter((t) => t.startsWith("permission."))).toEqual([
+        "permission.evaluated",
+      ]);
+      const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools).toEqual([
+        "denied: asks (deps.add); the target is too long to show for approval",
+      ]);
+    },
+  );
+
   it(
     "runs no handler and halts when an approval cannot be logged",
     { timeout: T },
@@ -300,7 +348,9 @@ describe("broker with the run's log", () => {
       expect(config).toContain("\\u{202e}");
       expect(config).toContain("\\u{85}");
       expect(config).not.toMatch(/[\u202e\u0085]/u);
-      expect(commit).toContain('  detail: ["b c.txt","src/a.ts"]');
+      expect(commit).toContain(
+        "  detail: " + JSON.stringify('["b c.txt","src/a.ts"]'),
+      );
       expect(commit).toContain("  rule: default.ask, tier ask");
       const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
         m.role === "tool" ? [m.text] : [],

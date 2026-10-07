@@ -176,11 +176,11 @@ describe("permissionEvents", () => {
       value: '["' + "a".repeat(510) + "…[truncated]",
       truncated: true,
     });
-    // Escaped, it would not fit, so the raw text is cut to 908 code points.
+    // Escaped, it would not fit, so the raw text is cut to 818 code points.
     const destination = "a" + "\ufe0f".repeat(2000);
     expect(evaluated(rule("deploy", { destination })).target).toEqual({
       kind: "remote",
-      value: "a" + "\\u{fe0f}".repeat(907) + "…[truncated]",
+      value: "a" + "\\u{fe0f}".repeat(817) + "…[truncated]",
       truncated: true,
     });
     const body = { destination: "github.com", body: "y".repeat(900) };

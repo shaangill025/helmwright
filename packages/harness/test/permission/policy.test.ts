@@ -18,6 +18,7 @@ import type {
   RunRing0,
 } from "../../src/index.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { displayText } from "../../src/permission/policy.ts";
 import {
   ALWAYS_ASK_ACTIONS,
   DEFAULT_PERMISSION_POLICY as BASE,
@@ -1130,5 +1131,20 @@ describe("security review of B9b-2a", () => {
     for (const part of [committed, target, paths, ruled, run("shell", {})]) {
       expect(Object.isFrozen(part)).toBe(true);
     }
+  });
+});
+
+// N-4: private-use and unassigned code points, and stacked combining marks, are escaped.
+describe("displayText", () => {
+  it.each([
+    ["a\u{e000}b", "a\\u{e000}b"],
+    ["\u{10fffd}\u0378", "\\u{10fffd}\\u{378}"],
+    ["e\u0301\u0302", "e\u0301\u0302"],
+    [
+      "e\u0301\u0302\u0303\u0304 o\u0308",
+      "e\u0301\u0302\\u{303}\\u{304} o\u0308",
+    ],
+  ])("shows %j as %j", (text, shown) => {
+    expect(displayText(text)).toBe(shown);
   });
 });

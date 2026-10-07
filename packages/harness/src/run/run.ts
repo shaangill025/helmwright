@@ -32,6 +32,7 @@ import { canonicalJson } from "../loop/reminders.ts";
 import { errorMessage, summarize, type Terminal } from "../loop/terminal.ts";
 import {
   DEFAULT_PERMISSION_POLICY,
+  displayText,
   runRing0,
   type RunRing0,
 } from "../permission/policy.ts";
@@ -398,9 +399,14 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   // Nit-2: a later throw (a final desync) must not mask the loop's own failure.
   const own =
     result?.terminal.kind === "failed" ? result.terminal.error : undefined;
+  // N-3: with a loop failure, a throw can only be the final desync: keep both.
+  const also =
+    own === undefined || thrown === undefined
+      ? own
+      : own + "; also: " + displayText(errorMessage(thrown.error));
   const failure = unconfirmed
     ? CLEANUP_UNCONFIRMED
-    : (halted ?? message(logFailure) ?? own ?? message(thrown));
+    : (halted ?? message(logFailure) ?? also ?? message(thrown));
   const done =
     failure === undefined && result !== undefined
       ? outcome(result.terminal, result.summary)
