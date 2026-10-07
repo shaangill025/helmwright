@@ -116,8 +116,10 @@ export interface EvaluatedVerdict {
   readonly path?: string;
   /**
    * A commit's resolved worktree-relative paths, unescaped and without pathspec magic
-   * (SF-5); `.` is the root. The B9b-2b commit handler stages only these, after `--` and
-   * with `--literal-pathspecs` (or `GIT_LITERAL_PATHSPECS=1`).
+   * (SF-5); `.` is the root. A commit handler (none in M1 yet) must stage only these,
+   * after `--` and with `--literal-pathspecs` (or `GIT_LITERAL_PATHSPECS=1`). The run's
+   * Ring 0 link targets are a snapshot taken at run start, so a future write or commit
+   * handler must re-check them at use time (N6).
    */
   readonly paths?: readonly string[];
   /** The frozen snapshot of the input that was ruled on. Handlers act on it, never on the request. */
@@ -1023,11 +1025,30 @@ export function ring0LinkTargets(
 }
 
 /**
+ * N4: an fs error as its code and its escaped worktree-relative path, never its raw
+ * message or a host path. Other errors pass through (their messages are fixed or escaped).
+ */
+function fsFailure(error: unknown, worktreeReal: string): unknown {
+  const fields = error as { code?: unknown; path?: unknown } | null;
+  if (!(error instanceof Error) || typeof fields?.code !== "string") {
+    return error;
+  }
+  const { path } = fields;
+  const where =
+    typeof path !== "string"
+      ? ""
+      : contains(worktreeReal, path)
+        ? " at " + (bounded(posix.relative(worktreeReal, path), 256)[0] || ".")
+        : " outside the worktree";
+  return new Error(escape(fields.code) + where, { cause: error });
+}
+
+/**
  * The run's extra Ring 0 globs (SF3): `ring0LinkTargets` of the worktree for the
  * policy's Ring 0 paths united with the floor, recorded for `evaluate` (SF-1). Call it
  * at run start.
  * @throws TypeError on an invalid policy, or one that throws when read; as
- * `ring0LinkTargets` otherwise.
+ * `ring0LinkTargets` otherwise, but an fs error as `fsFailure` (N4).
  */
 export function runRing0(worktree: string, policy: PermissionPolicy): RunRing0 {
   let ring0Paths: readonly string[];
@@ -1039,8 +1060,15 @@ export function runRing0(worktree: string, policy: PermissionPolicy): RunRing0 {
   } catch {
     throw new TypeError("invalid permission policy");
   }
-  const worktreeReal = realpathSync.native(worktree);
-  const issued = deepFreeze(ring0LinkTargets(worktreeReal, ring0Paths));
+  let worktreeReal = worktree;
+  let targets: string[];
+  try {
+    worktreeReal = realpathSync.native(worktree);
+    targets = ring0LinkTargets(worktreeReal, ring0Paths);
+  } catch (error) {
+    throw fsFailure(error, worktreeReal);
+  }
+  const issued = deepFreeze(targets);
   ISSUED.set(issued, { worktreeReal, ring0Paths });
   return issued as readonly string[] as RunRing0;
 }

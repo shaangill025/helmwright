@@ -1,0 +1,22 @@
+[
+  {
+    "text": "Three calls the broker must not run.",
+    "toolCalls": [
+      {
+        "id": "call 1",
+        "name": "execute",
+        "input": { "argv": ["sh", "-c", "echo hi > a.txt"] }
+      },
+      {
+        "id": "call-2",
+        "name": "execute",
+        "input": {
+          "argv": ["sh", "-c", "echo hi > b.txt; npm install left-pad"]
+        }
+      },
+      { "id": "call-3", "name": "execute", "input": { "argv": [] } }
+    ],
+    "claimsDone": false
+  },
+  { "text": "All three were denied.", "toolCalls": [], "claimsDone": true }
+]

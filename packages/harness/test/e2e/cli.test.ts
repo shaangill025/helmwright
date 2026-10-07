@@ -370,6 +370,73 @@ describe("helmwright CLI (e2e)", () => {
   );
 
   it(
+    "denies reclassified, schema-invalid and unloggable calls before any effect",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("ruled.turns.json");
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      const workspace = join(stateDir, "workspaces", out.runId);
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      const events = expectWellFormedLog(out.runId);
+      const ruled = events.filter((e) => e.type.startsWith("permission."));
+      // No handler ran. "call 1" cannot be logged: no ruling, fixed denial text.
+      expect(ruled.map((e) => [e.type, e.payload["toolCallId"]])).toEqual([
+        ["permission.evaluated", "call-2"],
+        ["permission.asked", "call-2"],
+        ["permission.answered", "call-2"],
+        ["permission.rejected", "call-3"],
+      ]);
+      expect(ruled[0]?.payload).toMatchObject({
+        action: "deps.add",
+        requested: "execute",
+        tier: "ask",
+        ruleId: "deps.add",
+      });
+      expect(ruled[3]?.payload).toMatchObject({ guard: "schema" });
+      const tools = deriveMessages(events, out.runId).filter(
+        (m) => m.role === "tool",
+      );
+      expect(tools.map((m) => m.status)).toEqual([
+        "denied",
+        "denied",
+        "denied",
+      ]);
+      expect(tools[0]?.text).toBe(
+        "denied: the permission ruling cannot be logged",
+      );
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "refuses a run whose Ring 0 link fails to resolve, with an escaped reason (N4)",
+    { timeout: T },
+    () => {
+      // A target component over 255 bytes: lstat fails (ENAMETOOLONG) during the walk.
+      const target = "\u202e" + "x".repeat(300);
+      symlinkSync(target, join(repo, "package.json"));
+      git("-C", repo, "add", "package.json");
+      git(
+        ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "link"],
+      );
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.summary).toContain(
+        "run refused: Ring 0 check of the worktree",
+      );
+      expect(out.summary).toContain("ENAMETOOLONG");
+      expect(out.summary).toContain("\\u{202e}");
+      expect(out.summary).not.toContain("\u202e");
+      expect(out.summary).not.toContain(tmp);
+      const events = expectWellFormedLog(out.runId);
+      expect(events.at(-1)?.payload["terminal"]).toEqual(out.terminal);
+    },
+  );
+
+  it(
     "refuses a run whose worktree has an unsupported Ring 0 link",
     { timeout: T },
     () => {
