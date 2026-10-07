@@ -28,7 +28,9 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  * - S3: each `loop.tool.called` that is not denied follows, for its call, an `allow`
  *   ruling or an approval with no fault, and no later ruling (N-a: a ruling after an
  *   ask unbinds it, so its approval grants nothing); it names the action its ruling
- *   requested (N-c); any `loop.tool.called`, denied too, uses up the grant (N-b).
+ *   requested (N-c); any `loop.tool.called`, denied too, uses up the grant (N-b);
+ * - N4: each call has at most one `permission.evaluated`, and an exfiltration
+ *   ruling always denies.
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -39,6 +41,8 @@ export function permissionFaults(events: readonly Event[]): string[] {
   const bound = new Set<string>();
   const answered = new Set<string>();
   const grants = new Map<string, Grant>();
+  /** N4: the calls with a `permission.evaluated`. */
+  const evaluatedIds = new Set<string>();
   /** N-c: the action each call's evaluated ruling requested. */
   const requested = new Map<string, unknown>();
   for (const [i, { seq, type, payload }] of events.entries()) {
@@ -46,6 +50,15 @@ export function permissionFaults(events: readonly Event[]): string[] {
     const id = payload["toolCallId"];
     const key = typeof id === "string" ? id : undefined;
     if (type === "permission.evaluated" || type === "permission.rejected") {
+      if (type === "permission.evaluated") {
+        if (key !== undefined && evaluatedIds.has(key)) {
+          fault("more than one permission.evaluated for one tool call");
+        }
+        if (key !== undefined) evaluatedIds.add(key);
+        if (payload["guard"] === "exfiltration" && payload["tier"] !== "deny") {
+          fault("exfiltration ruling that does not deny");
+        }
+      }
       const allow =
         type === "permission.evaluated" && payload["tier"] === "allow";
       if (key !== undefined) {

@@ -774,7 +774,7 @@ function policyProblem(policy: unknown): string | undefined {
   if (repeated !== undefined) return `rule id ${repeated} repeats`;
   // The guards record these IDs; a rule must not be confused with one (the schema reserves always-ask.).
   const reserved = ids.find((id) =>
-    /^(default|policy|schema|exfiltration)\./.test(id),
+    /^(default|policy|schema|exfiltration)(\.|$)/.test(id),
   );
   return reserved === undefined ? undefined : `rule id ${reserved} is reserved`;
 }
@@ -819,8 +819,23 @@ function issuedFor(
 export const EXFILTRATION_RULE = "exfiltration.credential";
 /** What an exfiltration denial logs and shows in place of the target and detail. */
 export const WITHHELD = "[withheld: credential-shaped content]";
-/** Egress actions: every action with a remote target. */
-const isEgress = (action: PermissionAction) => ACTIONS[action][0] === "remote";
+/** N6: which actions send data out of the sandbox; guard 1 scans only these. */
+export const EGRESS: Readonly<Record<PermissionAction, boolean>> = deepFreeze({
+  execute: false,
+  "fs.read": false,
+  "fs.edit": false,
+  "fs.delete": false,
+  commit: false,
+  "deps.add": false,
+  "config.set": false,
+  "spend.raiseCap": false,
+  push: true,
+  "pr.open": true,
+  "pr.merge": true,
+  comment: true,
+  publish: true,
+  deploy: true,
+});
 
 /**
  * Guard 1's denial. Its reason names only the field and the pattern class, and its
@@ -901,7 +916,7 @@ export function evaluate(
       return reject("schema", "schema.invalid-input", why, name);
     }
     // Guard 1: credential-shaped content in an egress action denies, never asks.
-    const found = isEgress(requested) ? credentialIn(fields) : undefined;
+    const found = EGRESS[requested] ? credentialIn(fields) : undefined;
     if (found !== undefined) {
       return withheld(requested, fields, found, checked.version);
     }

@@ -114,8 +114,11 @@ export interface SandboxDeps {
 
 export const CONTAINER_PATH = "/workspace";
 const ENV_KEY = /^[A-Z_][A-Z0-9_]*$/;
-export const CREDENTIAL_KEY =
+const CREDENTIAL_KEY =
   /(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE_KEY)|^(AWS|ANTHROPIC|GITHUB|GH|NPM|OPENAI)_/;
+/** True if an env-style key name looks like a credential (shared with the exfiltration guard). */
+export const isCredentialKey = (name: string): boolean =>
+  CREDENTIAL_KEY.test(name);
 const CONTAINER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 const CLEANUP_MS = 10_000;
 /** After SIGKILL, how long to wait for the client to exit. */
