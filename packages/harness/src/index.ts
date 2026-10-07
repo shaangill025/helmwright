@@ -74,3 +74,29 @@ export {
   deriveMessages,
   isMessage,
 } from "./log/messages.ts";
+export type { ScriptedTurn } from "./engine/scripted.ts";
+export {
+  createScriptedEngine,
+  loadScriptedEngine,
+  parseScript,
+} from "./engine/scripted.ts";
+export type { Broker, BrokerContext } from "./broker/broker.ts";
+export {
+  EXECUTE_TIMEOUT_MS,
+  MAX_TOOL_OUTPUT_BYTES,
+  createBroker,
+  sandboxToolResult,
+} from "./broker/broker.ts";
+export type {
+  ReplayResult,
+  RunTaskOptions,
+  RunTaskResult,
+  Task,
+} from "./run/run.ts";
+export {
+  UsageError,
+  contextDigest,
+  loadTask,
+  replayRun,
+  runTask,
+} from "./run/run.ts";
