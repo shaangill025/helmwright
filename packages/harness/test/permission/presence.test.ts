@@ -12,17 +12,19 @@ const PROBE = "x";
 /**
  * Types `text` once the current ask's window has observably opened, however late:
  * a probe key typed first is discarded as type-ahead, so the presence says so as
- * the window opens. Call it before that ask's window opens.
+ * the window opens. Call it before that ask's window opens. With `probe` "", the
+ * caller has already typed ahead itself, and that input must cause the notice.
  * @throws Error if no new notice is shown within 3 s.
  */
 async function typeWhenOpen(
   input: PassThrough,
   shown: () => string,
   text: string,
+  probe = PROBE,
 ) {
   const notices = () => shown().split(DISCARDED).length;
   const before = notices();
-  input.write(PROBE);
+  if (probe !== "") input.write(probe);
   const until = performance.now() + 3000;
   while (notices() === before) {
     if (performance.now() > until) {
@@ -260,11 +262,12 @@ describe("TTY presence", () => {
   });
 
   it("drops a line that starts in the window and ends after it", async () => {
-    const { input, presence, type } = terminal();
+    const { input, presence, shown } = terminal();
     const answer = presence.ask(ask("call-1"), never());
     await tick();
     input.write("y");
-    await type("\n"); // the line is "", not "y"
+    // No probe: only this "y" is typed ahead, so a kept "y" would approve.
+    await typeWhenOpen(input, shown, "\n", ""); // the line is "", not "y"
     expect(await answer).toEqual({ answer: "denied", by: "tty" });
   });
 

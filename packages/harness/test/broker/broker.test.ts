@@ -235,6 +235,10 @@ describe("broker with the run's log", () => {
       expect(prompts[0]).toContain(
         "helmwright: allow deps.add (requested as execute)?",
       );
+      // The header can scroll off; the last line keeps what was requested.
+      expect(prompts[0]?.split("\n").at(-1)).toMatch(
+        /^Approve deps\.add \(requested as execute\) \(/,
+      );
       const events = log.events({ runId: "run-1" });
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([
         ...["permission.evaluated", "permission.asked", "permission.answered"],
