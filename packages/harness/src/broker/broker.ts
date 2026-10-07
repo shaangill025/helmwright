@@ -376,7 +376,9 @@ async function askOwner(
  * cannot be built denies with
  * fixed text; one whose append fails also halts the broker and the run. S2: a tool
  * call ID already used in the run is rejected (`schema.duplicate-call-id`) before
- * `evaluate`, so each ID has one ruling.
+ * `evaluate`, so each ID has at most one `evaluate` ruling plus one rejection per
+ * reuse. An ID counts as used even if its first call was denied as unloggable
+ * (LOG_DENIED, no ruling logged): a reuse is still rejected, never evaluated.
  * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or
  * workspace rules (checked up front, so a run fails before it starts).

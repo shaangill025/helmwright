@@ -18,6 +18,7 @@ const run = (...payloads: Payload[]): Event[] =>
 const evaluated = (tier = "alwaysAsk", toolCallId = "call-1"): Payload => ({
   kind: "permission.evaluated",
   toolCallId,
+  requested: "execute",
   tier,
 });
 const asked = (presence = "tty", view = false): Payload => ({
@@ -47,9 +48,14 @@ const NO_EVAL = "permission.asked not directly after its ask-tier ruling";
 const WRONG_BY = "answer not given by the presence its ask had";
 const UNRULED = "tool call ran without an allow ruling or an approval";
 
+const NO_RULING = "tool call ended without denial and without any ruling";
+const OTHER_ACTION =
+  "tool call ran as another action than its ruling requested";
+
 const called = (status = "ok", toolCallId = "call-1"): Payload => ({
   kind: "loop.tool.called",
   toolCallId,
+  name: "execute",
   status,
 });
 const other = (kind: string, toolCallId = "call-1"): Payload => ({
@@ -179,7 +185,59 @@ describe("permissionFaults (SF3)", () => {
       [evaluated(), asked(), answered(), called("error")],
       [],
     ],
-    ["S3: a run with no ruling", [called()], [`seq 0: ${UNRULED}`]],
+    ["N-d: a run with no ruling", [called()], [`seq 0: ${NO_RULING}`]],
+    [
+      "N-d: an error with no ruling",
+      [called("error")],
+      [`seq 0: ${NO_RULING}`],
+    ],
+    [
+      "N-a: an approval after a later ruling of its call",
+      [
+        evaluated(),
+        asked(),
+        other("permission.rejected"),
+        answered(),
+        called(),
+      ],
+      [`seq 4: ${UNRULED}`],
+    ],
+    [
+      "N-a: no fault for a rejection after the approved run",
+      [
+        evaluated(),
+        asked(),
+        answered(),
+        called(),
+        other("permission.rejected"),
+      ],
+      [],
+    ],
+    [
+      "N-b: a run after a denied call used up the allow",
+      [evaluated("allow"), called("denied"), called()],
+      [`seq 2: ${UNRULED}`],
+    ],
+    [
+      "N-b: a run after a denied call used up the approval",
+      [evaluated(), asked(), answered(), called("denied"), called()],
+      [`seq 4: ${UNRULED}`],
+    ],
+    [
+      "N-c: a run as another action than its ruling",
+      [evaluated("allow"), { ...called(), name: "deploy" }],
+      [`seq 1: ${OTHER_ACTION}`],
+    ],
+    [
+      "N-c: a run with no action name",
+      [evaluated("allow"), { ...called(), name: undefined }],
+      [`seq 1: ${OTHER_ACTION}`],
+    ],
+    [
+      "N-c: a ruling with no requested action",
+      [{ ...evaluated("allow"), requested: undefined }, called()],
+      [`seq 1: ${OTHER_ACTION}`],
+    ],
     [
       "S3: a run after a deny ruling",
       [evaluated("deny"), called("error")],
@@ -198,7 +256,7 @@ describe("permissionFaults (SF3)", () => {
     [
       "S3: a run of another call's allow ruling",
       [evaluated("allow", "call-2"), called()],
-      [`seq 1: ${UNRULED}`],
+      [`seq 1: ${NO_RULING}`],
     ],
     [
       "S3: a run after a denied answer",
@@ -284,7 +342,7 @@ describe("permissionFaults (SF3)", () => {
         `seq 2: ${NOT_TTY}`,
         `seq 2: ${WRONG_BY}`,
         `seq 3: ${UNRULED}`,
-        `seq 4: ${UNRULED}`,
+        `seq 4: ${NO_RULING}`,
       ]);
     }
   });

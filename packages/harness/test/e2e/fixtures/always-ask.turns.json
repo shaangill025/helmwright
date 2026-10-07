@@ -1,0 +1,24 @@
+[
+  {
+    "text": "Pushing, opening a PR and changing the governance mode.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "push",
+        "input": { "destination": "origin", "ref": "main" }
+      },
+      {
+        "id": "call-2",
+        "name": "pr.open",
+        "input": { "destination": "origin", "ref": "main" }
+      },
+      {
+        "id": "call-3",
+        "name": "config.set",
+        "input": { "setting": "permissions.governance", "value": "policy" }
+      }
+    ],
+    "claimsDone": false
+  },
+  { "text": "None was approved.", "toolCalls": [], "claimsDone": true }
+]

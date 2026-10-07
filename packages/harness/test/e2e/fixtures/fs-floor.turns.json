@@ -1,0 +1,29 @@
+[
+  {
+    "text": "Deleting outside files and editing Ring 0 files.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "fs.delete",
+        "input": { "path": "escape/victim.txt" }
+      },
+      {
+        "id": "call-2",
+        "name": "fs.delete",
+        "input": { "path": "../../../outside/victim.txt" }
+      },
+      {
+        "id": "call-3",
+        "name": "fs.edit",
+        "input": { "path": ".GitHub/workflows/ci.yml" }
+      },
+      {
+        "id": "call-4",
+        "name": "fs.edit",
+        "input": { "path": "./package.json" }
+      }
+    ],
+    "claimsDone": false
+  },
+  { "text": "None was approved.", "toolCalls": [], "claimsDone": true }
+]
