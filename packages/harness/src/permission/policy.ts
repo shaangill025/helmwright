@@ -91,7 +91,7 @@ export interface PermissionTarget {
   readonly kind: "path" | "ref" | "remote" | "setting" | "argv" | "amount";
   /** Display only: normalized (a path is its resolved host path) and escaped. */
   readonly value: string;
-  /** The payload to show: the spend cap, a config value or a comment body; bounded and escaped. */
+  /** The payload to show: the spend cap, a config value, a comment body or a commit's staged paths; bounded and escaped. */
   readonly detail?: string;
   /** Present when `value` or `detail` was cut (raw, before escaping) and marked to fit. */
   readonly truncated?: true;
@@ -188,6 +188,10 @@ function bounded(text: string, max: number): readonly [string, boolean] {
     count += 1;
   }
   return [escape(text), false];
+}
+/** `text` as shown on a terminal or in a log: escaped, cut to MAX_DETAIL code points. */
+export function displayText(text: string): string {
+  return bounded(text, MAX_DETAIL)[0];
 }
 /** Escaped `text` if it fits MAX_SHOWN code points, else cut as `bounded` (N4). */
 function fitted(text: string): readonly [string, boolean] {
@@ -639,14 +643,17 @@ function factsFor(
   // N5: an argv is cut like a detail; any other value only if it cannot fit (N4).
   const [value, valueCut] =
     list === undefined ? fitted(raw || "spend.cap") : bounded(raw, MAX_DETAIL);
+  // SF6a: a commit shows what it stages (sorted, so the shown list is canonical).
   const detail =
     requested === "config.set"
       ? canonical(fields["value"])
-      : typeof capUsd === "number"
-        ? `${String(capUsd)} USD`
-        : typeof body === "string"
-          ? body
-          : undefined;
+      : requested === "commit"
+        ? canonical([...staged].sort())
+        : typeof capUsd === "number"
+          ? `${String(capUsd)} USD`
+          : typeof body === "string"
+            ? body
+            : undefined;
   const [shown, cut] =
     detail === undefined ? [undefined, false] : bounded(detail, MAX_DETAIL);
   return {

@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { errorMessage } from "./loop/terminal.ts";
+import { createTtyPresence } from "./permission/presence.ts";
 import {
   CancelledError,
   UsageError,
@@ -76,10 +77,16 @@ async function main(args: readonly string[]): Promise<number> {
       controller.abort();
     };
     process.once("SIGINT", cancel).once("SIGTERM", cancel);
+    // The owner is present only at an interactive terminal: asks go to stderr, so
+    // stdout stays one JSON line. Otherwise every ask is denied (nobody present).
+    const present = process.stdin.isTTY && process.stderr.isTTY;
     const { runId, terminal, summary } = await runTask({
       taskFile: target,
       stateDir,
       signal: controller.signal,
+      ...(present
+        ? { presence: createTtyPresence(process.stdin, process.stderr) }
+        : {}),
     });
     console.log(JSON.stringify({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];

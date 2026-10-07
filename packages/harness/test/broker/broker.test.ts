@@ -25,6 +25,8 @@ import {
   type AppendInput,
   type Engine,
   type EngineTurn,
+  type Presence,
+  type PresenceAnswer,
   type RunSetup,
   type SessionLog,
   type ToolCall,
@@ -108,8 +110,33 @@ function failing(type: string, n = 1): SessionLog {
   };
 }
 
+/** An owner who answers every ask with `answer` after `ms`, recording each prompt. */
+function owner(answer: PresenceAnswer, ms = 0) {
+  const prompts: string[] = [];
+  const presence: Presence = {
+    async ask(request) {
+      prompts.push(request.prompt);
+      await new Promise((r) => setTimeout(r, ms));
+      return answer;
+    },
+  };
+  return { presence, prompts };
+}
+
+/** Runs a file write that execute reclassifies as deps.add, which asks. */
+const install = (id: string, file: string): ToolCall => ({
+  id,
+  name: "execute",
+  input: { argv: ["sh", "-c", "echo hi > " + file + "; npm install left-pad"] },
+});
+
 /** `onRuled` runs once a ruling is logged, between the ruling and its handler. */
-function run(engine: Engine, runLog = log, onRuled = () => undefined) {
+function run(
+  engine: Engine,
+  runLog = log,
+  onRuled = () => undefined,
+  presence?: Presence,
+) {
   const policy = DEFAULT_PERMISSION_POLICY;
   const connect: RunSetup["connect"] = ({ emitAll, halt }) =>
     createBroker({
@@ -117,6 +144,7 @@ function run(engine: Engine, runLog = log, onRuled = () => undefined) {
       permission: {
         ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
         ring0: runRing0(workspace, policy),
+        ...(presence === undefined ? {} : { presence }),
         emitAll(entries) {
           emitAll(entries);
           onRuled();
@@ -144,7 +172,10 @@ describe("broker with the run's log", () => {
       );
       expect(existsSync(join(workspace, "a.txt"))).toBe(false);
       expect(existsSync(join(workspace, "b.txt"))).toBe(false);
-      expect(outcome.summary).toBe("FAILED: permission log failed");
+      // Nit-1: the run's error names the log's own failure.
+      expect(outcome.summary).toBe(
+        "FAILED: permission log failed: database or disk is full (SQLITE_FULL)",
+      );
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([]);
       expect(types().at(-1)).toBe("run.terminated");
       const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
@@ -173,6 +204,110 @@ describe("broker with the run's log", () => {
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([]);
       expect(outcome.terminal).toMatchObject({ kind: "failed" });
       expect(types().at(-1)).toBe("run.terminated");
+    },
+  );
+
+  it(
+    "runs the handler on the ruled input once the owner approves an ask",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner(
+        { answer: "approved", by: "tty" },
+        60,
+      );
+      const outcome = await run(
+        engineOf([install("call-1", "a.txt")]),
+        log,
+        undefined,
+        presence,
+      );
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      expect(readFileSync(join(workspace, "a.txt"), "utf8")).toBe("hi\n");
+      expect(prompts[0]).toContain(
+        "helmwright: allow deps.add (requested as execute)?",
+      );
+      const events = log.events({ runId: "run-1" });
+      expect(types().filter((t) => t.startsWith("permission."))).toEqual([
+        ...["permission.evaluated", "permission.asked", "permission.answered"],
+      ]);
+      const asked = events.find((e) => e.type === "permission.asked");
+      const sha = createHash("sha256").update(prompts[0] ?? "", "utf8");
+      expect(asked?.payload).toMatchObject({
+        presence: "tty",
+        promptSha256: sha.digest("hex"),
+      });
+      const answered = events.find((e) => e.type === "permission.answered");
+      expect(answered?.payload).toMatchObject({
+        answer: "approved",
+        by: "tty",
+      });
+      // waitMs is measured around the ask.
+      expect(answered?.payload["waitMs"]).toBeGreaterThanOrEqual(50);
+    },
+  );
+
+  it(
+    "runs no handler and halts when an approval cannot be logged",
+    { timeout: T },
+    async () => {
+      const { presence } = owner({ answer: "approved", by: "tty" });
+      const outcome = await run(
+        engineOf([install("call-1", "a.txt"), install("call-2", "b.txt")]),
+        failing("permission.answered"),
+        undefined,
+        presence,
+      );
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      expect(outcome.summary).toBe(
+        "FAILED: permission log failed: database or disk is full (SQLITE_FULL)",
+      );
+      // The ask was logged before the prompt; its answer was not.
+      expect(types().filter((t) => t.startsWith("permission."))).toEqual([
+        "permission.evaluated",
+        "permission.asked",
+      ]);
+      const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools).toEqual([
+        "denied: the permission ruling cannot be logged",
+        "denied: permission log failed",
+      ]);
+    },
+  );
+
+  it(
+    "shows escaped values and a commit's staged paths in the prompt (SF6a)",
+    { timeout: T },
+    async () => {
+      const { presence, prompts } = owner({ answer: "denied", by: "tty" });
+      const calls: ToolCall[] = [
+        {
+          id: "call-1",
+          name: "config.set",
+          input: { setting: "editor.theme", value: "a\u202eb\u0085c" },
+        },
+        {
+          id: "call-2",
+          name: "commit",
+          input: { ref: "main", paths: ["src/a.ts", "b c.txt"] },
+        },
+      ];
+      const outcome = await run(engineOf(calls), log, undefined, presence);
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      const [config = "", commit = ""] = prompts;
+      expect(config).toContain("\\u{202e}");
+      expect(config).toContain("\\u{85}");
+      expect(config).not.toMatch(/[\u202e\u0085]/u);
+      expect(commit).toContain('  detail: ["b c.txt","src/a.ts"]');
+      expect(commit).toContain("  rule: default.ask, tier ask");
+      const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools[1]).toBe(
+        "denied: asks (default.ask); the owner did not approve",
+      );
     },
   );
 

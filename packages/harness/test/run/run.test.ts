@@ -261,6 +261,49 @@ describe("executeRun", () => {
     expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
   });
 
+  it("reports a desync when the S-1 call settles (S-1 control)", async () => {
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      () => (call) => {
+        (call.input as { argv: string[] }).argv[1] = "mutated";
+        return ok();
+      },
+      { limits: { ...LIMITS, timeoutMs: 100 }, settleMs: 50 },
+    );
+    expect(outcome.summary).toMatch(DESYNC_AT_1);
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("ranks the loop's own failure above a final desync (Nit-2)", async () => {
+    const input = { argv: ["echo", "logged"] };
+    const turns = [
+      {
+        text: "1",
+        toolCalls: [{ id: "c1", name: "t", input }],
+        claimsDone: false,
+      },
+    ];
+    let steps = 0;
+    const engine: Engine = {
+      step() {
+        steps += 1;
+        const turn = turns[steps - 1];
+        if (turn !== undefined) return Promise.resolve(turn);
+        // After this step's context was checked: the final check desyncs.
+        input.argv[1] = "mutated";
+        return Promise.reject(new Error("engine broke"));
+      },
+    };
+    const outcome = await run(engine, true);
+    expect(outcome.summary).toBe("FAILED: engine broke");
+    expect(terminated()?.payload["terminal"]).toEqual({
+      kind: "failed",
+      error: "engine broke",
+    });
+  });
+
   it("refuses appends from a call that settles after the run ended", async () => {
     const thrown: string[] = [];
     const { promise: late, resolve: settle } =

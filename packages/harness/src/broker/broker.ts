@@ -6,18 +6,22 @@ import type {
   ToolResult,
   ToolSpec,
 } from "../loop/types.ts";
+import { errorMessage } from "../loop/terminal.ts";
 import {
   PermissionLogError,
   permissionAnswered,
   permissionAsked,
   permissionEvents,
+  type PermissionAnswer,
   type PermissionLogEntry,
 } from "../permission/events.ts";
 import {
+  displayText,
   evaluate,
   type EvaluatedVerdict,
   type RunRing0,
 } from "../permission/policy.ts";
+import type { Presence } from "../permission/presence.ts";
 import {
   checkWorkspacePaths,
   dockerRunArgs,
@@ -38,6 +42,8 @@ export interface PermissionContext {
   readonly ring0: RunRing0;
   /** The run's validated, all-or-nothing log append; the broker never touches the log. */
   readonly emitAll: EmitAll;
+  /** Who answers an ask; absent, nobody is present and every ask is denied. */
+  readonly presence?: Presence;
 }
 
 /** Where the broker's effects happen: one run's sandboxed workspace. */
@@ -148,9 +154,12 @@ export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
   (a) => a.spec,
 );
 
-/** What an ask shows (B9b-3 prints it): every shown value is already escaped. */
+/**
+ * What an ask shows, and what `permission.asked` hashes: every value in it is
+ * escaped (target and reason by the policy) or matches a fixed pattern.
+ */
 function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
-  const { action, requested, target, ruleId, reason } = verdict;
+  const { action, requested, target, ruleId, reason, tier } = verdict;
   const as = requested === action ? "" : " (requested as " + requested + ")";
   const detail =
     target.detail === undefined ? [] : ["  detail: " + target.detail];
@@ -158,20 +167,42 @@ function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
     "helmwright: allow " + action + as + "?",
     "  target (" + target.kind + "): " + target.value,
     ...detail,
-    "  rule: " + ruleId + " (" + reason + ")",
+    "  rule: " + ruleId + ", tier " + tier + " (" + reason + ")",
     "  run: " + runId,
     "Approve? [y/N] ",
   ].join("\n");
 }
 
 const NOBODY = { answer: "denied", by: "noPresence" } as const;
+const CANCELLED = { answer: "denied", by: "cancelled" } as const;
+const APPROVED = { answer: "approved", by: "tty" } as const;
+
+/** The answer to log: an approval only from the TTY; anything else denies. */
+async function askOwner(
+  presence: Presence,
+  toolCallId: string,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<PermissionAnswer> {
+  try {
+    const got = await presence.ask({ toolCallId, prompt }, signal);
+    // Read as plain strings: a wrapped presence (SIG) is checked, not trusted.
+    const [answer, by]: readonly string[] = [got.answer, got.by];
+    if (by !== "tty") return CANCELLED;
+    return answer === "approved" ? APPROVED : { answer: "denied", by: "tty" };
+  } catch {
+    return CANCELLED;
+  }
+}
 
 /**
  * Typed action dispatch through the permission layer: each call is ruled on by
- * `evaluate`, the ruling is logged with `permission.emitAll`, and only an `allow` runs
- * its handler, on the ruled input snapshot. Nobody is present to answer an ask
- * (B9b-3 adds the TTY), so ask and always-ask deny. A ruling that cannot be built
- * denies with fixed text; one whose append fails also halts the broker and the run.
+ * `evaluate`, the ruling is logged with `permission.emitAll`, and only an `allow`, or
+ * an ask the owner approved, runs its handler, on the ruled input snapshot. An ask
+ * goes to `permission.presence`: the ruling and `permission.asked` are logged before
+ * the prompt is shown, and `permission.answered` before any handler runs. Without a
+ * presence an ask is denied as noPresence. A ruling that cannot be built denies with
+ * fixed text; one whose append fails also halts the broker and the run.
  * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or
  * workspace rules (checked up front, so a run fails before it starts).
@@ -182,13 +213,33 @@ export function createBroker(context: BrokerContext): Broker {
     "helmwright-sandbox-check",
   );
   const { permission } = context;
+  const { presence } = permission;
   let halted: string | undefined;
+  /** Read after an await, when another call or a handler may have halted. */
+  const haltedNow = (): string | undefined => halted;
   const own: BrokerContext = {
     ...context,
     halt(reason) {
       halted ??= reason;
       context.halt(reason);
     },
+  };
+  // Built in full first, then appended in one transaction: a ruling that cannot be
+  // built appends nothing, and a failed append commits none of its entries.
+  const append = (entries: readonly PermissionLogEntry[]): boolean => {
+    try {
+      permission.emitAll(
+        entries.map(({ type, payload }) => ({ type, payload: { ...payload } })),
+      );
+      return true;
+    } catch (error) {
+      // The run recorded the failure; latch before any later call can run (SF-1).
+      // Later calls see fixed text; the run's error names the log's (Nit-1).
+      halted ??= PERMISSION_LOG_FAILED;
+      const why = displayText(errorMessage(error));
+      context.halt(PERMISSION_LOG_FAILED + ": " + why);
+      return false;
+    }
   };
   return {
     tools: BROKER_TOOLS,
@@ -206,32 +257,23 @@ export function createBroker(context: BrokerContext): Broker {
         verdict.kind === "evaluated" &&
         (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
       let entries: PermissionLogEntry[];
+      let shown = "";
       try {
         const ctx = { agentId: permission.agentId, toolCallId: id };
         entries = [...permissionEvents(verdict, ctx)];
         if (asks) {
-          const shown = askPrompt(verdict, permission.runId);
-          entries.push(permissionAsked(id, "none", shown));
-          entries.push(permissionAnswered(id, NOBODY, 0));
+          shown = askPrompt(verdict, permission.runId);
+          const present = presence === undefined ? "none" : "tty";
+          entries.push(permissionAsked(id, present, shown));
+          if (presence === undefined) {
+            entries.push(permissionAnswered(id, NOBODY, 0));
+          }
         }
       } catch (error) {
         if (error instanceof PermissionLogError) return denied(LOG_DENIED);
         throw error;
       }
-      // Built in full first, then appended in one transaction: a ruling that cannot be
-      // built appends nothing, and a failed append commits none of its entries.
-      try {
-        permission.emitAll(
-          entries.map(({ type, payload }) => ({
-            type,
-            payload: { ...payload },
-          })),
-        );
-      } catch {
-        // The run recorded the failure; latch before any later call can run (SF-1).
-        own.halt(PERMISSION_LOG_FAILED);
-        return denied(LOG_DENIED);
-      }
+      if (!append(entries)) return denied(LOG_DENIED);
       if (verdict.kind === "rejected") {
         const named = verdict.requestedName ?? "";
         const by =
@@ -250,9 +292,39 @@ export function createBroker(context: BrokerContext): Broker {
         case "ask":
         case "alwaysAsk": {
           const what = verdict.tier === "ask" ? "asks" : "always asks";
-          return denied(
-            "denied: " + what + rule + "; nobody present to approve",
-          );
+          if (presence === undefined) {
+            return denied(
+              "denied: " + what + rule + "; nobody present to approve",
+            );
+          }
+          // The wait counts toward the run's timeout: `signal` ends it.
+          const started = performance.now();
+          const answer = await askOwner(presence, id, shown, signal);
+          const waitMs = Math.max(0, Math.round(performance.now() - started));
+          let answered: PermissionLogEntry;
+          try {
+            answered = permissionAnswered(id, answer, waitMs);
+          } catch (error) {
+            if (!(error instanceof PermissionLogError)) throw error;
+            own.halt(PERMISSION_LOG_FAILED);
+            return denied(LOG_DENIED);
+          }
+          // Logged before any handler runs; unlogged, the approval counts for nothing.
+          if (!append([answered])) return denied(LOG_DENIED);
+          const stop = haltedNow();
+          if (stop !== undefined) return denied("denied: " + stop);
+          if (answer.answer !== "approved") {
+            const why =
+              answer.by === "cancelled"
+                ? "the ask was cancelled"
+                : "the owner did not approve";
+            return denied("denied: " + what + rule + "; " + why);
+          }
+          const action = ACTIONS.get(verdict.requested);
+          if (action === undefined) {
+            return denied("denied: no M1 handler for " + verdict.requested);
+          }
+          return action.handle(verdict.input, own, signal);
         }
         case "deny":
           return denied("denied: " + verdict.reason + rule);

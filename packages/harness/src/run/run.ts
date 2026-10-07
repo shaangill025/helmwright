@@ -35,6 +35,7 @@ import {
   runRing0,
   type RunRing0,
 } from "../permission/policy.ts";
+import type { Presence } from "../permission/presence.ts";
 import type {
   Emit,
   EmitAll,
@@ -258,7 +259,7 @@ export interface RunOutcome {
  * flight when the loop ends (timeout, cancel) is awaited, bounded by `settleMs`,
  * before `run.terminated`; past the bound the run fails as cleanup unconfirmed.
  * A failed run's error is, in order: cleanup unconfirmed, the halt reason, the
- * first failed append, then whatever else was thrown.
+ * first failed append, the loop's own failure, then whatever else was thrown.
  * @throws RangeError for an invalid `settleMs`, before anything is logged; Error if
  * `run.started` cannot be logged.
  */
@@ -394,9 +395,12 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   // SF-3, S-1: one order for every failure, whatever ended the loop.
   const message = (f?: { error: unknown }) =>
     f === undefined ? undefined : errorMessage(f.error);
+  // Nit-2: a later throw (a final desync) must not mask the loop's own failure.
+  const own =
+    result?.terminal.kind === "failed" ? result.terminal.error : undefined;
   const failure = unconfirmed
     ? CLEANUP_UNCONFIRMED
-    : (halted ?? message(logFailure) ?? message(thrown));
+    : (halted ?? message(logFailure) ?? own ?? message(thrown));
   const done =
     failure === undefined && result !== undefined
       ? outcome(result.terminal, result.summary)
@@ -423,6 +427,8 @@ export interface RunTaskOptions {
   readonly signal?: AbortSignal;
   /** Dev-mode desync check before every engine step and at the end. Default true. */
   readonly checkDesync?: boolean;
+  /** Who answers permission asks; absent, every ask is denied (nobody present). */
+  readonly presence?: Presence;
 }
 
 export interface RunTaskResult extends RunOutcome {
@@ -520,12 +526,14 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             cause: error,
           });
         }
+        const { presence } = options;
         const permission = {
           policy,
           worktree: workspace,
           runId,
           ring0,
           emitAll,
+          ...(presence === undefined ? {} : { presence }),
         };
         return createBroker({
           ...{ image, workspace, workspaceRoot, halt },
