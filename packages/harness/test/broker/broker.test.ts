@@ -18,6 +18,7 @@ import {
   buildSandboxImage,
   canonicalJson,
   createBroker,
+  deriveMessages,
   executeRun,
   openSessionLog,
   runRing0,
@@ -143,9 +144,16 @@ describe("broker with the run's log", () => {
       );
       expect(existsSync(join(workspace, "a.txt"))).toBe(false);
       expect(existsSync(join(workspace, "b.txt"))).toBe(false);
-      expect(outcome.terminal).toMatchObject({ kind: "failed" });
+      expect(outcome.summary).toBe("FAILED: permission log failed");
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([]);
       expect(types().at(-1)).toBe("run.terminated");
+      const tools = deriveMessages(log.events(), "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools).toEqual([
+        "denied: the permission ruling cannot be logged",
+        "denied: permission log failed",
+      ]);
     },
   );
 
@@ -164,6 +172,7 @@ describe("broker with the run's log", () => {
       );
       expect(types().filter((t) => t.startsWith("permission."))).toEqual([]);
       expect(outcome.terminal).toMatchObject({ kind: "failed" });
+      expect(types().at(-1)).toBe("run.terminated");
     },
   );
 
