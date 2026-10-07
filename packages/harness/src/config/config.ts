@@ -4,6 +4,7 @@ import {
   CONFIG_DEFAULTS,
   RING0_CONFIG_KEYS,
   validateHelmwrightConfig,
+  type Event,
   type PermissionPolicy,
 } from "@helmwright/schema";
 import { errorMessage } from "../loop/terminal.ts";
@@ -108,6 +109,8 @@ export interface RunConfig {
   /** DEFAULT_PERMISSION_POLICY, or the config's stricter override. */
   readonly policy: PermissionPolicy;
   readonly record: ConfigRecord;
+  /** The object hashed for `record.ring0Sha256`. */
+  readonly ring0: Readonly<Record<string, unknown>>;
 }
 
 /** The version of the object hashed for `ring0Sha256`. */
@@ -212,6 +215,7 @@ function schemaProblem(): string {
 function settle(policyOverride: unknown): {
   policy: PermissionPolicy;
   ring0Sha256: string;
+  ring0: Readonly<Record<string, unknown>>;
 } {
   let policy = DEFAULT_PERMISSION_POLICY;
   if (policyOverride !== undefined) {
@@ -237,12 +241,8 @@ function settle(policyOverride: unknown): {
       );
     return [key, value] as const;
   });
-  return {
-    policy,
-    ring0Sha256: sha256(
-      canonical({ format: RING0_FORMAT, ...Object.fromEntries(ring0) }),
-    ),
-  };
+  const object = { format: RING0_FORMAT, ...Object.fromEntries(ring0) };
+  return { policy, ring0Sha256: sha256(canonical(object)), ring0: object };
 }
 
 /** Validates and admits the file's raw bytes. @throws ConfigError */
@@ -311,10 +311,10 @@ export function loadRunConfig(repo: string): RunConfig {
     .split("\0")
     .filter(Boolean);
   if (entries.length === 0) {
-    const { policy, ring0Sha256 } = settle(undefined);
+    const { policy, ring0Sha256, ring0 } = settle(undefined);
     const sha = sha256(canonical(CONFIG_DEFAULTS));
     const record = { source: "default", sha256: sha, ring0Sha256 } as const;
-    return { baseCommit, policy, record };
+    return { baseCommit, policy, record, ring0 };
   }
   const [entry = ""] = entries;
   const tab = entry.indexOf("\t");
@@ -344,11 +344,78 @@ export function loadRunConfig(repo: string): RunConfig {
   const parsed = admit(bytes);
   const permissions = isRecord(parsed) ? parsed["permissions"] : undefined;
   const override = isRecord(permissions) ? permissions["policy"] : undefined;
-  const { policy, ring0Sha256 } = settle(override);
+  const { policy, ring0Sha256, ring0 } = settle(override);
   const record = {
     source: "file",
     sha256: sha256(bytes),
     ring0Sha256,
   } as const;
-  return { baseCommit, policy, record };
+  return { baseCommit, policy, record, ring0 };
+}
+
+/** OQ1: the event that records a repo's accepted Ring 0 config. */
+export const CONFIG_ACCEPTED = "config.accepted";
+const DIGEST = /^[0-9a-f]{64}$/;
+
+/** The sha256 of each Ring 0 setting's canonical value, by RING0_CONFIG_KEYS name. */
+export function ring0SettingDigests(
+  ring0: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const values = new Map(Object.entries(ring0));
+  return Object.fromEntries(
+    RING0_CONFIG_KEYS.map((key) => [key, sha256(canonical(values.get(key)))]),
+  );
+}
+
+/** How a run's Ring 0 config compares with the last one accepted for its repo. */
+export type Ring0Status =
+  | { readonly kind: "unchanged" }
+  /** No acceptance is logged and the config is the defaults: accepted silently. */
+  | { readonly kind: "default" }
+  | {
+      readonly kind: "changed";
+      /** The accepted digest it differs from. */
+      readonly from: string;
+      /** The Ring 0 settings that differ, in RING0_CONFIG_KEYS order; never empty. */
+      readonly changed: readonly string[];
+    };
+
+/**
+ * OQ1: compares `config`'s Ring 0 digest with the baseline for `repo` (its
+ * realpath): the latest `config.accepted` event in `events` with that repo and a
+ * well-formed digest, else the digest of the defaults. A change names the settings
+ * whose digests differ from the baseline's; if the baseline has none to compare
+ * (or none differ, as for a new RING0_FORMAT), every Ring 0 setting.
+ */
+export function ring0Status(
+  events: readonly Event[],
+  repo: string,
+  config: Pick<RunConfig, "record" | "ring0">,
+): Ring0Status {
+  const accepted = events.findLast(
+    ({ type, payload }) =>
+      type === CONFIG_ACCEPTED &&
+      payload["repo"] === repo &&
+      typeof payload["ring0Sha256"] === "string" &&
+      DIGEST.test(payload["ring0Sha256"]),
+  )?.payload;
+  const defaults = settle(undefined);
+  const from = (accepted?.["ring0Sha256"] ?? defaults.ring0Sha256) as string;
+  if (config.record.ring0Sha256 === from) {
+    return { kind: accepted === undefined ? "default" : "unchanged" };
+  }
+  const known: unknown =
+    accepted === undefined
+      ? ring0SettingDigests(defaults.ring0)
+      : accepted["settings"];
+  const before = new Map(isRecord(known) ? Object.entries(known) : []);
+  const after = new Map(Object.entries(ring0SettingDigests(config.ring0)));
+  const changed = RING0_CONFIG_KEYS.filter(
+    (key) => before.get(key) !== after.get(key),
+  );
+  return {
+    kind: "changed",
+    from,
+    changed: changed.length === 0 ? [...RING0_CONFIG_KEYS] : changed,
+  };
 }

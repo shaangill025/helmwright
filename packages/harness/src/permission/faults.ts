@@ -1,4 +1,5 @@
 import type { Event } from "@helmwright/schema";
+import { RING0_CONFIG_CALL_ID } from "./events.ts";
 
 /** Tiers whose ruling is followed by an ask. */
 const ASK_TIERS: ReadonlySet<unknown> = new Set(["ask", "alwaysAsk"]);
@@ -30,7 +31,10 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  *   ask unbinds it, so its approval grants nothing); it names the action its ruling
  *   requested (N-c); any `loop.tool.called`, denied too, uses up the grant (N-b);
  * - N4: each call has at most one `permission.evaluated`, and an exfiltration
- *   ruling always denies.
+ *   ruling always denies;
+ * - OQ1: a `config.accepted` with `how` "approved" follows a fault-free approval of
+ *   the RING0_CONFIG_CALL_ID ask and uses it up; no `loop.tool.called` with that ID
+ *   ran.
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -108,7 +112,17 @@ export function permissionFaults(events: readonly Event[]): string[] {
       }
       const granted = approved && bound.has(key) && faults.length === before;
       grants.set(key, granted ? "approved" : "none");
+    } else if (type === "config.accepted") {
+      if (payload["how"] !== "approved") continue;
+      if (grants.get(RING0_CONFIG_CALL_ID) !== "approved") {
+        fault("config.accepted approved without an approval of its ask");
+      }
+      grants.set(RING0_CONFIG_CALL_ID, "none");
     } else if (type === "loop.tool.called") {
+      if (key === RING0_CONFIG_CALL_ID && payload["status"] !== "denied") {
+        fault("tool call ran with the reserved Ring 0 config ID");
+        continue;
+      }
       const grant = key === undefined ? undefined : grants.get(key);
       // N-b: a denied call uses up its grant too, but is not a fault.
       if (key !== undefined) grants.set(key, "none");
