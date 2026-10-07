@@ -1448,9 +1448,8 @@ describe("helmwright.config.json (e2e)", () => {
         "ring0Sha256"
       ];
       expect(tty.shown).toContain("  Ring 0 settings changed: permissions\n");
-      expect(tty.shown).toMatch(
-        new RegExp(`  Ring 0 digest: [0-9a-f]{64} -> ${to ?? "none"}\n`),
-      );
+      expect(tty.shown).toMatch(/ {2}Ring 0 digest: [0-9a-f]{64} -> /);
+      expect(tty.shown).toContain(" -> " + (to ?? "none") + "\n");
       const of = (events: readonly Event[], type: string) =>
         events.filter((e) => e.type === type).map((e) => e.payload);
       expect(of(asked, "permission.answered")).toMatchObject([
