@@ -157,9 +157,10 @@ export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
 /**
  * SF-A: the most code points a target may have as shown (escaped, then as a JSON
  * string literal, quotes included). With MAX_PROMPT_DETAIL the two values fill at
- * most 800 code points: 10 rows at 80 columns, plus their labels (a wide character
- * takes two columns). A target or detail that was cut, or is longer, is not shown:
- * S-3 denies it.
+ * most 800 code points: 10 rows at 80 columns, plus their labels, or 20 rows if
+ * every character is double width. The target sits just above the last line, so
+ * only the header can scroll off. A target or detail that was cut, or is longer,
+ * is not shown: S-3 denies it.
  */
 export const MAX_PROMPT_TARGET = 320;
 /** SF-A: the most code points a detail may have as shown (see MAX_PROMPT_TARGET). */
@@ -206,7 +207,7 @@ function askPrompt(verdict: EvaluatedVerdict, runId: string): string {
     "  rule: " + ruleId + ", tier " + tier + " (" + quoted(shownReason) + ")",
     "  run: " + runId,
     "  target (" + target.kind + "): " + quoted(target.value),
-    "Approve " + action + " (" + ruleId + ", " + tier + ")? [y/N] ",
+    "Approve " + action + as + " (" + ruleId + ", " + tier + ")? [y/N] ",
   ].join("\n");
 }
 
