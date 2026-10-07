@@ -411,14 +411,15 @@ describe("broker with the run's log", () => {
           return Promise.resolve({ answer: "denied", by: "tty" });
         },
       };
-      const body = "x".repeat(118) + "\n␠a" + " ".repeat(10_000) + "b";
+      // S1: a digit right after a run must not join its count.
+      const body = "x".repeat(118) + "\n␠a" + " ".repeat(10_000) + "5b";
       const input = { destination: "github.com", body };
       await run(engineOf([call("comment", input)]), log, undefined, presence);
       const { prompt, view } = requests[0] ?? { prompt: "" };
-      const shown = "x".repeat(118) + "\\u{a}\\u{2420}a␠×10000b";
+      const shown = "x".repeat(118) + "\\u{a}\\u{2420}a␠×10000×5b";
       expect(view).toBe("full detail:\n" + JSON.stringify(shown));
       expect(prompt).toContain(
-        "  detail: " + JSON.stringify("x".repeat(118)) + " … [10126 code",
+        "  detail: " + JSON.stringify("x".repeat(118)) + " … [10127 code",
       );
     },
   );
@@ -437,7 +438,7 @@ describe("broker with the run's log", () => {
     await run(engineOf([call("comment", input)]), log, undefined, presence);
     const { prompt, view } = requests[0] ?? { prompt: "" };
     expect(view).toBe(
-      "full detail:\n" + JSON.stringify("a\\u{2800}×5000\\u{d7}b"),
+      "full detail:\n" + JSON.stringify("a\\u{2800}×5000×\\u{d7}b"),
     );
     expect(prompt + (view ?? "")).not.toContain("⠀");
   });
