@@ -43,7 +43,19 @@ const NOT_VIEWED = "approval without the full view shown to its end";
 const STRAY_VIEWED = "viewed recorded for an ask with no full view";
 const SECOND_ASK = "more than one permission.asked for one tool call";
 const SECOND_ANSWER = "more than one permission.answered for one tool call";
-const NO_EVAL = "permission.asked without an earlier ask-tier evaluation";
+const NO_EVAL = "permission.asked not directly after its ask-tier ruling";
+const WRONG_BY = "answer not given by the presence its ask had";
+const UNRULED = "tool call ran without an allow ruling or an approval";
+
+const called = (status = "ok", toolCallId = "call-1"): Payload => ({
+  kind: "loop.tool.called",
+  toolCallId,
+  status,
+});
+const other = (kind: string, toolCallId = "call-1"): Payload => ({
+  kind,
+  toolCallId,
+});
 
 describe("permissionFaults (SF3)", () => {
   it("finds no fault in asks bound as the live broker binds them", () => {
@@ -75,7 +87,7 @@ describe("permissionFaults (SF3)", () => {
     [
       "1: an answer before its ask",
       [evaluated(), answered({ answer: "denied" }), asked()],
-      [`seq 1: ${NO_ASK}`],
+      [`seq 1: ${NO_ASK}`, `seq 2: ${NO_EVAL}`],
     ],
     [
       "1: an answer with no tool call ID",
@@ -85,12 +97,12 @@ describe("permissionFaults (SF3)", () => {
     [
       "2: an approval of an ask with nobody present",
       [evaluated(), asked("none"), answered()],
-      [`seq 2: ${NOT_TTY}`],
+      [`seq 2: ${NOT_TTY}`, `seq 2: ${WRONG_BY}`],
     ],
     [
       "2: an approval not by the TTY",
       [evaluated(), asked(), answered({ by: "noPresence" })],
-      [`seq 2: ${NOT_TTY}`],
+      [`seq 2: ${NOT_TTY}`, `seq 2: ${WRONG_BY}`],
     ],
     [
       "3: an approval of a viewed ask without viewed",
@@ -140,7 +152,102 @@ describe("permissionFaults (SF3)", () => {
     [
       "2 and 3 together",
       [evaluated(), asked("none", true), answered()],
-      [`seq 2: ${NOT_TTY}`, `seq 2: ${NOT_VIEWED}`],
+      [`seq 2: ${NOT_TTY}`, `seq 2: ${NOT_VIEWED}`, `seq 2: ${WRONG_BY}`],
+    ],
+    [
+      "S1: an ask after a later allow ruling of its call",
+      [evaluated(), evaluated("allow"), asked(), answered()],
+      [`seq 2: ${NO_EVAL}`],
+    ],
+    [
+      "S1: an ask after a rejection of its call",
+      [evaluated("ask"), other("permission.rejected"), asked(), answered()],
+      [`seq 2: ${NO_EVAL}`],
+    ],
+    [
+      "S1: an ask not directly after its ruling",
+      [evaluated("ask"), other("loop.tool.started"), asked(), answered()],
+      [`seq 2: ${NO_EVAL}`],
+    ],
+    [
+      "S3: a run after an allow ruling",
+      [evaluated("allow"), called(), called("denied")],
+      [],
+    ],
+    [
+      "S3: a run after a bound approval",
+      [evaluated(), asked(), answered(), called("error")],
+      [],
+    ],
+    ["S3: a run with no ruling", [called()], [`seq 0: ${UNRULED}`]],
+    [
+      "S3: a run after a deny ruling",
+      [evaluated("deny"), called("error")],
+      [`seq 1: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after a rejection",
+      [other("permission.rejected"), called()],
+      [`seq 1: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after an allow ruling, then a rejection",
+      [evaluated("allow"), other("permission.rejected"), called()],
+      [`seq 2: ${UNRULED}`],
+    ],
+    [
+      "S3: a run of another call's allow ruling",
+      [evaluated("allow", "call-2"), called()],
+      [`seq 1: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after a denied answer",
+      [evaluated(), asked(), answered({ answer: "denied" }), called()],
+      [`seq 3: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after an ask with no answer",
+      [evaluated(), asked(), called()],
+      [`seq 2: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after an approval that is not bound",
+      [evaluated(), asked("tty", true), answered(), called()],
+      [`seq 2: ${NOT_VIEWED}`, `seq 3: ${UNRULED}`],
+    ],
+    [
+      "S3: a run after an approval of an unbound ask",
+      [evaluated("allow"), asked(), answered(), called()],
+      [`seq 1: ${NO_EVAL}`, `seq 3: ${UNRULED}`],
+    ],
+    [
+      "S3: a second run of one ruling",
+      [evaluated("allow"), called(), called()],
+      [`seq 2: ${UNRULED}`],
+    ],
+    [
+      "N1: a denial by noPresence of an ask at the TTY",
+      [evaluated(), asked(), answered({ answer: "denied", by: "noPresence" })],
+      [`seq 2: ${WRONG_BY}`],
+    ],
+    [
+      "N1: a denial at the TTY of an ask with nobody present",
+      [evaluated(), asked("none"), answered({ answer: "denied" })],
+      [`seq 2: ${WRONG_BY}`],
+    ],
+    [
+      "N1: a cancelled ask with nobody present",
+      [
+        evaluated(),
+        asked("none"),
+        answered({ answer: "denied", by: "cancelled" }),
+      ],
+      [`seq 2: ${WRONG_BY}`],
+    ],
+    [
+      "N1: no fault for a cancelled ask at the TTY",
+      [evaluated(), asked(), answered({ answer: "denied", by: "cancelled" })],
+      [],
     ],
   ])("reports fault %s", (_, payloads, faults) => {
     expect(permissionFaults(run(...payloads))).toEqual(faults);
@@ -154,6 +261,31 @@ describe("permissionFaults (SF3)", () => {
         answered({ toolCallId: evil, by: evil }),
       ),
     );
-    expect(faults).toEqual([`seq 0: ${NO_EVAL}`, `seq 1: ${NOT_TTY}`]);
+    expect(faults).toEqual([
+      `seq 0: ${NO_EVAL}`,
+      `seq 1: ${NOT_TTY}`,
+      `seq 1: ${WRONG_BY}`,
+    ]);
+  });
+
+  it("reads tool call IDs and fields that name Object properties", () => {
+    for (const id of ["__proto__", "constructor", "hasOwnProperty"]) {
+      const bound = run(
+        ...[evaluated("ask", id), { ...asked(), toolCallId: id }],
+        ...[answered({ toolCallId: id }), called("ok", id)],
+      );
+      expect(permissionFaults(bound), id).toEqual([]);
+      const unbound = run(
+        ...[{ ...evaluated(), tier: {} }, asked([] as unknown as string)],
+        ...[answered(), called(), { ...called(), toolCallId: id }],
+      );
+      expect(permissionFaults(unbound), id).toEqual([
+        `seq 1: ${NO_EVAL}`,
+        `seq 2: ${NOT_TTY}`,
+        `seq 2: ${WRONG_BY}`,
+        `seq 3: ${UNRULED}`,
+        `seq 4: ${UNRULED}`,
+      ]);
+    }
   });
 });

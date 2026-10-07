@@ -696,6 +696,33 @@ describe("helmwright CLI (e2e)", () => {
     },
   );
 
+  it(
+    "rejects a reused tool call ID and still replays cleanly (S2)",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("reused-id.turns.json");
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      const workspace = join(stateDir, "workspaces", out.runId);
+      expect(existsSync(join(workspace, "a.txt"))).toBe(true);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      const events = expectWellFormedLog(out.runId);
+      const ruled = events.filter((e) => e.type.startsWith("permission."));
+      expect(ruled.map((e) => [e.type, e.payload["ruleId"]])).toEqual([
+        ["permission.evaluated", "execute.worktree"],
+        ["permission.rejected", "schema.duplicate-call-id"],
+      ]);
+      const tools = deriveMessages(events, out.runId).filter(
+        (m) => m.role === "tool",
+      );
+      expect(tools.map((m) => m.text)).toEqual([
+        "",
+        "denied: tool call ID already used in this run",
+      ]);
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
   // SF3: replay checks that each approval in the log is bound to what was asked.
   it(
     "fails replay on an approval logged without its full view (SF3)",

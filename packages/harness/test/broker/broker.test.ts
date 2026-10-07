@@ -21,6 +21,7 @@ import {
   deriveMessages,
   executeRun,
   openSessionLog,
+  permissionFaults,
   runRing0,
   type AppendInput,
   type Engine,
@@ -171,6 +172,36 @@ function run(
 const types = () => log.events({ runId: "run-1" }).map((e) => e.type);
 
 describe("broker with the run's log", () => {
+  it(
+    "rejects a tool call ID already used in the run before any ruling (S2)",
+    { timeout: T },
+    async () => {
+      const calls = [write("call-1", "a.txt"), write("call-1", "b.txt")];
+      const outcome = await run(engineOf(calls));
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      expect(existsSync(join(workspace, "a.txt"))).toBe(true);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      const events = log.events({ runId: "run-1" });
+      const ruled = events.filter((e) => e.type.startsWith("permission."));
+      expect(ruled.map((e) => [e.type, e.payload["toolCallId"]])).toEqual([
+        ["permission.evaluated", "call-1"],
+        ["permission.rejected", "call-1"],
+      ]);
+      expect(ruled[1]?.payload).toMatchObject({
+        guard: "schema",
+        ruleId: "schema.duplicate-call-id",
+      });
+      const tools = deriveMessages(events, "run-1").flatMap((m) =>
+        m.role === "tool" ? [[m.status, m.text]] : [],
+      );
+      expect(tools[1]).toEqual([
+        "denied",
+        "denied: tool call ID already used in this run",
+      ]);
+      expect(permissionFaults(events)).toEqual([]);
+    },
+  );
+
   it(
     "runs no later call once a ruling cannot be logged (SF-1)",
     { timeout: T },
