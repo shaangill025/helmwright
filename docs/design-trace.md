@@ -1,6 +1,7 @@
 # Design trace
 
-This file traces each requirement of Meta-Harness Design v2 to its status in helmwright.
+This file traces each requirement of Meta-Harness Design v2, and each owner extension of it (section
+"Extensions beyond Design v2", 7 of the rows in the summary), to its status in helmwright.
 Sources are cited as `<doc>§<heading>`, for example `03§Detection` means the heading "Detection"
 in `03-decision-model.md`; 07 is cited by rule number and 08 by its table row. Owner decisions
 (`Q…`, `X…` and named rows) are in `docs/decisions.md`. Slice IDs in the Where column are defined
@@ -18,11 +19,11 @@ internal to one module (marked "unit, internal").
 | --------- | ------- |
 | built     | 10      |
 | partial   | 15      |
-| planned   | 83      |
+| planned   | 84      |
 | deviation | 2       |
-| deferred  | 27      |
+| deferred  | 33      |
 | gap       | 0       |
-| **Total** | **137** |
+| **Total** | **144** |
 
 ## 03 Decision model
 
@@ -117,7 +118,7 @@ internal to one module (marked "unit, internal").
 | T-06-19 | Normalize inputs before comparison; turn ask into deny when nobody is present.                                                                                                                                                                      | 06§Ring 0 contents                                | planned   | B9                                                                             | —                                                                                                                                                       |
 | T-06-20 | Keep credentials out of the harness and the sandbox; vault them behind a proxy.                                                                                                                                                                     | 06§Ring 0 contents                                | partial   | B2 #10–#12; B11                                                                | `packages/harness/test/sandbox/docker.integration.test.ts`; credential proxy not built                                                                  |
 | T-06-21 | Run generated code in an out-of-process Docker sandbox with no network.                                                                                                                                                                             | 06§Ring 0 contents                                | built     | B2 #10–#12, #15                                                                | `packages/harness/test/sandbox/docker.integration.test.ts`, `packages/harness/test/e2e/cli.test.ts`                                                     |
-| T-06-22 | Put one authenticated state/action API under every surface.                                                                                                                                                                                         | 06§Ring 0 contents                                | deviation | B8, X2 API transport                                                           | — (in-process dispatcher in M1; the authenticated socket arrives in M2)                                                                                 |
+| T-06-22 | Put one authenticated state/action API under every surface.                                                                                                                                                                                         | 06§Ring 0 contents                                | deviation | B8, X2 API transport                                                           | — (in-process dispatcher in M1; in M2 the socket plus presence-signed owner events (T-EXT-04, from M1) close it)                                        |
 | T-06-23 | Put graph, run and node identity on every event from the first event.                                                                                                                                                                               | 06§Ring 0 contents                                | built     | B1 #6, S1a #13                                                                 | `packages/schema/test/event.test.ts`, `packages/harness/test/e2e/cli.test.ts`                                                                           |
 | T-06-24 | Admit engines by exact version and digest; let revocation override a pin mid-run.                                                                                                                                                                   | 06§Ring 0 contents                                | planned   | B12, Q59                                                                       | —                                                                                                                                                       |
 | T-06-25 | Pin secret, static, dependency and image checks in CI from the first commit.                                                                                                                                                                        | 06§Ring 0 contents                                | partial   | #3, #7, #10; CI1                                                               | `.github/workflows/sensors.yml`; runs on `pull_request`; CI1 moves the scanning jobs to `pull_request_target`                                           |
@@ -201,6 +202,21 @@ internal to one module (marked "unit, internal").
 | C+2     | Record one tutor expansion on a real brief in the concept map.                                                                                                                                                                                | 12§Slice C — the ledger surfaces; X4                 | planned | C2, X6            | —                                                                                                                                       |
 | C+3     | Attach a rework edit inside a footprint to its decision; ignore an edit outside it.                                                                                                                                                           | 12§Slice C — the ledger surfaces; X4                 | planned | C3, Q47           | —                                                                                                                                       |
 
+## Extensions beyond Design v2
+
+Owner decisions that add requirements the design does not contain (`docs/decisions.md`, Packaging
+and agent plugins).
+
+| ID       | Requirement                                                                                                                                                                                                     | Source                                             | Status   | Where                     | Evidence |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- | -------- | ------------------------- | -------- |
+| T-EXT-01 | Ship one npm package, built to JavaScript, with provenance; build the sandbox image locally from the shipped Dockerfile.                                                                                        | Channel; Sandbox image                             | deferred | → M2                      | —        |
+| T-EXT-02 | Offer an MCP server with `delegate_task`, `declare_decision` and read-only card and ledger views to Claude Code, Codex and Pi.                                                                                  | Agent plugins                                      | deferred | → M2, after the X2 socket | —        |
+| T-EXT-03 | Deny an agent action that raises an owned decision until the owner answers; label plugin mode advisory.                                                                                                         | Agent plugins                                      | deferred | → M2                      | —        |
+| T-EXT-04 | Presence-sign every owner event over card, action, option hash, run ID and nonce, with the answer shown in the prompt; pin the owner key and the helper digest; verify signatures on write, rebuild and replay. | Owner answer signatures                            | planned  | SIG (M1, macOS)           | —        |
+| T-EXT-05 | Write an agent's plugin configuration only after the developer approves the shown diff.                                                                                                                         | Agent plugins                                      | deferred | → M2                      | —        |
+| T-EXT-06 | Pass a conformance test for each agent before its plugin ships.                                                                                                                                                 | Agent plugins; 11 Q1, Q22                          | deferred | → M2                      | —        |
+| T-EXT-07 | Support Linux owners: a FIDO2 security key for presence and a Linux secret store for the credential proxy.                                                                                                      | Owner answer signatures; Native engine credentials | deferred | → M2                      | —        |
+
 ## Build slices
 
 The milestone-1 build order. A slice can ship as more than one PR (for example B4a and B4b).
@@ -238,6 +254,7 @@ The milestone-1 build order. A slice can ship as more than one PR (for example B
 | P-branch | Provisional branches and editor takeover after a hard stop (X3)                                                               | —        |
 | FX       | Seeded fixture repository                                                                                                     | —        |
 | SETUP    | First-run setup and measured owner effort (Q37)                                                                               | —        |
+| SIG      | Presence-signed owner events: Swift Secure Enclave helper (macOS) and kernel verification                                     | —        |
 | C1       | TUI ledger views                                                                                                              | —        |
 | C2       | Tutor expansion and concept map                                                                                               | —        |
 | C3       | Rework-in-footprint signal                                                                                                    | —        |
