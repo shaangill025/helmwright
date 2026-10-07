@@ -479,7 +479,7 @@ function factsFor(
       : JSON.stringify(list));
   const detail =
     requested === "config.set"
-      ? JSON.stringify(fields["value"])
+      ? canonical(fields["value"])
       : typeof capUsd === "number"
         ? `${String(capUsd)} USD`
         : typeof body === "string"
