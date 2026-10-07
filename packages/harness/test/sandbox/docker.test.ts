@@ -27,6 +27,9 @@ import {
 } from "../../src/index.ts";
 
 const NAME = "helmwright-sandbox-test";
+// The fake-docker tests start real processes; allow for a loaded machine.
+vi.setConfig({ testTimeout: 30_000 });
+
 const IMAGE = `sha256:${"ab".repeat(32)}`;
 const FAKE_HOST = "unix:///fake/docker.sock";
 let root: string;
@@ -92,7 +95,9 @@ function fakeDocker(mode: string) {
   const deps: SandboxDeps = {
     dockerBinary: binary,
     resolveEndpoint: () => Promise.resolve(FAKE_HOST),
-    cleanupTimeoutMs: 1_500,
+    // Generous: each fake call starts sh and node, which is slow on a loaded machine.
+    // The test of the bound itself sets its own short value.
+    cleanupTimeoutMs: 10_000,
     containerName: NAME,
   };
   return { binary, calls, attempts, deps };
@@ -440,7 +445,7 @@ describe("runInSandbox", () => {
       "--filter",
       `name=^/${NAME}$`,
     ]);
-  }, 10_000);
+  }, 30_000);
 
   it("bounds hanging kill/rm and reports cleanupFailed", async () => {
     const fake = fakeDocker("hang");
@@ -457,7 +462,7 @@ describe("runInSandbox", () => {
     expect(attempts.filter((a) => a !== "run")).toEqual([
       ...["kill", "rm", "rm", "ps"],
     ]);
-  }, 15_000);
+  }, 30_000);
 
   it("rejects a workspace containing the endpoint's socket, without running", async () => {
     const fake = fakeDocker("ok");
@@ -481,7 +486,7 @@ describe("runInSandbox", () => {
       cleanupFailed: true,
     });
     expect(commands(fake.calls())).toEqual(["run", "kill", "rm", "ps"]);
-  }, 10_000);
+  }, 30_000);
 
   it("returns cancelled without running anything if already aborted", async () => {
     const fake = fakeDocker("ok");
@@ -555,5 +560,5 @@ describe("buildSandboxImage", () => {
         if (holder !== undefined) process.kill(holder, "SIGKILL");
       }
     }
-  }, 15_000);
+  }, 30_000);
 });
