@@ -23,6 +23,7 @@ import {
   SANDBOX_BASE_IMAGE,
   SANDBOX_LABEL,
   buildSandboxImage,
+  DEFAULT_PERMISSION_POLICY,
   contextDigest,
   deriveMessages,
   openSessionLog,
@@ -1047,7 +1048,14 @@ describe("helmwright CLI (e2e)", () => {
   it("removes the workspace if worktree add fails", { timeout: T }, () => {
     const empty = join(tmp, "empty");
     git("init", "--quiet", empty); // no commit: there is no HEAD to check out
-    const task = writeTask("write-file.turns.json", LIMITS, empty);
+    const emptyTask = writeTask("write-file.turns.json", LIMITS, empty);
+    const none = cli("run", emptyTask, "--state-dir", stateDir);
+    expect(none.status, none.stderr).toBe(64);
+    expect(none.stderr).toContain("task.repo has no commit at HEAD");
+    // HEAD and its tree resolve, but checking out README.md's missing blob fails.
+    const blob = git("-C", repo, "rev-parse", "HEAD:README.md").trim();
+    rmSync(join(repo, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    const task = writeTask("write-file.turns.json");
     const result = cli("run", task, "--state-dir", stateDir);
     expect(result.status, result.stderr).toBe(1);
     expect(readdirSync(join(stateDir, "workspaces"))).toEqual([]);
@@ -1146,4 +1154,243 @@ describe("helmwright CLI (e2e)", () => {
     expect(existsSync(join(stateDir, "workspaces", second))).toBe(false);
     expect(existsSync(broken)).toBe(true);
   });
+});
+
+const CONFIG = "helmwright.config.json";
+const sha256 = (data: string | Buffer) =>
+  createHash("sha256").update(data).digest("hex");
+
+/** Commits `write`'s helmwright.config.json (and any other change) in place of the old one. */
+function commitConfig(write: (path: string) => void): void {
+  const path = join(repo, CONFIG);
+  git(...["-C", repo, "rm", "-rq", "--cached", "--ignore-unmatch", CONFIG]);
+  rmSync(path, { recursive: true, force: true });
+  write(path);
+  git("-C", repo, "add", "-A");
+  git(
+    ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+    ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "config"],
+  );
+}
+
+/** Exit 64 naming the file and `problem`; nothing logged or created, no worktree. */
+function expectConfigRefused(problem: string): string {
+  const task = writeTask("write-file.turns.json");
+  const { status, stdout, stderr } = cli("run", task, "--state-dir", stateDir);
+  expect(status, stderr).toBe(64);
+  expect(stderr).toContain(`helmwright: ${CONFIG}: ${problem}`);
+  expect(stdout).toBe("");
+  expect(existsSync(stateDir)).toBe(false);
+  const listed = git("-C", repo, "worktree", "list", "--porcelain");
+  expect(listed.split("\n").filter((l) => l.startsWith("worktree "))).toEqual([
+    "worktree " + repo,
+  ]);
+  return stderr;
+}
+
+function startedOf(runId: string): Record<string, unknown> | undefined {
+  return logEvents().find((e) => e.type === "run.started" && e.runId === runId)
+    ?.payload;
+}
+
+describe("helmwright.config.json (e2e)", () => {
+  it(
+    "refuses a malformed config before the run starts (AC1)",
+    { timeout: T },
+    () => {
+      const write = (text: string | Buffer) => (path: string) => {
+        writeFileSync(path, text);
+      };
+      const cases: [(path: string) => void, string][] = [
+        [write('{"topology": SECRET-MARKER'), "is not valid JSON"],
+        [write('{"unknown": 1}'), '/ unknown key "unknown"'],
+        [
+          write('{"permissions": {"untrustedContent": {"hintBytes": "1024"}}}'),
+          "/permissions/untrustedContent/hintBytes must be integer",
+        ],
+        [
+          write('{"topology": "a", "topology": "b"}'),
+          'duplicate key "topology"',
+        ],
+        [write('{"__proto__": {}}'), 'forbidden key "__proto__"'],
+        [
+          (path) => {
+            writeFileSync(join(repo, "real.json"), "{}");
+            symlinkSync("real.json", path);
+          },
+          "must be a regular file (git mode 100644), not a symbolic link (120000)",
+        ],
+        [
+          write("{}" + " ".repeat(262_143)),
+          "is 262145 bytes, over the 262144-byte limit",
+        ],
+      ];
+      for (const [make, problem] of cases) {
+        commitConfig(make);
+        const stderr = expectConfigRefused(problem);
+        expect(stderr).not.toContain("SECRET-MARKER");
+      }
+    },
+  );
+
+  it("refuses a listed alternative: no fixture (AC2)", { timeout: T }, () => {
+    const cases: [object, string][] = [
+      [
+        { friction: { defaultIntensity: "high" } },
+        'friction.defaultIntensity "high"',
+      ],
+      [
+        { intake: { classification: "model" } },
+        'intake.classification "model"',
+      ],
+      [{ topology: "allSeparate" }, 'topology "allSeparate"'],
+      [
+        { permissions: { untrustedContent: { hintBytes: 512 } } },
+        "permissions.untrustedContent.hintBytes 512",
+      ],
+    ];
+    for (const [config, setting] of cases) {
+      commitConfig((path) => {
+        writeFileSync(path, JSON.stringify(config));
+      });
+      expectConfigRefused(`${setting} is not admitted: no fixture (07 rule 1)`);
+    }
+  });
+
+  it(
+    "uses only HEAD's committed config, else the defaults (AC3)",
+    { timeout: T },
+    () => {
+      // Another branch's config and an uncommitted one are never read.
+      git("-C", repo, "switch", "--quiet", "-c", "other");
+      commitConfig((path) => {
+        writeFileSync(path, '{"topology": "allSeparate"}');
+      });
+      git("-C", repo, "switch", "--quiet", "-");
+      writeFileSync(join(repo, CONFIG), "not json");
+      const base = git("-C", repo, "rev-parse", "HEAD").trim();
+      const first = runTask("write-file.turns.json");
+      expect(first.status, first.stderr).toBe(0);
+      const started = startedOf(first.out.runId);
+      expect(started).toMatchObject({
+        baseCommit: base,
+        policyVersion: "default-1",
+        config: { source: "default" },
+      });
+      const config = started?.["config"] as Record<string, string>;
+      expect(config["sha256"]).toMatch(/^[0-9a-f]{64}$/);
+      expect(config["ring0Sha256"]).toMatch(/^[0-9a-f]{64}$/);
+      const workspace = join(stateDir, "workspaces", first.out.runId);
+      expect(git("-C", workspace, "rev-parse", "HEAD").trim()).toBe(base);
+
+      // The defaults written out: the file's own digest, the same Ring 0 digest.
+      const text = JSON.stringify(
+        {
+          intake: { classification: "rubric" },
+          permissions: { untrustedContent: { mode: "exploreSplit" } },
+          topology: "sessionHarnessOneProcess",
+        },
+        null,
+        2,
+      );
+      commitConfig((path) => {
+        writeFileSync(path, text);
+      });
+      const second = runTask("write-file.turns.json");
+      expect(second.status, second.stderr).toBe(0);
+      expect(startedOf(second.out.runId)).toMatchObject({
+        baseCommit: git("-C", repo, "rev-parse", "HEAD").trim(),
+        policyVersion: "default-1",
+        config: {
+          source: "file",
+          sha256: sha256(text),
+          ring0Sha256: config["ring0Sha256"],
+        },
+      });
+    },
+  );
+
+  it(
+    "applies a stricter policy and refuses a relaxing one (AC4, AC6)",
+    { timeout: T },
+    () => {
+      const base = DEFAULT_PERMISSION_POLICY;
+      const lax = {
+        ...base,
+        version: "lax-1",
+        alwaysAsk: base.alwaysAsk.filter((action) => action !== "deploy"),
+      };
+      commitConfig((path) => {
+        writeFileSync(path, JSON.stringify({ permissions: { policy: lax } }));
+      });
+      expectConfigRefused(
+        "permissions.policy: override relaxes alwaysAsk: removes deploy",
+      );
+
+      const strict = {
+        ...base,
+        version: "strict-1",
+        ring0Paths: [...base.ring0Paths, "docs/**"],
+      };
+      mkdirSync(join(repo, "docs"));
+      writeFileSync(join(repo, "docs", "x.md"), "keep\n");
+      commitConfig((path) => {
+        writeFileSync(
+          path,
+          JSON.stringify({ permissions: { policy: strict } }),
+        );
+      });
+      const turns = join(tmp, "strict.turns.json");
+      const setting = "permissions.untrustedContent.hintBytes";
+      writeFileSync(
+        turns,
+        JSON.stringify([
+          {
+            text: "Editing docs and lowering the hint budget.",
+            toolCalls: [
+              { id: "call-1", name: "fs.edit", input: { path: "docs/x.md" } },
+              {
+                id: "call-2",
+                name: "config.set",
+                input: { setting, value: 512 },
+              },
+            ],
+            claimsDone: false,
+          },
+          { text: "None was approved.", toolCalls: [], claimsDone: true },
+        ]),
+      );
+      const { status, stderr, out } = runTask(turns);
+      expect(status, stderr).toBe(0);
+      const events = expectWellFormedLog(out.runId);
+      expect(events[0]?.payload).toMatchObject({
+        policyVersion: "strict-1",
+        config: { source: "file" },
+      });
+      const of = (type: string) =>
+        events.filter((e) => e.type === type).map((e) => e.payload);
+      expect(of("permission.evaluated")).toMatchObject([
+        {
+          ...{
+            action: "fs.edit",
+            tier: "alwaysAsk",
+            policyVersion: "strict-1",
+          },
+          ...{ ruleId: "always-ask.ring0-path" },
+        },
+        {
+          ...{ action: "config.set", tier: "alwaysAsk" },
+          ...{ ruleId: "always-ask.ring0-setting", target: { value: setting } },
+        },
+      ]);
+      expect(of("permission.answered")).toMatchObject(
+        Array(2).fill({ answer: "denied", by: "noPresence" }),
+      );
+      const workspace = join(stateDir, "workspaces", out.runId);
+      expect(readFileSync(join(workspace, "docs", "x.md"), "utf8")).toBe(
+        "keep\n",
+      );
+      expectReplayMatches(out.runId, events);
+    },
+  );
 });

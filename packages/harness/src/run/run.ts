@@ -15,6 +15,12 @@ import {
   checkWorkspace,
   createBroker,
 } from "../broker/broker.ts";
+import {
+  ConfigError,
+  NO_HOOKS,
+  loadRunConfig,
+  type RunConfig,
+} from "../config/config.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import {
   MESSAGE_APPENDED,
@@ -31,12 +37,7 @@ import {
 } from "../loop/loop.ts";
 import { canonicalJson } from "../loop/reminders.ts";
 import { errorMessage, summarize, type Terminal } from "../loop/terminal.ts";
-import {
-  DEFAULT_PERMISSION_POLICY,
-  displayText,
-  runRing0,
-  type RunRing0,
-} from "../permission/policy.ts";
+import { displayText, runRing0, type RunRing0 } from "../permission/policy.ts";
 import type { Presence } from "../permission/presence.ts";
 import type {
   Emit,
@@ -447,14 +448,15 @@ export interface RunTaskResult extends RunOutcome {
 
 const LOG_FILE = "session.sqlite";
 const WORKSPACES = "workspaces";
-const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 /**
- * Runs a task: validates the task, repo and state dir, reaps orphaned sandbox
- * containers, builds the sandbox image, creates the run's git worktree under `<stateDir>/workspaces/<runId>`, and
+ * Runs a task: validates the task, repo and state dir, loads the config from the
+ * repo's HEAD commit (`loadRunConfig`), reaps orphaned sandbox containers, builds the
+ * sandbox image, creates the run's git worktree from that commit under
+ * `<stateDir>/workspaces/<runId>`, and
  * drives the loop with every event and context message appended to
  * `<stateDir>/session.sqlite`.
- * @throws UsageError for an invalid task, repo or state dir; CancelledError if
+ * @throws UsageError for an invalid task, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
@@ -466,6 +468,14 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     throw new UsageError(`task.engine.turns: ${errorMessage(error)}`);
   }
   checkRepoRoot(task.repo);
+  let config: RunConfig;
+  try {
+    config = loadRunConfig(task.repo);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    throw new UsageError(error.message, { cause: error });
+  }
+  const { baseCommit, policy } = config;
   const stateDir = resolve(options.stateDir);
   const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
     (kind) => kind + "-" + randomUUID(),
@@ -496,7 +506,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         "git",
         [
           ...["-C", task.repo, ...NO_HOOKS],
-          ...["worktree", "add", "--quiet", "--detach", workspace],
+          ...["worktree", "add", "--quiet", "--detach", workspace, baseCommit],
         ],
         { stdio: ["ignore", "ignore", "pipe"] },
       );
@@ -504,7 +514,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
-    const policy = DEFAULT_PERMISSION_POLICY;
     const outcome = await executeRun({
       log,
       graphId,
@@ -519,6 +528,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         workspace,
         image,
         engine: task.engine.kind,
+        baseCommit,
+        config: config.record,
         policyVersion: policy.version,
       },
       engine,

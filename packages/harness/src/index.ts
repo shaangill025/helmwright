@@ -76,6 +76,13 @@ export {
   deriveMessages,
   isMessage,
 } from "./log/messages.ts";
+export type { ConfigRecord, RunConfig } from "./config/config.ts";
+export {
+  CONFIG_FILE,
+  ConfigError,
+  MAX_CONFIG_BYTES,
+  loadRunConfig,
+} from "./config/config.ts";
 export type { ScriptedTurn } from "./engine/scripted.ts";
 export {
   createScriptedEngine,
