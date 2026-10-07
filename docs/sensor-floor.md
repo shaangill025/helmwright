@@ -23,7 +23,8 @@ trigger yet), the same as before this change.
   full history ignoring `gitleaks:allow`; osv-scanner on the lockfile; Semgrep (pinned image and rules,
   `nosemgrep` ignored, owner ignore file, git ignore files not honored); actionlint (owner config) and
   zizmor (no ignores or config, all inputs collected regardless of `.gitignore`, unparsable inputs
-  fail). The token is read-only and reaches only zizmor's GitHub API audits; no job uses a secret or
+  fail). The token is read-only and is used only by checkout (to fetch, not persisted) and by zizmor's
+  GitHub API audits; no job uses a secret or
   the Actions cache; each job checks out the PR head with `persist-credentials: false` and first
   rejects symlinks. The scans cover the PR head, not a merge commit; the ruleset's up-to-date rule
   makes the two the same. No concurrency group, so other workflows cannot cancel these runs.
@@ -32,7 +33,9 @@ trigger yet), the same as before this change.
   `sensors.yml` for `pull_request_target`, and exactly 5 Semgrep `pull-request-target-code-checkout`
   findings on `sensors.yml` (one per job). Any other finding, another trigger, a sixth checkout, or
   `pull_request_target` in any other workflow fails the job. The scanners cannot see a plain `run:`
-  step added to `sensors.yml`; see Known gaps.
+  step added to `sensors.yml`; see Known gaps. The expected counts come from `main`'s copy, so a PR
+  that adds or removes a scanning job, or a tool or rules bump that changes a rule ID or annotation,
+  is blocked: first merge a PR that accepts both values, then the change, then tighten the value.
 - **image** (`.github/workflows/image.yml`, `pull_request`): Grype on the sandbox image built from
   `packages/harness/sandbox/Dockerfile` (owner empty config; fails on fixable high or critical).
 - **config guard**: rejects tool config, ignore and hook files the tools would discover; install
@@ -52,7 +55,7 @@ trigger yet), the same as before this change.
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | A PR that edits `sensors.yml` passes on `main`'s copy, and its change takes effect after merge; the scanners cannot detect, for example, a `run:` step added after a checkout | The scans that gate a PR come from the base branch by design    | Security review of every workflow change before merge (M1)                                                                                    |
 | A PR can add a `pull_request` job that reuses a required check's name, and GitHub reports a job skipped by `if:` as success; a PR to another base branch can do the same      | Required checks match by name and app, not by workflow file     | Security review of every workflow change (M1); the CI1b PR records GitHub's behavior for duplicate names, tested on a PR that is never merged |
-| A PR's own workflow can use a concurrency group that cancels `verify` or `image` runs                                                                                         | Concurrency groups are shared across workflows                  | Cancelled runs are not successes, so this delays a merge but cannot pass one; `sensors.yml` uses no group                                     |
+| A PR's own workflow can use a concurrency group that cancels `verify` runs                                                                                                    | Concurrency groups are shared across workflows                  | Cancelled runs are not successes, so this delays a merge but cannot pass one; `sensors.yml` uses no group                                     |
 | `verify` and the image job run on `pull_request`, so a PR controls them                                                                                                       | They run PR code, which must not run in the base-branch context | Harness floor (B3, M1); security review of every workflow change                                                                              |
 | Allowed configs (`eslint.config.js`, `tsconfig*.json`, `vitest.config.ts`) are checked by path, not content; code they run can affect later steps (e.g. `$GITHUB_PATH`)       | The PR controls the files and their execution in `verify`       | Harness floor runs owner-pinned configs and tools in the sandbox (B3, M1)                                                                     |
 | The schema generator is PR code, so the drift check proves self-consistency only                                                                                              | Same                                                            | Harness floor regenerates with the base revision's generator (B3, M1)                                                                         |

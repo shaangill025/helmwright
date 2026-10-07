@@ -235,7 +235,10 @@ jobs:
       # .gitignore from hiding files. nosem comments stay disabled. Accepted: exactly the 5
       # pull-request-target-code-checkout findings for the 5 jobs below, in sensors.yml only (they
       # check out the PR head as data and never run it); a sixth checkout or any other finding
-      # fails the job. Update ACCEPTED_CHECKOUTS when a job is added or removed.
+      # fails the job. The count comes from main's copy and is checked against the PR head, so a
+      # PR that adds or removes a job is blocked. Change jobs in two PRs: first accept both counts
+      # here, then change the jobs, then tighten the count again. A Semgrep rules or zizmor bump
+      # that changes a check_id or annotation text needs the same two steps.
       - name: Scan
         shell: bash
         run: |
