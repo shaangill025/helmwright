@@ -1,18 +1,23 @@
 name: sensors
 
+# The scanning jobs run on pull_request_target, so the workflow, the tool pins and the owner configs
+# come from main and a PR cannot weaken the scans that gate it. Each job checks out the PR head as
+# data and reads it with pinned tools; no job runs code from the PR. The token is read-only, no job
+# uses a secret or the Actions cache. The sandbox image build runs the PR's Dockerfile, so it lives
+# in image.yml on pull_request. `pull_request` stays here only until main carries this file (CI1a);
+# the follow-up PR (CI1b) removes it, and the guarantee above holds only after that.
 on:
   pull_request:
+  pull_request_target:
+    branches: [main]
   push:
     branches: [main]
 
 permissions:
   contents: read
 
-concurrency:
-  # PRs share a group per branch so a new push cancels the old run; every push to main gets its
-  # own group, so no merged commit loses its sensor evidence.
-  group: sensors-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group: groups are shared by every workflow in the repository, so a PR could name
+# another run's group and cancel it. A run with no group cannot be cancelled by other workflows.
 
 # Ring 0 sensor floor. Every scanner is pinned by version and SHA-256 (binaries) or image digest,
 # and candidate-supplied suppressions/config are ignored or rejected.
@@ -28,8 +33,6 @@ env:
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
   ZIZMOR_VERSION: "1.30.1"
   ZIZMOR_SHA256: e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a
-  GRYPE_VERSION: "0.120.0"
-  GRYPE_SHA256: a5a1218dce63acdac152a6b3b5bb366e7267e36f4069848cf455543b3fa5700e
   SEMGREP_IMAGE: semgrep/semgrep@sha256:93963d9295a366f59e4850127b1550400ee7b388f04fe144e4a1f6325d96e01b # 1.179.0
   SEMGREP_RULES_SHA: a84ff9cc2453ca91d581380de4b8b3f272f6f4be
 
@@ -39,9 +42,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # PR events: the PR head as data (never executed); the ruleset requires the branch to be up
+      # to date, so the head equals the merge result. Push: the pushed commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      # First, before any tool reads the tree: a symlink could point it at runner files.
+      - name: Reject symlinks
+        shell: bash
+        run: |
+          set -euo pipefail
+          links=$(git ls-files -s -z | tr '\0' '\n' | awk '$1 == "120000"' | wc -l)
+          if [ "$links" -ne 0 ]; then
+            echo "::error::Symlinks are not allowed in the repository"
+            exit 1
+          fi
       - name: Reject candidate-controlled tool config, ignore files and install hooks
         shell: bash
         run: |
@@ -94,7 +111,7 @@ jobs:
                 | "dependency \(.key)@\(.value) is neither registry semver nor an @helmwright workspace package"),
               (if $root == "yes" and .packageManager != $pm then "packageManager must be \($pm)" else empty end),
               (if $root == "no" and has("bin") then "workspace packages may not declare bin (could shadow a checker)" else empty end)
-            ' "$manifest")
+            ' "./$manifest")
             if [ -n "$problems" ]; then
               error "$manifest: $(printf '%s' "$problems" | tr '\n' ';')"
             fi
@@ -127,10 +144,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # PR events: the PR head as data (never executed); the ruleset requires the branch to be up
+      # to date, so the head equals the merge result. Push: the pushed commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # First, before any tool reads the tree: a symlink could point it at runner files.
+      - name: Reject symlinks
+        shell: bash
+        run: |
+          set -euo pipefail
+          links=$(git ls-files -s -z | tr '\0' '\n' | awk '$1 == "120000"' | wc -l)
+          if [ "$links" -ne 0 ]; then
+            echo "::error::Symlinks are not allowed in the repository"
+            exit 1
+          fi
       - name: Install gitleaks
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/gitleaks.tar.gz" \
@@ -145,9 +176,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # PR events: the PR head as data (never executed); the ruleset requires the branch to be up
+      # to date, so the head equals the merge result. Push: the pushed commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      # First, before any tool reads the tree: a symlink could point it at runner files.
+      - name: Reject symlinks
+        shell: bash
+        run: |
+          set -euo pipefail
+          links=$(git ls-files -s -z | tr '\0' '\n' | awk '$1 == "120000"' | wc -l)
+          if [ "$links" -ne 0 ]; then
+            echo "::error::Symlinks are not allowed in the repository"
+            exit 1
+          fi
       - name: Install osv-scanner
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" \
@@ -162,9 +207,23 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # PR events: the PR head as data (never executed); the ruleset requires the branch to be up
+      # to date, so the head equals the merge result. Push: the pushed commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      # First, before any tool reads the tree: a symlink could point it at runner files.
+      - name: Reject symlinks
+        shell: bash
+        run: |
+          set -euo pipefail
+          links=$(git ls-files -s -z | tr '\0' '\n' | awk '$1 == "120000"' | wc -l)
+          if [ "$links" -ne 0 ]; then
+            echo "::error::Symlinks are not allowed in the repository"
+            exit 1
+          fi
       - name: Fetch pinned rules
         run: |
           git init -q "$RUNNER_TEMP/semgrep-rules"
@@ -172,27 +231,60 @@ jobs:
           git -C "$RUNNER_TEMP/semgrep-rules" checkout -q FETCH_HEAD
           test "$(git -C "$RUNNER_TEMP/semgrep-rules" rev-parse HEAD)" = "$SEMGREP_RULES_SHA"
       # Scan a copy carrying an owner-written .semgrepignore: without one, Semgrep's built-in
-      # defaults silently skip tests/, build/, vendor/ and friends.
+      # defaults silently skip tests/, build/, vendor/ and friends; --no-git-ignore stops a PR's
+      # .gitignore from hiding files. nosem comments stay disabled. Accepted: exactly the 5
+      # pull-request-target-code-checkout findings for the 5 jobs below, in sensors.yml only (they
+      # check out the PR head as data and never run it); a sixth checkout or any other finding
+      # fails the job. Update ACCEPTED_CHECKOUTS when a job is added or removed.
       - name: Scan
+        shell: bash
         run: |
+          set -euo pipefail
           cp -a "$GITHUB_WORKSPACE" "$RUNNER_TEMP/scan"
           rm -f "$RUNNER_TEMP/scan/.semgrepignore"
           printf 'node_modules/\n' > "$RUNNER_TEMP/scan/.semgrepignore"
+          mkdir -m 777 "$RUNNER_TEMP/semgrep-out"
           docker run --rm --network none \
-            -v "$RUNNER_TEMP/scan:/src:ro" -v "$RUNNER_TEMP/semgrep-rules:/rules:ro" -w /src \
+            -v "$RUNNER_TEMP/scan:/src:ro" -v "$RUNNER_TEMP/semgrep-rules:/rules:ro" \
+            -v "$RUNNER_TEMP/semgrep-out:/out" -w /src \
             -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/src \
-            "$SEMGREP_IMAGE" semgrep scan --metrics=off --disable-nosem --error --strict \
-            --max-target-bytes=0 \
+            "$SEMGREP_IMAGE" semgrep scan --metrics=off --disable-nosem --strict --no-git-ignore \
+            --max-target-bytes=0 --json-output=/out/semgrep.json \
             --config /rules/javascript --config /rules/typescript --config /rules/yaml/github-actions /src
+          ACCEPTED_CHECKOUTS=5
+          out="$RUNNER_TEMP/semgrep-out/semgrep.json"
+          # jq -e fails on empty output; the regex rejects anything that is not a count.
+          count() { local v; v=$(jq -e "$1" "$out"); [[ $v =~ ^[0-9]+$ ]] || exit 1; echo "$v"; }
+          accepted=$(count '[.results[] | select(.check_id == "rules.yaml.github-actions.security.pull-request-target-code-checkout" and .path == "/src/.github/workflows/sensors.yml")] | length')
+          total=$(count '.results | length')
+          errors=$(count '.errors | length')
+          if [ "$accepted" -ne "$ACCEPTED_CHECKOUTS" ] || [ "$total" -ne "$accepted" ] || [ "$errors" -ne 0 ]; then
+            echo "::error::Semgrep: $accepted accepted checkout finding(s) (expected $ACCEPTED_CHECKOUTS), $((total - accepted)) other finding(s), $errors error(s); see the output above"
+            exit 1
+          fi
 
   workflows:
     name: actionlint + zizmor
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # PR events: the PR head as data (never executed); the ruleset requires the branch to be up
+      # to date, so the head equals the merge result. Push: the pushed commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      # First, before any tool reads the tree: a symlink could point it at runner files.
+      - name: Reject symlinks
+        shell: bash
+        run: |
+          set -euo pipefail
+          links=$(git ls-files -s -z | tr '\0' '\n' | awk '$1 == "120000"' | wc -l)
+          if [ "$links" -ne 0 ]; then
+            echo "::error::Symlinks are not allowed in the repository"
+            exit 1
+          fi
       - name: Install actionlint and zizmor
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/actionlint.tar.gz" \
@@ -210,32 +302,33 @@ jobs:
           : > "$RUNNER_TEMP/actionlint.yaml"
           "$RUNNER_TEMP/actionlint" -config-file "$RUNNER_TEMP/actionlint.yaml" -shellcheck= -pyflakes=
       # Online audits (impostor commits, known-vulnerable actions) use the read-only job token.
+      # Ignore comments and config stay disabled (--no-ignores also drops config ignores);
+      # --collect=all stops a PR's .gitignore from hiding a workflow, and --strict-collection fails
+      # on files zizmor cannot parse. The one accepted finding is a single dangerous-triggers on
+      # sensors.yml for pull_request_target: that trigger is the owner's decision
+      # (docs/decisions.md, CI sensor floor → Enforcement), and its jobs never run PR code. Any
+      # other finding, another trigger, or a second finding there fails the job.
       - name: zizmor
         env:
           GH_TOKEN: ${{ github.token }}
-        run: '"$RUNNER_TEMP/zizmor" --no-ignores --no-config .'
-
-  image:
-    name: grype (sandbox image)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install grype
+        shell: bash
         run: |
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/grype.tar.gz" \
-            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
-          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP" grype
-      - name: Build the sandbox image
-        run: docker build --quiet --tag helmwright-sandbox:ci packages/harness/sandbox
-      # Owner decision: fail on any fixable high or critical; unfixed findings are reported only.
-      # The vulnerability database is fetched at scan time and is not pinned.
-      - name: Report all findings, including unfixed ones
-        run: |
-          : > "$RUNNER_TEMP/grype.yaml"
-          "$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml"
-      - name: Fail on fixable high or critical
-        run: '"$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml" --only-fixed --fail-on high'
+          set -euo pipefail
+          zizmor_args=(--no-ignores --no-config --collect=all --strict-collection)
+          "$RUNNER_TEMP/zizmor" "${zizmor_args[@]}" . || true
+          status=0
+          "$RUNNER_TEMP/zizmor" "${zizmor_args[@]}" --format json . > "$RUNNER_TEMP/zizmor.json" || status=$?
+          # 0 = no findings, 10-14 = findings by severity; anything else is a tool failure.
+          if [ "$status" -ne 0 ] && { [ "$status" -lt 10 ] || [ "$status" -gt 14 ]; }; then
+            echo "::error::zizmor failed with exit code $status"
+            exit 1
+          fi
+          out="$RUNNER_TEMP/zizmor.json"
+          # jq -e fails on empty output; the regex rejects anything that is not a count.
+          count() { local v; v=$(jq -e "$1" "$out"); [[ $v =~ ^[0-9]+$ ]] || exit 1; echo "$v"; }
+          accepted=$(count '[.[] | select(.ident == "dangerous-triggers" and ([.locations[] | select(.symbolic.kind == "Primary") | {path: .symbolic.key.Local.verbatim_path, note: .symbolic.annotation}] == [{path: "./.github/workflows/sensors.yml", note: "pull_request_target is almost always used insecurely"}]))] | length')
+          total=$(count 'length')
+          if [ "$accepted" -gt 1 ] || [ "$total" -ne "$accepted" ]; then
+            echo "::error::zizmor reported $((total - accepted)) unaccepted finding(s); see the output above"
+            exit 1
+          fi

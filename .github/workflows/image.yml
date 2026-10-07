@@ -1,0 +1,44 @@
+name: image
+
+# The sandbox image build runs the PR's Dockerfile (its RUN steps execute PR code), so this job
+# stays on pull_request and is PR-controlled: a backstop, not part of the main-pinned scans in
+# sensors.yml. The harness builds the image locally from the same Dockerfile.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# No concurrency group: a PR could name it and cancel main's push runs.
+
+env:
+  GRYPE_VERSION: "0.120.0"
+  GRYPE_SHA256: a5a1218dce63acdac152a6b3b5bb366e7267e36f4069848cf455543b3fa5700e
+
+jobs:
+  image:
+    name: grype (sandbox image)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install grype
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/grype.tar.gz" \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  $RUNNER_TEMP/grype.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/grype.tar.gz" -C "$RUNNER_TEMP" grype
+      - name: Build the sandbox image
+        run: docker build --quiet --tag helmwright-sandbox:ci packages/harness/sandbox
+      # Owner decision: fail on any fixable high or critical; unfixed findings are reported only.
+      # The vulnerability database is fetched at scan time and is not pinned.
+      - name: Report all findings, including unfixed ones
+        run: |
+          : > "$RUNNER_TEMP/grype.yaml"
+          "$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml"
+      - name: Fail on fixable high or critical
+        run: '"$RUNNER_TEMP/grype" docker:helmwright-sandbox:ci -c "$RUNNER_TEMP/grype.yaml" --only-fixed --fail-on high'
