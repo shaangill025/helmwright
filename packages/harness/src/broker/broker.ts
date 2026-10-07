@@ -20,6 +20,8 @@ import {
   displayText,
   evaluate,
   type EvaluatedVerdict,
+  type PermissionVerdict,
+  type RejectedVerdict,
   type RunRing0,
 } from "../permission/policy.ts";
 import type { Presence } from "../permission/presence.ts";
@@ -83,6 +85,14 @@ const denied = (output: string): ToolResult => ({ status: "denied", output });
 /** S6: a sandbox not confirmed removed may still touch the worktree. */
 export const SANDBOX_CLEANUP_FAILED = "sandbox cleanup failed";
 const LOG_DENIED = "denied: the permission ruling cannot be logged";
+/** S2: a reused tool call ID would make the log's bindings ambiguous. */
+const REUSED: RejectedVerdict = {
+  kind: "rejected",
+  tier: "deny",
+  guard: "schema",
+  ruleId: "schema.duplicate-call-id",
+  reason: "tool call ID already used in this run",
+};
 /** SF-1: once a ruling's append fails, no later call in the run runs. */
 export const PERMISSION_LOG_FAILED = "permission log failed";
 
@@ -364,7 +374,9 @@ async function askOwner(
  * (over MAX_FULL_SHOWN) is denied with fixed text, without asking: only the
  * ruling is logged, no `permission.asked` or `permission.answered`. A ruling that
  * cannot be built denies with
- * fixed text; one whose append fails also halts the broker and the run.
+ * fixed text; one whose append fails also halts the broker and the run. S2: a tool
+ * call ID already used in the run is rejected (`schema.duplicate-call-id`) before
+ * `evaluate`, so each ID has one ruling.
  * After a halt (that, or a sandbox cleanup failure) every call is denied.
  * @throws RangeError | TypeError if `context` breaks the sandbox's image or
  * workspace rules (checked up front, so a run fails before it starts).
@@ -377,6 +389,7 @@ export function createBroker(context: BrokerContext): Broker {
   const { permission } = context;
   const { presence } = permission;
   let halted: string | undefined;
+  const usedIds = new Set<string>();
   /** Read after an await, when another call or a handler may have halted. */
   const haltedNow = (): string | undefined => halted;
   const own: BrokerContext = {
@@ -408,13 +421,17 @@ export function createBroker(context: BrokerContext): Broker {
     async executeTool(call: ToolCall, signal: AbortSignal) {
       if (halted !== undefined) return denied("denied: " + halted);
       const { id, name, input } = call;
-      const verdict = evaluate(permission.policy, {
-        action: name,
-        input,
-        worktree: permission.worktree,
-        runId: permission.runId,
-        extraRing0Paths: permission.ring0,
-      });
+      const reused = usedIds.has(id);
+      usedIds.add(id);
+      const verdict: PermissionVerdict = reused
+        ? REUSED
+        : evaluate(permission.policy, {
+            action: name,
+            input,
+            worktree: permission.worktree,
+            runId: permission.runId,
+            extraRing0Paths: permission.ring0,
+          });
       const asking =
         verdict.kind === "evaluated" &&
         (verdict.tier === "ask" || verdict.tier === "alwaysAsk");
@@ -442,6 +459,7 @@ export function createBroker(context: BrokerContext): Broker {
         throw error;
       }
       if (!append(entries)) return denied(LOG_DENIED);
+      if (reused) return denied("denied: " + REUSED.reason);
       if (verdict.kind === "rejected") {
         const named = verdict.requestedName ?? "";
         const by =

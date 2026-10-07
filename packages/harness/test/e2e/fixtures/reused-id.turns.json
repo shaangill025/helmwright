@@ -1,0 +1,25 @@
+[
+  {
+    "text": "Writing a.txt.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": { "argv": ["sh", "-c", "echo hi > a.txt"] }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Writing b.txt with the same call ID.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": { "argv": ["sh", "-c", "echo hi > b.txt"] }
+      }
+    ],
+    "claimsDone": false
+  },
+  { "text": "Done.", "toolCalls": [], "claimsDone": true }
+]
