@@ -108,6 +108,20 @@ export {
   replayRun,
   runTask,
 } from "./run/run.ts";
+export type {
+  PermissionRequest,
+  PermissionTarget,
+  PermissionVerdict,
+} from "./permission/policy.ts";
+export {
+  ALWAYS_ASK_ACTIONS,
+  DEFAULT_PERMISSION_POLICY,
+  PERMISSION_ONLY_ACTIONS,
+  RING0_PATHS,
+  RING0_SETTINGS,
+  evaluate,
+  resolvePolicy,
+} from "./permission/policy.ts";
 export type { NormalizedPath } from "./permission/normalize.ts";
 export {
   caseFold,
