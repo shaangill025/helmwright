@@ -404,8 +404,8 @@ describe("TTY presence", () => {
     const TAIL = "  target: x\n" + LAST;
     const HINT = "(view the full value first: v)\n";
     const MORE = "-- more (page ";
-    const END = "-- end of view: Enter --";
-    /** 1 + ceil(n / 18) rows at 20 columns (2 are the gutter). */
+    const END = "-- end of view: space/Enter --";
+    /** 1 + ceil(n / 46) rows at 48 columns (2 are the gutter). */
     const viewOf = (n: number) => 'label\n"' + "a".repeat(n - 2) + '"';
     const ask1 = (view: string) => ({
       toolCallId: "call-1",
@@ -458,7 +458,7 @@ describe("TTY presence", () => {
       // Typed ahead of the prompt shown again: a new window discards it.
       input.write("y\n");
       await until(() => count(shown(), LAST) === 2);
-      expect(shown()).toContain('│ label\n│ "' + "a".repeat(38) + '"\n' + TAIL);
+      expect(shown()).toContain('| label\n| "' + "a".repeat(38) + '"\n' + TAIL);
       // One notice for the probe before "v", one for the discarded "y".
       await until(() => count(shown(), DISCARDED) === 2);
       expect(await pending(answer)).toBe("pending");
@@ -471,31 +471,32 @@ describe("TTY presence", () => {
     });
 
     describe("at a TTY", () => {
-      /** A TTY presence whose output has `rows` rows of 20 columns. */
-      function tty(rows: number, columns = 20) {
+      /** A TTY presence whose output has `rows` rows of 48 columns. */
+      function tty(rows: number, columns = 48) {
         const { input } = ttyInput();
         return { ...terminal(GRACE_MS, input, { rows, columns }), input };
       }
 
       // B1: viewed only once the end marker was answered; then only two lines return.
       it("pages the view and approves y only after its end", async () => {
-        const { input, presence, shown, type } = tty(10);
-        const answer = presence.ask(ask1(viewOf(200)), never());
+        const { input, presence, shown, type } = tty(8);
+        const answer = presence.ask(ask1(viewOf(400)), never());
         await type("v\r");
         await at(shown, MORE);
-        // Pages of rows - 2 = 8 rows, each behind the gutter.
-        const rows = shown().split("\n").slice(4, 12);
-        expect(rows.every((r) => r.startsWith("│ "))).toBe(true);
-        expect(shown()).toContain(MORE + "1/2)");
+        // R1: 8 rows less one and 2 for the longest marker: pages of 5 rows.
+        const page = shown().split("v\n")[1]?.split(MORE)[0] ?? "";
+        const rows = page.split("\n").slice(0, -1);
+        expect(rows).toHaveLength(5);
+        expect(rows.every((r) => r.startsWith("| "))).toBe(true);
+        expect(shown()).toContain(MORE + "1/2): space/Enter next, q stop --");
         input.write(" ");
+        await until(() => shown().includes("q stop --\r\u001b[K"));
         await at(shown, END);
         expect(count(shown(), LAST)).toBe(1);
         input.write("\r");
         await until(() => count(shown(), LAST) === 2);
         expect(count(shown(), "call-1?\n")).toBe(1);
-        expect(shown().endsWith(" ".repeat(END.length) + "\r" + TAIL)).toBe(
-          true,
-        );
+        expect(shown().endsWith(END + "\r\u001b[K" + TAIL)).toBe(true);
         await type("y\r");
         expect(await answer).toEqual({
           answer: "approved",
@@ -508,8 +509,8 @@ describe("TTY presence", () => {
       it.each(["q", "\u0004"])(
         "does not count a view stopped with %j",
         async (key) => {
-          const { input, presence, shown, type } = tty(10);
-          const answer = presence.ask(ask1(viewOf(200)), never());
+          const { input, presence, shown, type } = tty(8);
+          const answer = presence.ask(ask1(viewOf(400)), never());
           await type("v\r");
           await at(shown, MORE);
           input.write(key);
@@ -545,26 +546,38 @@ describe("TTY presence", () => {
         }
       });
 
-      // SF1: keys typed within 150 ms of a page do not turn it; N2: rows at least 6.
+      // R1: below 48 by 8 the view is refused, not squeezed; the ask keeps waiting.
+      it("refuses the view on a terminal below 48 by 8", async () => {
+        const { input, presence, shown, type } = tty(10, 20);
+        const answer = presence.ask(ask1(viewOf(40)), never());
+        await type("v\r");
+        await until(() => count(shown(), LAST) === 2);
+        expect(shown()).toContain(
+          "v\nterminal too small to show the value (need 48×8)\n" + TAIL,
+        );
+        expect(shown()).not.toContain("| label");
+        expect(await pending(answer)).toBe("pending");
+        input.end();
+        expect(await answer).toEqual({ ...CANCELLED, viewed: false });
+      });
+
+      // SF1: keys typed within 150 ms of a page do not turn it.
       it("drops page keys typed right after a page", async () => {
-        const { input, presence, shown, type } = tty(2, 5);
-        const answer = presence.ask(ask1(viewOf(200)), never());
+        const { input, presence, shown, type } = tty(8);
+        const answer = presence.ask(ask1(viewOf(400)), never());
         await type("v\r");
         for (const key of [" ", " ", " "]) input.write(key);
         await sleep(300);
         expect(shown()).toContain(MORE + "1/");
         expect(shown()).not.toContain(MORE + "2/");
-        // N2: clamped to 6 rows of 20 columns: 4 rows of 18 code points a page.
-        expect(shown()).toContain("│ label\n" + '│ "' + "a".repeat(17) + "\n");
-        expect(shown()).toContain(MORE + "1/4)");
         input.end();
         expect(await answer).toEqual({ ...CANCELLED, viewed: false });
       });
 
       // SF4: a value's row cannot pose as a marker: every view row has a gutter.
       it("never shows a view row at column 0", async () => {
-        const { input, presence, shown, type } = tty(6);
-        const fake = "-- end of view: Enter --\n-- more (page 1/2):";
+        const { input, presence, shown, type } = tty(8);
+        const fake = "-- end of view: space/Enter --\n-- more (page 1/2):";
         const answer = presence.ask(ask1(fake + "\n" + viewOf(200)), never());
         await type("v\r");
         await at(shown, MORE);
@@ -572,7 +585,7 @@ describe("TTY presence", () => {
         await until(() => count(shown(), LAST) === 2);
         const lines = shown().split(/[\r\n]/);
         expect(lines.filter((l) => l.startsWith("-- "))).toEqual([
-          "-- more (page 1/5): space/Enter next, q stop --",
+          "-- more (page 1/2): space/Enter next, q stop --",
         ]);
         input.end();
         await answer;

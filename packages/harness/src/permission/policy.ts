@@ -168,11 +168,12 @@ export function deepFreeze<T>(value: T): T {
 
 /**
  * Control (C0, DEL, C1), format, separator (spaces too), lone surrogate, private-use,
- * unassigned and default-ignorable code points, the backslash, and (N-4) each
- * combining mark after the first two of a run, so marks cannot stack over text.
+ * unassigned and default-ignorable code points, U+2800 (a blank braille cell, R2),
+ * the backslash, and (N-4) each combining mark after the first two of a run, so
+ * marks cannot stack over text.
  */
 const UNPRINTABLE =
-  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\\]|(?<=\p{M}{2})\p{M}/gu;
+  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}⠀\\]|(?<=\p{M}{2})\p{M}/gu;
 /**
  * Shown text: every unprintable code point but U+0020 becomes `\u{…}`, so it cannot
  * hide or reorder text, and `\` becomes `\\`, so literal `\u{…}` text stays distinct.

@@ -81,16 +81,18 @@ const DISCARDED = "(input discarded; answer again)\n";
 const VIEW_FIRST = "(view the full value first: v)\n";
 const more = (page: number, pages: number) =>
   `-- more (page ${String(page)}/${String(pages)}): space/Enter next, q stop --`;
-const END = "-- end of view: Enter --";
+const END = "-- end of view: space/Enter --";
 /** SF4: starts every view row, so no value can pose as a marker or a prompt. */
-const GUTTER = "│ ";
+const GUTTER = "| ";
 /** SF1: page keys typed this many ms after a page is shown are dropped. */
 const PAGE_KEY_MS = 150;
 
-/** N2: a terminal size from the output in [min, max], or `fallback` if unknown. */
-const sized = (n: unknown, min: number, max: number, fallback: number) =>
+/** R1: a smaller terminal is told so; the view is not shown. */
+const TOO_SMALL = "terminal too small to show the value (need 48×8)\n";
+/** N2: a terminal size from the output, at most `max`, or `fallback` if unknown. */
+const sized = (n: unknown, max: number, fallback: number) =>
   typeof n === "number" && Number.isInteger(n) && n > 0
-    ? Math.min(max, Math.max(min, n))
+    ? Math.min(max, n)
     : fallback;
 
 /**
@@ -143,10 +145,11 @@ function wrap(text: string, width: number): string[] {
  *
  * B9b-3c: for a request with a view, the line "v" shows the view, and "y" approves
  * only once the view was shown to its end in this ask; before that it says so and
- * waits. At a TTY the view is paged on `output` (rows - 2 rows a page, each behind
- * a gutter, wrapped at its columns; 24 by 80 if unknown, clamped to 6..200 by
- * 20..512): space or Enter, taken only 150 ms after a page is shown, turns the
- * page; at the end marker it completes the view. q or Ctrl-D stops (the view does
+ * waits. On a terminal under 48 columns or 8 rows (80 by 24 if unknown) "v" only
+ * says so. At a TTY the view is paged on `output` (each row behind a gutter,
+ * wrapped at its columns; a page and its marker fit its rows): space or Enter,
+ * taken only 150 ms after a page is shown, turns the page; at the end marker
+ * ("space/Enter") it completes the view. q or Ctrl-D stops (the view does
  * not count), Ctrl-C cancels as above; other keys are ignored. Elsewhere the whole
  * view is written at once. After the view the prompt's last two lines, after the
  * "view first" note its last line, are shown again and a new window starts.
@@ -287,13 +290,20 @@ export function createTtyPresence(
     raw: boolean,
   ): Promise<boolean | Read> => {
     const size = output as Writable & { columns?: unknown; rows?: unknown };
-    const width = sized(size.columns, 20, 512, 80) - GUTTER.length;
-    const rows = wrap(view, width).map((row) => GUTTER + row);
+    const columns = sized(size.columns, 512, 80);
+    const height = sized(size.rows, 200, 24);
+    if (columns < 48 || height < 8) {
+      output.write(TOO_SMALL);
+      return false;
+    }
+    const rows = wrap(view, columns - GUTTER.length).map((r) => GUTTER + r);
     if (!raw) {
       output.write(rows.join("\n") + "\n");
       return true;
     }
-    const page = sized(size.rows, 6, 200, 24) - 2;
+    /** Terminal rows a marker takes (R1): the longest is more(n, n). */
+    const tall = (marker: string) => Math.ceil(marker.length / columns);
+    const page = height - 1 - tall(more(rows.length, rows.length));
     const pages = Math.ceil(rows.length / page);
     for (let at = 1; ; at += 1) {
       output.write(rows.slice((at - 1) * page, at * page).join("\n") + "\n");
@@ -304,7 +314,10 @@ export function createTtyPresence(
         key = await readLine(signal, true, true);
         if (key.kind !== "line") return key;
       } while (![" ", "\r", "\n", "q", CTRL_D].includes(key.text));
-      output.write("\r" + " ".repeat(Array.from(marker).length) + "\r");
+      // R1: erase each terminal row of the marker, from its last up.
+      output.write(
+        "\r\u001b[K" + "\u001b[A\r\u001b[K".repeat(tall(marker) - 1),
+      );
       if (key.text === "q" || key.text === CTRL_D) return false;
       if (at === pages) return true;
     }

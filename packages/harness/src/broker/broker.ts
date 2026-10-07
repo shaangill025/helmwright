@@ -215,25 +215,43 @@ function shownValues(verdict: EvaluatedVerdict): readonly Shown[] | undefined {
   return [value, detail];
 }
 
-/** SF2: a literal ␠ (shown escaped) and each run of more than two spaces. */
-const SPACE_RUN = /␠| {3,}/g;
 /** N6: one shown unit: a policy escape, an escaped backslash, or a code point. */
 const UNIT = /\\u\{[0-9a-f]{1,6}\}|\\\\|[\s\S]/gu;
 
 /**
  * B9b-3c: the full-value view of an ask with a long value: for each, a label line
- * and the whole value as a JSON string literal, each run of more than two spaces
- * shown as ␠×<count> (SF2). The presence wraps and pages it; `permission.asked`
+ * and the whole value as a JSON string literal (see `marked`). The presence wraps and pages it; `permission.asked`
  * holds its SHA-256. Undefined if no value is long.
  */
 function askView(values: readonly Shown[]): string | undefined {
   const long = values.filter((v) => v.long);
   if (long.length === 0) return undefined;
-  const marked = (text: string) =>
-    quoted(text).replace(SPACE_RUN, (run) =>
-      run === "␠" ? "\\\\u{2420}" : "␠×" + String(run.length),
-    );
   return long.map((v) => "full " + v.label + ":\n" + marked(v.text)).join("\n");
+}
+
+/**
+ * SF2, R2: `text` (escaped) with each run of more than two spaces as ␠×<count> and
+ * of more than two of one escape as <escape>×<count>; a literal ␠ or × is escaped,
+ * so every marker is one. Quoted as a JSON string literal.
+ */
+function marked(text: string): string {
+  let out = "";
+  let unit = "";
+  let n = 0;
+  const flush = () => {
+    const run = n > 2 && (unit === " " || unit.startsWith("\\"));
+    out += run ? (unit === " " ? "␠" : unit) + "×" + String(n) : unit.repeat(n);
+  };
+  for (const [u] of text.matchAll(UNIT)) {
+    const shown = u === "␠" ? "\\u{2420}" : u === "×" ? "\\u{d7}" : u;
+    if (shown === unit) n += 1;
+    else {
+      flush();
+      [unit, n] = [shown, 1];
+    }
+  }
+  flush();
+  return quoted(out);
 }
 
 /** N6: the first SUMMARY_HEAD code points of `text`, less an escape they would split. */
