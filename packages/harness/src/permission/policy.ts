@@ -19,6 +19,7 @@ import {
   type NormalizedPath,
 } from "./normalize.ts";
 import { CONTAINER_PATH, contains } from "../sandbox/docker.ts";
+import { credentialIn, type CredentialFound } from "./exfiltration.ts";
 
 /** True for an existing directory, and for anything that cannot be checked (fail safe). */
 function isDirectory(real: string): boolean {
@@ -772,7 +773,9 @@ function policyProblem(policy: unknown): string | undefined {
   const repeated = ids.find((id, i) => ids.indexOf(id) !== i);
   if (repeated !== undefined) return `rule id ${repeated} repeats`;
   // The guards record these IDs; a rule must not be confused with one (the schema reserves always-ask.).
-  const reserved = ids.find((id) => /^(default|policy|schema)\./.test(id));
+  const reserved = ids.find((id) =>
+    /^(default|policy|schema|exfiltration)\./.test(id),
+  );
   return reserved === undefined ? undefined : `rule id ${reserved} is reserved`;
 }
 
@@ -812,8 +815,42 @@ function issuedFor(
     : undefined;
 }
 
+/** The rule ID of an exfiltration denial; rules may not use the `exfiltration.` prefix. */
+export const EXFILTRATION_RULE = "exfiltration.credential";
+/** What an exfiltration denial logs and shows in place of the target and detail. */
+export const WITHHELD = "[withheld: credential-shaped content]";
+/** Egress actions: every action with a remote target. */
+const isEgress = (action: PermissionAction) => ACTIONS[action][0] === "remote";
+
 /**
- * Rules on one action call. The always-ask floor (the policy's set united with the
+ * Guard 1's denial. Its reason names only the field and the pattern class, and its
+ * target and detail are WITHHELD, so neither the log nor a prompt has the content;
+ * `inputSha256` still binds the input.
+ */
+function withheld(
+  requested: PermissionAction,
+  fields: Readonly<Record<string, unknown>>,
+  found: CredentialFound,
+  policyVersion: string,
+): EvaluatedVerdict {
+  const body = typeof fields["body"] === "string" ? { detail: WITHHELD } : {};
+  return deepFreeze({
+    kind: "evaluated",
+    tier: "deny",
+    ruleId: EXFILTRATION_RULE,
+    reason: escape(`${found.field} carries ${found.pattern}`),
+    action: requested,
+    requested,
+    guard: "exfiltration",
+    policyVersion,
+    target: { kind: ACTIONS[requested][0], value: WITHHELD, ...body },
+    input: fields,
+  });
+}
+
+/**
+ * Rules on one action call. Guard 1 (exfiltration) first: an egress action whose
+ * input carries credential-shaped content is denied. Then the always-ask floor (the policy's set united with the
  * built-in one, deletes outside the worktree, Ring 0 paths and settings) comes first
  * in every governance mode; then the first matching rule; no match asks. An unknown
  * action, invalid input or invalid policy is denied. Never throws: each request field
@@ -862,6 +899,11 @@ export function evaluate(
       !RUN_ID.test(runId)
     ) {
       return reject("schema", "schema.invalid-input", why, name);
+    }
+    // Guard 1: credential-shaped content in an egress action denies, never asks.
+    const found = isEgress(requested) ? credentialIn(fields) : undefined;
+    if (found !== undefined) {
+      return withheld(requested, fields, found, checked.version);
     }
     const run = { worktree, runId, extraRing0Paths: extra };
     const derived = factsFor(checked, requested, fields, run);

@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Event } from "@helmwright/schema";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -151,7 +151,10 @@ function writeTask(
     id: "task-1",
     title: "e2e task",
     repo: repoPath,
-    engine: { kind: "scripted", turns: join(FIXTURES, turns) },
+    engine: {
+      kind: "scripted",
+      turns: isAbsolute(turns) ? turns : join(FIXTURES, turns),
+    },
     limits,
   };
   writeFileSync(file, JSON.stringify(task));
@@ -692,6 +695,161 @@ describe("helmwright CLI (e2e)", () => {
       expect(tool?.text).toContain("always-ask.deploy");
       expect(tool?.text).toContain("nobody present");
       expect(tool?.text).not.toContain("unknown action");
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "always asks push, pr.open and a governance setting; nobody approves",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("always-ask.turns.json");
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      const events = expectWellFormedLog(out.runId);
+      const of = (type: string) =>
+        events.filter((e) => e.type === type).map((e) => e.payload);
+      expect(of("permission.evaluated")).toMatchObject([
+        { action: "push", tier: "alwaysAsk", ruleId: "always-ask.push" },
+        { action: "pr.open", tier: "alwaysAsk", ruleId: "always-ask.pr.open" },
+        {
+          action: "config.set",
+          tier: "alwaysAsk",
+          ruleId: "always-ask.ring0-setting",
+        },
+      ]);
+      expect(of("permission.answered")).toMatchObject(
+        Array(3).fill({ answer: "denied", by: "noPresence" }),
+      );
+      expect(of("loop.tool.called").map((p) => p["status"])).toEqual(
+        Array(3).fill("denied"),
+      );
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "treats deletes via a link or .. as outside and always asks Ring 0 edits",
+    { timeout: T },
+    () => {
+      const outside = join(tmp, "outside");
+      mkdirSync(outside);
+      writeFileSync(join(outside, "victim.txt"), "keep\n");
+      symlinkSync(outside, join(repo, "escape"));
+      mkdirSync(join(repo, ".github", "workflows"), { recursive: true });
+      writeFileSync(join(repo, ".github", "workflows", "ci.yml"), "on: push\n");
+      writeFileSync(join(repo, "package.json"), "{}\n");
+      git("-C", repo, "add", "escape", ".github", "package.json");
+      git(
+        ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fs"],
+      );
+      const { status, stderr, out } = runTask("fs-floor.turns.json");
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      const events = expectWellFormedLog(out.runId);
+      const of = (type: string) =>
+        events.filter((e) => e.type === type).map((e) => e.payload);
+      const victim = realpathSync(join(outside, "victim.txt"));
+      const workspace = join(stateDir, "workspaces", out.runId);
+      expect(of("permission.evaluated")).toMatchObject([
+        {
+          ...{ action: "fs.delete", tier: "alwaysAsk" },
+          ...{ ruleId: "always-ask.delete-outside", target: { value: victim } },
+        },
+        {
+          ...{ action: "fs.delete", tier: "alwaysAsk" },
+          ...{ ruleId: "always-ask.delete-outside", target: { value: victim } },
+        },
+        {
+          action: "fs.edit",
+          tier: "alwaysAsk",
+          ruleId: "always-ask.ring0-path",
+        },
+        {
+          action: "fs.edit",
+          tier: "alwaysAsk",
+          ruleId: "always-ask.ring0-path",
+        },
+      ]);
+      expect(of("permission.answered")).toMatchObject(
+        Array(4).fill({ answer: "denied", by: "noPresence" }),
+      );
+      expect(of("loop.tool.called").map((p) => p["status"])).toEqual(
+        Array(4).fill("denied"),
+      );
+      expect(readFileSync(victim, "utf8")).toBe("keep\n");
+      const ci = join(workspace, ".github", "workflows", "ci.yml");
+      expect(readFileSync(ci, "utf8")).toBe("on: push\n");
+      expect(readFileSync(join(workspace, "package.json"), "utf8")).toBe(
+        "{}\n",
+      );
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "denies a comment that carries a token, without asking or logging it (guard 1)",
+    { timeout: T },
+    () => {
+      // Built at run time, so no fixture holds a credential-shaped literal.
+      const token = "ghp_" + "a1B2".repeat(9);
+      const turns = join(tmp, "exfiltration.turns.json");
+      const body = "Done. Use " + token + " to check.\n";
+      writeFileSync(
+        turns,
+        JSON.stringify([
+          {
+            text: "Commenting.",
+            toolCalls: [
+              {
+                id: "call-1",
+                name: "comment",
+                input: { destination: "origin", body },
+              },
+            ],
+            claimsDone: false,
+          },
+          { text: "The comment was denied.", toolCalls: [], claimsDone: true },
+        ]),
+      );
+      const { status, stdout, stderr, out } = runTask(turns);
+      expect(status, stderr).toBe(0);
+      expect(out.terminal).toEqual({ kind: "completed" });
+      expect(stdout + stderr).not.toContain(token);
+      const events = expectWellFormedLog(out.runId);
+      const types = events.map((e) => e.type);
+      expect(types).not.toContain("permission.asked");
+      expect(types).not.toContain("permission.answered");
+      const evaluated = events.find((e) => e.type === "permission.evaluated");
+      expect(evaluated?.payload).toMatchObject({
+        action: "comment",
+        tier: "deny",
+        guard: "exfiltration",
+        ruleId: "exfiltration.credential",
+        reason: "body carries a GitHub token",
+        target: {
+          kind: "remote",
+          value: "[withheld: credential-shaped content]",
+          detail: "[withheld: credential-shaped content]",
+        },
+      });
+      const called = events.find((e) => e.type === "loop.tool.called");
+      expect(called?.payload["status"]).toBe("denied");
+      // Only the engine's own logged request holds the token; no event made from it does.
+      const holders = events.filter((e) =>
+        JSON.stringify(e.payload).includes(token),
+      );
+      expect(holders.map((e) => e.type)).toEqual(["message.appended"]);
+      expect(holders[0]?.payload["message"]).toMatchObject({
+        role: "assistant",
+      });
+      const tool = deriveMessages(events, out.runId).find(
+        (m) => m.role === "tool",
+      );
+      expect(tool?.text).toBe(
+        "denied: body carries a GitHub token (exfiltration.credential)",
+      );
       expectReplayMatches(out.runId, events);
     },
   );

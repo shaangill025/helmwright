@@ -203,6 +203,61 @@ describe("broker with the run's log", () => {
   );
 
   it(
+    "rejects an ID reused after an approved ask with a view (N-e)",
+    { timeout: T },
+    async () => {
+      const presence: Presence = {
+        ask: () =>
+          Promise.resolve({ answer: "approved", by: "tty", viewed: true }),
+      };
+      const { argv } = install("call-1", "a.txt").input as { argv: string[] };
+      const long = call("execute", {
+        argv: [...argv.slice(0, 2), (argv[2] ?? "") + "\t".repeat(200)],
+      });
+      const calls = [long, write("call-1", "b.txt")];
+      const outcome = await run(engineOf(calls), log, undefined, presence);
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      expect(existsSync(join(workspace, "a.txt"))).toBe(true);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      const events = log.events({ runId: "run-1" });
+      const ruled = events.filter((e) => e.type.startsWith("permission."));
+      expect(ruled.map((e) => e.type)).toEqual([
+        "permission.evaluated",
+        "permission.asked",
+        "permission.answered",
+        "permission.rejected",
+      ]);
+      expect(ruled[1]?.payload["viewSha256"]).toMatch(/^[0-9a-f]{64}$/);
+      expect(permissionFaults(events)).toEqual([]);
+    },
+  );
+
+  it(
+    "rejects an ID reused after an unloggable first call (N-e)",
+    { timeout: T },
+    async () => {
+      // A first call whose ID cannot be logged is denied with no ruling (LOG_DENIED).
+      const calls = [write("call 1", "a.txt"), write("call 1", "b.txt")];
+      const outcome = await run(engineOf(calls));
+      expect(outcome.terminal).toEqual({ kind: "completed" });
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+      expect(existsSync(join(workspace, "b.txt"))).toBe(false);
+      const events = log.events({ runId: "run-1" });
+      expect(events.filter((e) => e.type.startsWith("permission."))).toEqual(
+        [],
+      );
+      const tools = deriveMessages(events, "run-1").flatMap((m) =>
+        m.role === "tool" ? [m.text] : [],
+      );
+      expect(tools).toEqual([
+        "denied: the permission ruling cannot be logged",
+        "denied: the permission ruling cannot be logged",
+      ]);
+      expect(permissionFaults(events)).toEqual([]);
+    },
+  );
+
+  it(
     "runs no later call once a ruling cannot be logged (SF-1)",
     { timeout: T },
     async () => {
