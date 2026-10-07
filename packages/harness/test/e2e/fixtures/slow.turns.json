@@ -1,0 +1,8 @@
+[
+  {
+    "text": "This turn arrives too late.",
+    "toolCalls": [],
+    "claimsDone": true,
+    "delayMs": 10000
+  }
+]

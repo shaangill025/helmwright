@@ -1,0 +1,12 @@
+[
+  {
+    "text": "Deploying.",
+    "toolCalls": [{ "id": "call-1", "name": "deploy_production", "input": {} }],
+    "claimsDone": false
+  },
+  {
+    "text": "The deploy action was denied.",
+    "toolCalls": [],
+    "claimsDone": false
+  }
+]

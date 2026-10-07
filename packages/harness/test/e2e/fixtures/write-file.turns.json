@@ -1,0 +1,14 @@
+[
+  {
+    "text": "Writing out.txt in the workspace.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": { "argv": ["sh", "-c", "echo hi > out.txt"] }
+      }
+    ],
+    "claimsDone": false
+  },
+  { "text": "Wrote out.txt.", "toolCalls": [], "claimsDone": true }
+]
