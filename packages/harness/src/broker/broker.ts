@@ -230,9 +230,10 @@ function askView(values: readonly Shown[]): string | undefined {
 }
 
 /**
- * SF2, R2: `text` (escaped) with each run of more than two spaces as ␠×<count> and
- * of more than two of one escape as <escape>×<count>; a literal ␠ or × is escaped,
- * so every marker is one. Quoted as a JSON string literal.
+ * SF2, R2: `text` (escaped) with each run of more than two spaces as ␠×<count>× and
+ * of more than two of one escape as <escape>×<count>×; a literal ␠ or × is escaped,
+ * so every marker is one, and the closing × keeps a following digit out of the
+ * count. Quoted as a JSON string literal.
  */
 function marked(text: string): string {
   let out = "";
@@ -240,7 +241,8 @@ function marked(text: string): string {
   let n = 0;
   const flush = () => {
     const run = n > 2 && (unit === " " || unit.startsWith("\\"));
-    out += run ? (unit === " " ? "␠" : unit) + "×" + String(n) : unit.repeat(n);
+    const mark = (unit === " " ? "␠" : unit) + "×" + String(n) + "×";
+    out += run ? mark : unit.repeat(n);
   };
   for (const [u] of text.matchAll(UNIT)) {
     const shown = u === "␠" ? "\\u{2420}" : u === "×" ? "\\u{d7}" : u;

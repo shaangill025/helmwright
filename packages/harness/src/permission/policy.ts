@@ -173,7 +173,7 @@ export function deepFreeze<T>(value: T): T {
  * marks cannot stack over text.
  */
 const UNPRINTABLE =
-  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}⠀\\]|(?<=\p{M}{2})\p{M}/gu;
+  /[\p{Cc}\p{Cf}\p{Z}\p{Cs}\p{Co}\p{Cn}\p{Default_Ignorable_Code_Point}\u{2800}\\]|(?<=\p{M}{2})\p{M}/gu;
 /**
  * Shown text: every unprintable code point but U+0020 becomes `\u{…}`, so it cannot
  * hide or reorder text, and `\` becomes `\\`, so literal `\u{…}` text stays distinct.
