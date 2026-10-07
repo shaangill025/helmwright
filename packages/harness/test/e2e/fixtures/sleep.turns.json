@@ -1,0 +1,14 @@
+[
+  {
+    "text": "Running a long command.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": { "argv": ["sleep", "30"] }
+      }
+    ],
+    "claimsDone": false
+  },
+  { "text": "Never reached.", "toolCalls": [], "claimsDone": true }
+]

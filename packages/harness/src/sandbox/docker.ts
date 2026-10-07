@@ -536,8 +536,15 @@ async function dockerQuiet(docker: Docker, args: string[]): Promise<void> {
   }
 }
 
-/** Runs a docker command for its stdout. Bounded; rejects on failure. */
-async function dockerOutput(docker: Docker, args: string[]): Promise<string> {
+/**
+ * Runs a docker command for its stdout. Bounded; rejects on failure, unless it
+ * failed and every stderr line matches `tolerated`.
+ */
+async function dockerOutput(
+  docker: Docker,
+  args: string[],
+  tolerated?: RegExp,
+): Promise<string> {
   const proc = startDocker(docker, args, 1_048_576);
   if (!(await within(proc.closed, docker.ms))) {
     proc.child.kill("SIGKILL");
@@ -545,8 +552,14 @@ async function dockerOutput(docker: Docker, args: string[]): Promise<string> {
     throw new Error(`docker ${String(args[0])} timed out`);
   }
   const code = await proc.closed;
-  if (code !== 0) {
-    const why = `exit ${String(code)}: ${bounded(proc.stderr.text())}`;
+  const stderr = proc.stderr.text();
+  const lines = stderr.split("\n").filter((l) => l.trim() !== "");
+  const benign =
+    tolerated !== undefined &&
+    lines.length > 0 &&
+    lines.every((l) => tolerated.test(l));
+  if (code !== 0 && !benign) {
+    const why = `exit ${String(code)}: ${bounded(stderr)}`;
     throw new Error(`docker ${String(args[0])} failed (${why})`);
   }
   return proc.stdout.text();
@@ -587,8 +600,9 @@ function alive(pid: number): boolean {
 /**
  * Force-removes containers named `helmwright-sandbox-…` and labelled SANDBOX_LABEL that
  * belong to this process's instance or to an owner pid that no longer runs. Resolves
- * with how many were removed.
- * @throws Error if docker cannot list or remove them.
+ * with how many were removed (by this call or a concurrent one: a container already
+ * gone or already being removed counts as reaped). Idempotent.
+ * @throws Error if docker cannot list them, or fails to remove one for another reason.
  */
 export async function reapSandboxContainers(
   deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
@@ -615,7 +629,10 @@ export async function reapSandboxContainers(
       ? [id]
       : [];
   });
-  if (ids.length > 0) await dockerOutput(docker, ["rm", "-f", ...ids]);
+  // Another reaper (a concurrent run) may be removing or have removed the same one.
+  const gone =
+    /^Error response from daemon: (No such container: \S+|removal of container \S+ is already in progress)\s*$/;
+  if (ids.length > 0) await dockerOutput(docker, ["rm", "-f", ...ids], gone);
   return ids.length;
 }
 

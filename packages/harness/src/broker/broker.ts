@@ -4,7 +4,11 @@ import type {
   ToolResult,
   ToolSpec,
 } from "../loop/types.ts";
-import { runInSandbox, type SandboxResult } from "../sandbox/docker.ts";
+import {
+  dockerRunArgs,
+  runInSandbox,
+  type SandboxResult,
+} from "../sandbox/docker.ts";
 
 /** Where the broker's effects happen: one run's sandboxed workspace. */
 export interface BrokerContext {
@@ -104,8 +108,14 @@ const ACTIONS = new Map<string, Action>([[execute.spec.name, execute]]);
 /**
  * Typed action dispatch: the tool name is the action name. Unknown actions and
  * invalid input are denied before any effect; nothing else reaches the sandbox.
+ * @throws RangeError | TypeError if `context` breaks the sandbox's image or
+ * workspace rules (checked up front, so a run fails before it starts).
  */
 export function createBroker(context: BrokerContext): Broker {
+  dockerRunArgs(
+    { ...context, argv: ["true"], timeoutMs: EXECUTE_TIMEOUT_MS },
+    "helmwright-sandbox-check",
+  );
   return {
     tools: [...ACTIONS.values()].map((a) => a.spec),
     async executeTool(call: ToolCall, signal: AbortSignal) {
@@ -114,4 +124,13 @@ export function createBroker(context: BrokerContext): Broker {
       return action.handle(call.input, context, signal);
     },
   };
+}
+
+/**
+ * Checks a workspace against the sandbox's workspace rules before any docker
+ * work (no image needed). @throws RangeError | TypeError
+ */
+export function checkWorkspace(workspace: string, workspaceRoot: string): void {
+  const image = "sha256:" + "0".repeat(64); // shape-valid placeholder
+  createBroker({ image, workspace, workspaceRoot });
 }

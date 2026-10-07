@@ -1,0 +1,119 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  executeRun,
+  openSessionLog,
+  replayRun,
+  type Engine,
+  type EngineTurn,
+  type Message,
+  type SessionLog,
+} from "../../src/index.ts";
+
+const LIMITS = {
+  maxIterations: 5,
+  maxToolCallsPerIteration: 2,
+  timeoutMs: 60_000,
+  noProgressIterations: 5,
+};
+const DESYNC_AT_1 = /^FAILED: context desync at message index 1 /;
+let dir: string;
+let log: SessionLog;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "hw-run-"));
+  log = openSessionLog(join(dir, "session.sqlite"));
+});
+afterEach(() => {
+  log.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/**
+ * Three steps (tool call, tool call, done). During step `mutateAt` it mutates,
+ * in place, the tool-call input it returned at step 1, which the loop's
+ * in-memory assistant message (context index 1) shares.
+ */
+function mutatingEngine(mutateAt: number) {
+  const seen: Message[][] = [];
+  const input = { argv: ["echo", "logged"] };
+  const turns: EngineTurn[] = [
+    {
+      text: "1",
+      toolCalls: [{ id: "c1", name: "t", input }],
+      claimsDone: false,
+    },
+    {
+      text: "2",
+      toolCalls: [{ id: "c2", name: "t", input: 2 }],
+      claimsDone: false,
+    },
+    { text: "done", toolCalls: [], claimsDone: true },
+  ];
+  const engine: Engine = {
+    step(step) {
+      seen.push([...step.messages]);
+      if (seen.length === mutateAt) input.argv[1] = "mutated";
+      const turn = turns[seen.length - 1];
+      if (turn === undefined) throw new Error("script exhausted");
+      return Promise.resolve(turn);
+    },
+  };
+  return { engine, seen };
+}
+
+function run(engine: Engine, checkDesync: boolean) {
+  return executeRun({
+    ...{ log, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
+    ...{ title: "task", limits: LIMITS, started: {}, engine },
+    tools: [{ name: "t", description: "test tool" }],
+    executeTool: () => Promise.resolve({ status: "ok", output: "out" }),
+    checkDesync,
+  });
+}
+
+function terminated() {
+  const events = log.events({ runId: "run-1" });
+  expect(events.filter((e) => e.type === "run.terminated")).toHaveLength(1);
+  return events.at(-1);
+}
+
+describe("executeRun", () => {
+  it("gives the engine the logged context, not the loop's mutated copy", async () => {
+    const { engine, seen } = mutatingEngine(2);
+    const outcome = await run(engine, false);
+    expect(outcome.terminal).toEqual({ kind: "completed" });
+    expect(seen[2]?.[1]).toEqual({
+      role: "assistant",
+      text: "1",
+      toolCalls: [{ id: "c1", name: "t", input: { argv: ["echo", "logged"] } }],
+    });
+    // The recorded digest is of the loop's own transcript: replay disagrees.
+    expect(terminated()?.type).toBe("run.terminated");
+    log.close();
+    expect(replayRun("run-1", dir)).toMatchObject({ match: false });
+    log = openSessionLog(join(dir, "session.sqlite"));
+  });
+
+  it("fails the run at the next step when the desync check fires", async () => {
+    const { engine, seen } = mutatingEngine(2);
+    const outcome = await run(engine, true);
+    expect(seen).toHaveLength(2);
+    expect(outcome.summary).toMatch(DESYNC_AT_1);
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+  });
+
+  it("logs run.terminated failed when the final check throws", async () => {
+    const { engine, seen } = mutatingEngine(3);
+    const outcome = await run(engine, true);
+    expect(seen).toHaveLength(3);
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(outcome.summary).toMatch(DESYNC_AT_1);
+    expect(terminated()?.payload).toMatchObject({
+      terminal: outcome.terminal,
+      contextDigest: outcome.contextDigest,
+    });
+  });
+});
