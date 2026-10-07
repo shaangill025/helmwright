@@ -32,14 +32,17 @@ import {
 } from "../../src/index.ts";
 
 let worktree: string;
-/** The run's Ring 0 links of a worktree with none. */
+/** The run's Ring 0 links of the worktree, taken before its links were made. */
 let NONE: RunRing0;
+/** The run's Ring 0 links of the worktree, with its links. */
+let LINKED: RunRing0;
 beforeAll(() => {
   worktree = join(mkdtempSync(join(tmpdir(), "helmwright-policy-")), "wt");
   mkdirSync(join(worktree, "src", "gh", "workflows"), { recursive: true });
   mkdirSync(join(worktree, "hsrc", "loop"), { recursive: true });
   mkdirSync(join(worktree, "packages", "harness"), { recursive: true });
   mkdirSync(join(worktree, "foo", "evals"), { recursive: true });
+  NONE = runRing0(worktree, BASE);
   // SF1: links at a leading part of a Ring 0 glob.
   symlinkSync("../../hsrc", join(worktree, "packages", "harness", "src"));
   symlinkSync("../foo", join(worktree, "packages", "foo"));
@@ -55,9 +58,7 @@ beforeAll(() => {
   // A link outside the worktree that leads into it.
   symlinkSync("wt", join(worktree, "..", "alias"));
   symlinkSync("src/esc\u001b[2Kname.ts", join(worktree, "to-esc"));
-  const empty = join(worktree, "..", "empty");
-  mkdirSync(empty);
-  NONE = runRing0(empty, BASE);
+  LINKED = runRing0(worktree, BASE);
 });
 afterAll(() => {
   rmSync(join(worktree, ".."), { recursive: true, force: true });
@@ -73,9 +74,16 @@ const commit = (ref: string, ...paths: string[]) => ({ ref, paths });
 const req = (action: string, input: unknown, runId = "r") => {
   return { action, input, worktree, runId, extraRing0Paths: NONE };
 };
+/** NONE, or for a valid policy with its own Ring 0 paths, its `runRing0` (SF-1). */
+const ring0For = (policy: unknown): RunRing0 => {
+  const own = (policy as Partial<PermissionPolicy>).ring0Paths ?? [];
+  if (own.every((glob) => RING0_PATHS.includes(glob))) return NONE;
+  return validatePermissionPolicy(policy) ? runRing0(worktree, policy) : NONE;
+};
 // Policies are unknown on purpose: evaluate re-validates the policy it is given.
 const verdict = (action: string, input: unknown, policy: unknown = BASE) => {
-  const request = req(action, input, "run_01");
+  const extraRing0Paths = ring0For(policy);
+  const request = { ...req(action, input, "run_01"), extraRing0Paths };
   const { tier, ruleId } = evaluate(policy as PermissionPolicy, request);
   return { tier, ruleId };
 };
@@ -143,7 +151,8 @@ describe("evaluate with the default policy", () => {
     // Paths that cannot be checked file by file count as Ring 0.
     ["commit", commit(branch, "."), "alwaysAsk", "always-ask.ring0-path"],
     ["commit", commit(branch, "src"), "alwaysAsk", "always-ask.ring0-path"],
-    ["commit", commit(branch, "../x"), "alwaysAsk", "always-ask.ring0-path"],
+    // SF-5: a commit stages worktree paths only.
+    ["commit", commit(branch, "../x"), "deny", "schema.invalid-input"],
     ["config.set", set("friction.defaultIntensity"), "ask", "default.ask"],
     ["deploy", { destination: "prod" }, "alwaysAsk", "always-ask.deploy"],
     ["fs.delete", p("../x"), "alwaysAsk", "always-ask.delete-outside"],
@@ -718,7 +727,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
   });
 
   it("adds the target of a link at a leading part of a Ring 0 glob (SF1)", () => {
-    const extraRing0Paths = ring0LinkTargets(worktree, RING0_PATHS);
+    const extraRing0Paths = LINKED;
     expect(extraRing0Paths).toEqual(
       expect.arrayContaining(["hsrc/**", "foo/**"]),
     );
@@ -755,16 +764,8 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
     ).toBe("deny");
   });
 
-  it("accepts a 128-character extra Ring 0 glob", () => {
-    const request = { action: "fs.read", input: p("src/a.ts"), worktree };
-    const extraRing0Paths = ["a".repeat(128), "**"] as unknown as RunRing0;
-    expect(
-      evaluate(BASE, { ...request, runId: "r", extraRing0Paths }).tier,
-    ).toBe("allow");
-  });
-
   it("treats the run's extra Ring 0 paths as Ring 0", () => {
-    const extraRing0Paths = ring0LinkTargets(worktree, RING0_PATHS);
+    const extraRing0Paths = LINKED;
     const input = commit(branch, "src/pkg.json");
     const request = req("commit", input, "run_01");
     expect(evaluate(BASE, request).tier).toBe("allow");
@@ -816,10 +817,14 @@ describe("Ring 0 link chains (SF2)", () => {
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
   });
+  /** Each tree's `runRing0`, taken before its links were made. */
+  const before = new Map<string, RunRing0>();
+  const fresh = (wt: string) => before.get(wt) ?? NONE;
   /** A fresh worktree with a config directory and the given links. */
   const tree = (name: string, links: [string, string][]) => {
     const wt = join(dir, name);
     mkdirSync(join(wt, "config"), { recursive: true });
+    before.set(wt, runRing0(wt, BASE));
     for (const [from, target] of links) {
       mkdirSync(dirname(join(wt, from)), { recursive: true });
       symlinkSync(target, join(wt, from));
@@ -832,12 +837,12 @@ describe("Ring 0 link chains (SF2)", () => {
       ["package.json", "a"],
       ["a", "config/pkg.json"],
     ]);
-    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    const extraRing0Paths = runRing0(wt, BASE);
     expect([...extraRing0Paths].sort()).toEqual(["a/**", "config/pkg.json/**"]);
     rmSync(join(wt, "a"));
     writeFileSync(join(wt, "a"), "");
     const request = req("commit", commit(branch, "a"), "run_01");
-    const run = { ...request, worktree: wt };
+    const run = { ...request, worktree: wt, extraRing0Paths: fresh(wt) };
     expect(evaluate(BASE, run).tier).toBe("allow");
     expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
       tier: "alwaysAsk",
@@ -878,12 +883,12 @@ describe("Ring 0 link chains (SF2)", () => {
       ["package.json", "d/../config/pkg.json"],
     ]);
     mkdirSync(join(wt, "sub", "inner"), { recursive: true });
-    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    const extraRing0Paths = runRing0(wt, BASE);
     expect([...extraRing0Paths].sort()).toEqual([
       "d/**",
       "sub/config/pkg.json/**",
     ]);
-    const run = { worktree: wt, runId: "run_01", extraRing0Paths: NONE };
+    const run = { worktree: wt, runId: "run_01", extraRing0Paths: fresh(wt) };
     for (const [action, input] of [
       ["fs.edit", p("sub/config/pkg.json")],
       ["commit", commit(branch, "sub/config/pkg.json")],
@@ -905,7 +910,7 @@ describe("Ring 0 link chains (SF2)", () => {
   it("maps an absolute target under /workspace onto the worktree (SF-B)", () => {
     const wt = tree("f", [["packages/harness/src", "/workspace/hsrc"]]);
     mkdirSync(join(wt, "hsrc", "loop"), { recursive: true });
-    const extraRing0Paths = ring0LinkTargets(wt, RING0_PATHS);
+    const extraRing0Paths = runRing0(wt, BASE);
     expect(extraRing0Paths).toEqual(["hsrc/**"]);
     const input = p("hsrc/loop/x.ts");
     const run = {
@@ -913,7 +918,7 @@ describe("Ring 0 link chains (SF2)", () => {
       input,
       worktree: wt,
       runId: "run_01",
-      extraRing0Paths: NONE,
+      extraRing0Paths: fresh(wt),
     };
     expect(evaluate(BASE, run).tier).toBe("allow");
     expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
@@ -944,6 +949,34 @@ describe("Ring 0 link chains (SF2)", () => {
     expect(runRing0(wt, BASE)).toEqual(["config/pkg.json/**"]);
     const invalid = { ...BASE, ring0Paths: ["../x"] } as PermissionPolicy;
     expect(() => runRing0(wt, invalid)).toThrow(TypeError);
+  });
+
+  it("refuses a run with over 1024 link targets or 64 levels (SF-7)", () => {
+    const links = Array.from({ length: 1025 }, (_, i): [string, string] => [
+      `.github/l${String(i)}`,
+      `../t${String(i)}`,
+    ]);
+    expect(() => runRing0(tree("many", links), BASE)).toThrow(/over 1024/);
+    const deep = `.github/${"d/".repeat(65)}l`;
+    const wt = tree("deep", [[deep, join(dir, "outside", "y")]]);
+    expect(() => runRing0(wt, BASE)).toThrow(/deeper than 64/);
+  });
+
+  it("throws TypeError for a policy whose getter throws (SF-7)", () => {
+    const hostile = Object.defineProperty({ ...BASE }, "ring0Paths", {
+      get: () => {
+        throw new Error("getter");
+      },
+      enumerable: true,
+    });
+    const wt = tree("hostile", []);
+    expect(() => runRing0(wt, hostile)).toThrow(TypeError);
+    expect(() => runRing0(wt, hostile)).toThrow("invalid permission policy");
+  });
+
+  it("accepts a 128-character link target glob", () => {
+    const wt = tree("long", [["package.json", "a".repeat(125)]]);
+    expect(runRing0(wt, BASE)).toEqual(["a".repeat(125) + "/**"]);
   });
 
   it("throws on a link loop rather than walking it", () => {
@@ -1033,5 +1066,69 @@ describe("verdicts carry what the event writer needs (B9b-2a)", () => {
       guard: "schema",
       ruleId: "schema.invalid-input",
     });
+  });
+});
+
+describe("security review of B9b-2a", () => {
+  const run = (action: string, input: unknown) =>
+    evaluate(BASE, req(action, input, "run_01"));
+  const read = (extra: unknown, policy: unknown = BASE) =>
+    evaluate(policy as PermissionPolicy, {
+      ...req("fs.read", p("src/a.ts")),
+      extraRing0Paths: extra as RunRing0,
+    });
+  const invalid = { kind: "rejected", ruleId: "schema.invalid-input" };
+
+  it("accepts only runRing0 of this worktree and a policy it covers (SF-1)", () => {
+    const other = join(worktree, "..", "other");
+    mkdirSync(other);
+    const ring0Paths = [...BASE.ring0Paths, "docs/**"];
+    const own = resolvePolicy(BASE, { ...BASE, version: "own-2", ring0Paths });
+    const linked = ring0LinkTargets(worktree, RING0_PATHS);
+    for (const forged of [[], linked, runRing0(other, BASE)]) {
+      expect(read(forged)).toMatchObject(invalid);
+    }
+    expect(read(LINKED, own)).toMatchObject(invalid);
+    const issued = runRing0(worktree, own);
+    expect(read(issued, own).kind).toBe("evaluated");
+    expect(read(issued).kind).toBe("evaluated");
+  });
+
+  it("denies a config value nested over 64 deep (SF-3)", () => {
+    const nest = (depth: number): unknown =>
+      depth === 0 ? 1 : [nest(depth - 1)];
+    const deep = run("config.set", set("ui.theme", nest(100)));
+    expect(deep).toMatchObject(invalid);
+    expect(run("config.set", set("ui.theme", nest(64))).kind).toBe("evaluated");
+  });
+
+  it.each([
+    [{ "10": 1, "9": 2 }, '{"10":1,"9":2}'],
+    [
+      JSON.parse('{"b":[{"__proto__":1,"a":[2,{"z":0,"10":3}]}],"a":null}'),
+      '{"a":null,"b":[{"__proto__":1,"a":[2,{"10":3,"z":0}]}]}',
+    ],
+  ])("shows %j with keys in UTF-16 order (SF-4)", (value, json) => {
+    expect(run("config.set", set("ui.theme", value)).target?.detail).toBe(json);
+  });
+
+  it.each(["*", ":(glob)**", ":!x", "src/a?.ts", "src/[a].ts", "src\\a.ts"])(
+    "denies committing %j, which git reads as pathspec magic (SF-5)",
+    (path) => {
+      const result = run("commit", commit(branch, "src/a.ts", path));
+      expect(result).toMatchObject(invalid);
+      expect(result.reason).toMatch(/pathspec magic/);
+    },
+  );
+
+  it("carries a commit's resolved worktree-relative paths, frozen (SF-5, N1)", () => {
+    const input = commit(branch, "src/a.ts", "/workspace/src/pkg.json", ".");
+    const committed = run("commit", input);
+    expect(committed.paths).toEqual(["src/a.ts", "src/pkg.json", "."]);
+    expect(run("fs.edit", p("src/a.ts")).paths).toBeUndefined();
+    const { target, paths, input: ruled } = committed;
+    for (const part of [committed, target, paths, ruled, run("shell", {})]) {
+      expect(Object.isFrozen(part)).toBe(true);
+    }
   });
 });

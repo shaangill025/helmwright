@@ -16,6 +16,7 @@ import {
   permissionEvents,
   runRing0,
   type PermissionAnswer,
+  type PermissionLogContext,
   type PermissionRequest,
   type PermissionVerdict,
   type RunRing0,
@@ -153,18 +154,35 @@ describe("permissionEvents", () => {
     );
     expect(b).toBe(a);
     expect(hash({ setting: "ui.theme", value: { b: 0 } })).not.toBe(a);
+    // SF-4: integer-like keys sort as strings too.
+    expect(hash({ setting: "ui.theme", value: { "10": 1, "9": 2 } })).toBe(
+      sha256('{"setting":"ui.theme","value":{"10":1,"9":2}}'),
+    );
   });
 
-  it("cuts a target value to 8192 code points and marks it truncated", () => {
+  it("logs a target cut before escaping, with the marker (N4, N5)", () => {
     const smile = (n: number) => x("echo", "\u{1f600}".repeat(n));
-    const long = evaluated(rule("execute", smile(9000))).target;
-    expect(Array.from(long.value)).toHaveLength(8192);
-    expect(long.value.startsWith('["echo","\u{1f600}')).toBe(true);
-    expect(long.truncated).toBe(true);
-    // 8000 + 11 code points fit.
-    const short = evaluated(rule("execute", smile(8000))).target;
-    expect(Array.from(short.value)).toHaveLength(8011);
+    expect(evaluated(rule("execute", smile(9000))).target).toEqual({
+      kind: "argv",
+      value: '["echo","' + "\u{1f600}".repeat(503) + "…[truncated]",
+      truncated: true,
+    });
+    // 500 + 11 code points fit.
+    const short = evaluated(rule("execute", smile(500))).target;
+    expect(Array.from(short.value)).toHaveLength(511);
     expect(short.truncated).toBeUndefined();
+    const packages = ["a".repeat(600)];
+    expect(evaluated(rule("deps.add", { packages })).target).toMatchObject({
+      value: '["' + "a".repeat(510) + "…[truncated]",
+      truncated: true,
+    });
+    // Escaped, it would not fit, so the raw text is cut to 908 code points.
+    const destination = "a" + "\ufe0f".repeat(2000);
+    expect(evaluated(rule("deploy", { destination })).target).toEqual({
+      kind: "remote",
+      value: "a" + "\\u{fe0f}".repeat(907) + "…[truncated]",
+      truncated: true,
+    });
     const body = { destination: "github.com", body: "y".repeat(900) };
     const { target } = evaluated(rule("comment", body));
     expect(target.detail).toMatch(/…\[truncated\]$/);
@@ -246,5 +264,54 @@ describe("permissionAsked and permissionAnswered", () => {
     expect(() => permissionAnswered("toolu_1", given, waitMs)).toThrow(
       PermissionLogError,
     );
+  });
+});
+
+describe("security review of B9b-2a", () => {
+  const allowed = () => rule("execute", x("ls"));
+  const fails = (run: () => unknown) => {
+    expect(run).toThrow(PermissionLogError);
+  };
+  const getter = (): string => {
+    throw new Error("getter");
+  };
+
+  it("throws PermissionLogError for anything it cannot log (SF-3, N3)", () => {
+    const thrower = Object.defineProperty({}, "kind", { get: getter });
+    const noInput = { ...allowed(), input: undefined };
+    const allowing = { ...rule("shell", {}), tier: "allow" };
+    for (const v of [null, { kind: "evaluated" }, noInput, thrower, allowing]) {
+      fails(() => permissionEvents(v as PermissionVerdict, ctx));
+    }
+    const noCtx = null as unknown as PermissionLogContext;
+    fails(() => permissionEvents(allowed(), noCtx));
+    fails(() => permissionAsked("toolu_1", "tty", 1 as unknown as string));
+    const answer = Object.defineProperty({ by: "tty" }, "answer", {
+      get: getter,
+    });
+    fails(() => permissionAnswered("t", answer as PermissionAnswer, 0));
+  });
+
+  it("logs only the answer and who gave it, frozen (SF-2, N2)", () => {
+    const evil = { answer: "denied", by: "tty", toolCallId: "evil" } as const;
+    for (const answer of [evil, { ...evil, kind: "permission.asked" }]) {
+      const { payload } = permissionAnswered("toolu_1", answer, 5);
+      const toolCallId = "toolu_1";
+      expect(payload).toMatchObject({
+        kind: "permission.answered",
+        toolCallId,
+      });
+    }
+    const events = permissionEvents(allowed(), ctx);
+    const rejected = permissionEvents(rule("shell", {}), ctx);
+    expect(Object.isFrozen(events)).toBe(true);
+    for (const e of [
+      ...events,
+      ...rejected,
+      permissionAsked("t", "tty", "?"),
+    ]) {
+      expect(Object.isFrozen(e) && Object.isFrozen(e.payload)).toBe(true);
+    }
+    expect(Object.isFrozen(evaluated(allowed()).target)).toBe(true);
   });
 });
