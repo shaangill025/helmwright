@@ -67,8 +67,14 @@ function lexical(
     : { base, relative: posix.relative(base, host) };
 }
 
-/** The run's extra Ring 0 globs. Only `ring0LinkTargets` (and so `runRing0`) makes one. */
+/** The run's extra Ring 0 globs. Only `runRing0` makes one; `evaluate` checks it (SF-1). */
 export type RunRing0 = readonly string[] & { readonly __brand: "RunRing0" };
+
+/** Each array `runRing0` issued, with the worktree realpath and the globs it walked. */
+const ISSUED = new WeakMap<
+  object,
+  { readonly worktreeReal: string; readonly ring0Paths: readonly string[] }
+>();
 
 /** One action call to rule on. Every field is untrusted and read once. */
 export interface PermissionRequest {
@@ -77,7 +83,7 @@ export interface PermissionRequest {
   /** Host path of the run's worktree, mounted at /workspace in the sandbox. */
   readonly worktree: string;
   readonly runId: string;
-  /** `runRing0` of the worktree at run start (SF3); an invalid value denies. */
+  /** `runRing0` of this worktree and policy at run start (SF3); any other value denies. */
   readonly extraRing0Paths: RunRing0;
 }
 
@@ -87,7 +93,7 @@ export interface PermissionTarget {
   readonly value: string;
   /** The payload to show: the spend cap, a config value or a comment body; bounded and escaped. */
   readonly detail?: string;
-  /** Present when `detail` was cut to fit. */
+  /** Present when `value` or `detail` was cut (raw, before escaping) and marked to fit. */
   readonly truncated?: true;
 }
 
@@ -108,6 +114,12 @@ export interface EvaluatedVerdict {
   readonly target: PermissionTarget;
   /** A path target's resolved host path, unescaped (SF4). Handlers act on it, never on `target.value`. */
   readonly path?: string;
+  /**
+   * A commit's resolved worktree-relative paths, unescaped and without pathspec magic
+   * (SF-5); `.` is the root. The B9b-2b commit handler stages only these, after `--` and
+   * with `--literal-pathspecs` (or `GIT_LITERAL_PATHSPECS=1`).
+   */
+  readonly paths?: readonly string[];
   /** The frozen snapshot of the input that was ruled on. Handlers act on it, never on the request. */
   readonly input: Readonly<Record<string, unknown>>;
   readonly requestedName?: undefined;
@@ -125,13 +137,14 @@ export interface RejectedVerdict {
   readonly requestedName?: string;
   readonly target?: undefined;
   readonly path?: undefined;
+  readonly paths?: undefined;
   readonly input?: undefined;
 }
 
 export type PermissionVerdict = EvaluatedVerdict | RejectedVerdict;
 
 /** Freezes `value` and everything reachable from it. */
-function deepFreeze<T>(value: T): T {
+export function deepFreeze<T>(value: T): T {
   if (typeof value === "object" && value !== null) {
     for (const item of Object.values(value) as unknown[]) deepFreeze(item);
     Object.freeze(value);
@@ -159,12 +172,27 @@ const escape = (text: string) =>
   );
 const MAX_DETAIL = 512;
 const TRUNCATED = "…[truncated]";
-/** The raw text cut to MAX_DETAIL code points (so no escape is split), escaped, then a marker if cut. */
-function bounded(text: string): string {
-  const points = Array.from(text);
-  return points.length <= MAX_DETAIL
-    ? escape(text)
-    : escape(points.slice(0, MAX_DETAIL).join("")) + TRUNCATED;
+/** The event schema's bound on shown text, in code points. */
+const MAX_SHOWN = 8192;
+/** Raw code points that always fit MAX_SHOWN once escaped (at most 9 each) with the marker. */
+const MAX_SHOWN_RAW = Math.floor((MAX_SHOWN - TRUNCATED.length) / 9);
+/** The raw text cut to `max` code points (so no escape is split), escaped, then a marker if cut; and if it was. */
+function bounded(text: string, max: number): readonly [string, boolean] {
+  let kept = "";
+  let count = 0;
+  for (const point of text) {
+    if (count === max) return [escape(kept) + TRUNCATED, true];
+    kept += point;
+    count += 1;
+  }
+  return [escape(text), false];
+}
+/** Escaped `text` if it fits MAX_SHOWN code points, else cut as `bounded` (N4). */
+function fitted(text: string): readonly [string, boolean] {
+  const shown = escape(text);
+  return Array.from(shown).length <= MAX_SHOWN
+    ? [shown, false]
+    : bounded(text, MAX_SHOWN_RAW);
 }
 
 /**
@@ -308,6 +336,8 @@ const MAX_BODY = 65_536;
 const MAX_CAP_USD = 1000;
 /** The whole input, as JSON (N4). */
 const MAX_INPUT_BYTES = 262_144;
+/** Nested arrays and objects in a `json` field (SF-3); `canonical` allows one more level. */
+const MAX_DEPTH = 64;
 // Checked per dot-separated segment, so no regex nests quantifiers.
 const SETTING_SEGMENT = /^[a-z][A-Za-z0-9]*$/;
 const isSetting = (s: string) =>
@@ -365,6 +395,11 @@ function pushBranch(ref: unknown): string | undefined {
   }
   return heads + name;
 }
+/** True if `v` nests at most `max` arrays or objects; it never descends past `max`. */
+const shallow = (v: unknown, max: number): boolean =>
+  typeof v !== "object" ||
+  v === null ||
+  (max > 0 && Object.values(v).every((item) => shallow(item, max - 1)));
 const isList = (v: unknown, item: (x: unknown) => boolean) =>
   Array.isArray(v) && v.length > 0 && v.length <= 1024 && v.every(item);
 /** True if `v` is a valid value of the field kind (a switch, not a dynamic lookup). */
@@ -391,7 +426,7 @@ function isField(kind: Field, v: unknown): boolean {
     case "usd":
       return typeof v === "number" && v > 0 && v <= MAX_CAP_USD;
     case "json":
-      return v !== undefined;
+      return v !== undefined && shallow(v, MAX_DEPTH);
   }
 }
 
@@ -493,7 +528,12 @@ interface Derived {
   readonly facts: Facts;
   readonly target: PermissionTarget;
   readonly path: string | undefined;
+  readonly paths: readonly string[] | undefined;
 }
+
+/** git pathspec magic: glob characters, the glob escape, and the `:` magic prefix. */
+const hasMagic = (path: string) =>
+  path.startsWith(":") || ["*", "?", "[", "\\"].some((c) => path.includes(c));
 
 /**
  * Normalizes the target and derives the facts.
@@ -534,6 +574,19 @@ function factsFor(
   };
   const runBranch = `helmwright/run/${request.runId}`;
   const resolved = typeof path === "string" ? normalize(path) : undefined;
+  const named = Array.isArray(paths)
+    ? (paths as string[]).map((input) => [input, normalize(input)] as const)
+    : [];
+  // SF-5: what the commit handler stages, so each must be a literal path in the worktree.
+  const staged = named.map(([input, p]) => {
+    if (p.relative === undefined) {
+      throw new PathError(new TypeError(OUTSIDE));
+    }
+    if (hasMagic(input) || hasMagic(p.relative)) {
+      throw new PathError(new TypeError(MAGIC));
+    }
+    return p.relative === "" ? "." : p.relative;
+  });
   let ring0: Facts["ring0"];
   // An existing directory cannot be checked file by file, so editing or deleting it counts as Ring 0.
   if (
@@ -544,19 +597,16 @@ function factsFor(
   ) {
     ring0 = "path";
   } else if (
-    Array.isArray(paths) &&
-    (paths as string[])
-      .map((input) => [input, normalize(input)] as const)
-      .some(([input, p]) => {
-        // A path that is the root, a directory or not strictly inside the worktree cannot be
-        // checked file by file, so it counts as Ring 0 (B8 builds commit paths from the diff).
-        return (
-          !p.inside ||
-          p.relative === "" ||
-          isDirectory(p.real) ||
-          isRing0Write(input, p)
-        );
-      })
+    named.some(([input, p]) => {
+      // A path that is the root, a directory or not strictly inside the worktree cannot be
+      // checked file by file, so it counts as Ring 0 (B8 builds commit paths from the diff).
+      return (
+        !p.inside ||
+        p.relative === "" ||
+        isDirectory(p.real) ||
+        isRing0Write(input, p)
+      );
+    })
   ) {
     ring0 = "path";
   } else if (typeof setting === "string") {
@@ -577,13 +627,16 @@ function factsFor(
   const list = argv ?? fields["packages"];
   // A push shows the ref it pushes.
   const shownRef = requested === "push" ? pushBranch(ref) : ref;
-  const value =
+  const raw =
     resolved?.real ??
     (list === undefined
       ? [setting, fields["destination"], shownRef]
           .filter((s) => typeof s === "string")
           .join(" ")
-      : JSON.stringify(list));
+      : canonical(list));
+  // N5: an argv is cut like a detail; any other value only if it cannot fit (N4).
+  const [value, valueCut] =
+    list === undefined ? fitted(raw || "spend.cap") : bounded(raw, MAX_DETAIL);
   const detail =
     requested === "config.set"
       ? canonical(fields["value"])
@@ -592,9 +645,11 @@ function factsFor(
         : typeof body === "string"
           ? body
           : undefined;
-  const cut = detail !== undefined && Array.from(detail).length > MAX_DETAIL;
+  const [shown, cut] =
+    detail === undefined ? [undefined, false] : bounded(detail, MAX_DETAIL);
   return {
     path: resolved?.real,
+    paths: requested === "commit" ? staged : undefined,
     facts: {
       action: install ? "deps.add" : requested,
       requested,
@@ -604,15 +659,19 @@ function factsFor(
     },
     target: {
       kind: ACTIONS[requested][0],
-      value: escape(value || "spend.cap"),
-      ...(detail === undefined ? {} : { detail: bounded(detail) }),
-      ...(cut ? { truncated: true } : {}),
+      value,
+      ...(shown === undefined ? {} : { detail: shown }),
+      ...(cut || valueCut ? { truncated: true } : {}),
     },
   };
 }
 
-/** normalizePath's own messages, which name no path. */
+const OUTSIDE = "path is outside the worktree";
+const MAGIC = "path has pathspec magic (*, ?, [, a backslash, a leading :)";
+/** normalizePath's own messages and the commit checks', which name no path. */
 const PATH_MESSAGES = new Set([
+  OUTSIDE,
+  MAGIC,
   "path must be non-empty, without control characters",
   "path or path segment too long",
   "path does not resolve",
@@ -642,21 +701,18 @@ const reject = (
   ruleId: string,
   reason: string,
   requestedName: string | undefined,
-): RejectedVerdict => ({
-  kind: "rejected",
-  tier: "deny",
-  ruleId,
-  reason: escape(reason),
-  guard,
-  ...(requestedName === undefined ? {} : { requestedName }),
-});
+): RejectedVerdict =>
+  deepFreeze({
+    kind: "rejected",
+    tier: "deny",
+    ruleId,
+    reason: escape(reason),
+    guard,
+    ...(requestedName === undefined ? {} : { requestedName }),
+  });
 
-/** An action name as shown: cut to 64 code points, escaped, then a marker if cut. */
-function shownName(action: string): string {
-  const points = Array.from(action);
-  const more = points.length > 64 ? TRUNCATED : "";
-  return escape(points.slice(0, 64).join("")) + more;
-}
+/** An action name as shown: cut to 64 code points, escaped, then a marker if cut (N6: reads at most 65). */
+const shownName = (action: string): string => bounded(action, 64)[0];
 
 /** The first problem with a policy, or undefined if it is valid. */
 function policyProblem(policy: unknown): string | undefined {
@@ -675,11 +731,38 @@ function policyProblem(policy: unknown): string | undefined {
 /** The schema's pathGlob (permission-policy.schema.json): its pattern, then its `not` pattern. */
 const GLOB = /^[A-Za-z0-9._*/-]{1,128}$/;
 const NOT_GLOB = /^\/|\/\/|\/$|(?:^|\/)\.\.?(?:\/|$)|\*\*[^/]|[^/]\*\*|\*\*\//;
+/** The schema's bound on a glob list. */
+const MAX_GLOBS = 1024;
+/** Bounds on the Ring 0 link walk (SF-7). */
+const MAX_WALK_DEPTH = 64;
+const MAX_WALK_ENTRIES = 100_000;
 /** Bounded like the schema's lists; each is a valid Ring 0 glob. */
 const isGlobs = (v: unknown): v is string[] =>
   Array.isArray(v) &&
-  v.length <= 1024 &&
+  v.length <= MAX_GLOBS &&
   v.every((g) => typeof g === "string" && GLOB.test(g) && !NOT_GLOB.test(g));
+
+/** `given` if `runRing0` issued it (by identity) for this worktree and the policy's Ring 0 paths (SF-1). */
+function issuedFor(
+  given: unknown,
+  worktree: string,
+  policy: PermissionPolicy,
+): readonly string[] | undefined {
+  // A WeakMap lookup runs no Proxy trap and accepts any value.
+  const issued = ISSUED.get(given as object);
+  if (issued === undefined) return undefined;
+  let real: string;
+  try {
+    real = realpathSync.native(worktree);
+  } catch (error) {
+    throw new PathError(error);
+  }
+  const walked = issued.ring0Paths;
+  return real === issued.worktreeReal &&
+    policy.ring0Paths.every((glob) => walked.includes(glob))
+    ? (given as readonly string[])
+    : undefined;
+}
 
 /**
  * Rules on one action call. The always-ask floor (the policy's set united with the
@@ -714,22 +797,30 @@ export function evaluate(
       return reject("schema", "schema.unknown-action", "unknown action", name);
     }
     requested = action as PermissionAction;
+    const why = `invalid input for ${requested}`;
+    if (typeof worktree !== "string") {
+      return reject("schema", "schema.invalid-input", why, name);
+    }
+    // SF-1: checked by identity before anything is read from it.
+    const extra = issuedFor(extraRing0Paths, worktree, checked);
+    if (extra === undefined) {
+      const stale = `extraRing0Paths for ${requested} is not runRing0 of this worktree and policy`;
+      return reject("schema", "schema.invalid-input", stale, name);
+    }
     const fields = parseInput(ACTIONS[requested][1], snapshot(input));
-    const extra = snapshot(extraRing0Paths);
     if (
       fields === undefined ||
-      typeof worktree !== "string" ||
       typeof runId !== "string" ||
-      !RUN_ID.test(runId) ||
-      !isGlobs(extra)
+      !RUN_ID.test(runId)
     ) {
-      const why = `invalid input for ${requested}`;
       return reject("schema", "schema.invalid-input", why, name);
     }
     const run = { worktree, runId, extraRing0Paths: extra };
-    const { facts, target, path } = factsFor(checked, requested, fields, run);
+    const derived = factsFor(checked, requested, fields, run);
+    const { facts, target, path, paths } = derived;
     const { tier, ruleId, reason } = decide(checked, facts);
-    return {
+    // N1: frozen through, so no caller can change what was ruled on.
+    return deepFreeze({
       kind: "evaluated",
       tier,
       ruleId,
@@ -740,8 +831,9 @@ export function evaluate(
       policyVersion: checked.version,
       target,
       ...(path === undefined ? {} : { path }),
-      input: deepFreeze(fields),
-    };
+      ...(paths === undefined ? {} : { paths }),
+      input: fields,
+    });
   } catch (error) {
     // Fail closed with fixed text: a thrown value is never converted or inspected,
     // except our own PathError, which is recognized by identity.
@@ -821,15 +913,31 @@ export function resolvePolicy(
   return deepFreeze(override);
 }
 
-/** JSON with object keys sorted, so equal policies compare equal. */
-export const canonical = (value: unknown): string =>
-  JSON.stringify(value, (_key, v: unknown) =>
-    typeof v === "object" && v !== null && !Array.isArray(v)
-      ? Object.fromEntries(
-          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-        )
-      : v,
-  );
+/** What JSON.stringify leaves out of an object and writes as null in an array. */
+const skipped = (v: unknown) =>
+  v === undefined || typeof v === "function" || typeof v === "symbol";
+/**
+ * Canonical JSON in the style of RFC 8785 (JCS), so equal values compare and hash equal:
+ * no whitespace, object keys sorted by UTF-16 code units (integer-like keys too), strings
+ * and numbers as JSON.stringify writes them. `depth` is the nesting so far.
+ * @throws TypeError if `value` is not JSON; RangeError past 65 nested arrays and objects.
+ */
+export function canonical(value: unknown, depth = 0): string {
+  if (typeof value !== "object" || value === null) {
+    const text = JSON.stringify(value) as string | undefined;
+    if (text === undefined) throw new TypeError("value is not JSON");
+    return text;
+  }
+  if (depth > MAX_DEPTH) throw new RangeError("value nests too deep");
+  const next = (v: unknown) => (skipped(v) ? "null" : canonical(v, depth + 1));
+  if (Array.isArray(value))
+    return "[" + Array.from(value, next).join(",") + "]";
+  const members = Object.entries(value)
+    .filter(([, v]) => !skipped(v))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([key, v]) => JSON.stringify(key) + ":" + next(v));
+  return "{" + members.join(",") + "}";
+}
 
 /**
  * Resolves `relative` from `root` with `walkPath`: the worktree-relative paths of the
@@ -861,21 +969,29 @@ function linksOnTheWay(
  * one matches are walked; symlinked directories are not followed.
  * Targets are resolved one component at a time, as the kernel does; an absolute target
  * under `/workspace` is in the worktree.
- * @throws on an fs error, over 40 links, `..` after a missing component, or a target
- * whose name is not a valid Ring 0 glob (RangeError); refuse the run then.
+ * @throws on an fs error, over 40 links, `..` after a missing component; RangeError on a
+ * target name that is not a valid Ring 0 glob, over 1024 globs, or a walk over 64 deep
+ * or 100000 entries. Refuse the run then.
  */
 export function ring0LinkTargets(
   worktree: string,
   ring0Paths: readonly string[],
-): RunRing0 {
+): string[] {
   const root = realpathSync.native(worktree);
   // Each glob's leading parts, and the glob itself.
   const prefixes = ring0Paths.flatMap((glob) =>
     glob.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/")),
   );
   const found = new Set<string>();
-  const walk = (dir: string) => {
+  let entries = 0;
+  const walk = (dir: string, depth: number) => {
+    if (depth > MAX_WALK_DEPTH) {
+      throw new RangeError("Ring 0 walk is deeper than 64 directories");
+    }
     for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      if ((entries += 1) > MAX_WALK_ENTRIES) {
+        throw new RangeError("Ring 0 walk has over 100000 entries");
+      }
       const relative = dir === "" ? entry.name : `${dir}/${entry.name}`;
       if (entry.isSymbolicLink() && isRing0Path(relative, prefixes)) {
         const { links, final } = linksOnTheWay(root, relative);
@@ -886,12 +1002,15 @@ export function ring0LinkTargets(
         for (const link of links) {
           if (link !== relative) found.add(`${link}/**`);
         }
+        if (found.size > MAX_GLOBS) {
+          throw new RangeError("Ring 0 links have over 1024 targets");
+        }
       } else if (entry.isDirectory() && isRing0Path(relative, prefixes)) {
-        walk(relative);
+        walk(relative, depth + 1);
       }
     }
   };
-  walk("");
+  walk("", 0);
   // A name that is not a valid Ring 0 glob would deny every request in the run; refuse
   // the run here instead, with a clear reason.
   const unsupported = [...found].filter((g) => !isGlobs([g]));
@@ -900,19 +1019,28 @@ export function ring0LinkTargets(
       `Ring 0 link targets with unsupported names (ASCII letters, digits, ._-/ only, at most 128 characters): ${unsupported.map((g) => escape(g)).join(", ")}`,
     );
   }
-  return Object.freeze([...found]) as RunRing0;
+  return [...found];
 }
 
 /**
  * The run's extra Ring 0 globs (SF3): `ring0LinkTargets` of the worktree for the
- * policy's Ring 0 paths united with the floor. Call it at run start.
- * @throws TypeError on an invalid policy; as `ring0LinkTargets` otherwise.
+ * policy's Ring 0 paths united with the floor, recorded for `evaluate` (SF-1). Call it
+ * at run start.
+ * @throws TypeError on an invalid policy, or one that throws when read; as
+ * `ring0LinkTargets` otherwise.
  */
 export function runRing0(worktree: string, policy: PermissionPolicy): RunRing0 {
-  const checked = snapshot(policy);
-  if (policyProblem(checked) !== undefined) {
+  let ring0Paths: readonly string[];
+  try {
+    const checked = snapshot(policy);
+    if (policyProblem(checked) !== undefined) throw new TypeError();
+    const own = (checked as PermissionPolicy).ring0Paths;
+    ring0Paths = deepFreeze(union(own, FLOOR_PATHS));
+  } catch {
     throw new TypeError("invalid permission policy");
   }
-  const { ring0Paths } = checked as PermissionPolicy;
-  return ring0LinkTargets(worktree, union(ring0Paths, FLOOR_PATHS));
+  const worktreeReal = realpathSync.native(worktree);
+  const issued = deepFreeze(ring0LinkTargets(worktreeReal, ring0Paths));
+  ISSUED.set(issued, { worktreeReal, ring0Paths });
+  return issued as readonly string[] as RunRing0;
 }

@@ -9,7 +9,7 @@ import {
   type PermissionEvent,
   type PermissionRejected,
 } from "@helmwright/schema";
-import { canonical, type PermissionVerdict } from "./policy.ts";
+import { canonical, deepFreeze, type PermissionVerdict } from "./policy.ts";
 
 /** Who made the call: the run's agent and the engine's tool call ID. */
 export interface PermissionLogContext {
@@ -32,6 +32,9 @@ export type PermissionLogIssue = NonNullable<
   typeof validatePermissionEvent.errors
 >[number];
 
+/** The PermissionLogErrors made here, recognized by identity alone (no Proxy trap runs). */
+const logErrors = new WeakSet<object>();
+
 /**
  * A permission event cannot be logged, so the caller must deny the call (fail closed).
  * The message never contains the rejected value.
@@ -42,12 +45,21 @@ export class PermissionLogError extends Error {
     super(message);
     this.name = "PermissionLogError";
     this.issues = issues;
+    logErrors.add(this);
+  }
+}
+
+/** `build()`, with any other throw as a PermissionLogError with fixed text (SF-3). */
+function guarded<T>(what: string, build: () => T): T {
+  try {
+    return build();
+  } catch (error) {
+    if (logErrors.has(error as object)) throw error;
+    throw new PermissionLogError(`${what} cannot be logged`);
   }
 }
 
 const TOOL_CALL_ID = /^[!-~]{1,256}$/;
-/** The schema's `text` bound, in code points. */
-const MAX_TEXT = 8192;
 
 const sha256 = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex");
@@ -77,17 +89,25 @@ function entry<P extends PermissionEvent>(payload: P): PermissionLogEntry<P> {
   if (logged.type !== logged.payload.kind) {
     throw new PermissionLogError("event type differs from payload kind");
   }
-  return logged as PermissionLogEntry<P>;
+  // N2: frozen, so what is appended is what was validated.
+  return deepFreeze(logged) as PermissionLogEntry<P>;
 }
 
 /**
  * The events that record `verdict`, built from it alone: `permission.evaluated` for an
- * evaluated verdict (with `inputSha256` of its canonical input and the target value cut
- * to fit), `permission.rejected` for a rejection. Each payload is validated.
- * @throws PermissionLogError on a tool call ID or payload that cannot be logged; the
- * caller denies the call.
+ * evaluated verdict (with `inputSha256` of its canonical input), `permission.rejected`
+ * for a rejection, which must deny (N3). The broker runs a call only for `kind ===
+ * "evaluated" && tier === "allow"` or after an approved ask; anything else denies.
+ * @throws PermissionLogError on anything that cannot be logged (SF-3); the caller denies.
  */
 export function permissionEvents(
+  verdict: PermissionVerdict,
+  ctx: PermissionLogContext,
+): readonly PermissionLogEntry<PermissionEvaluated | PermissionRejected>[] {
+  return guarded("permission verdict", () => events(verdict, ctx));
+}
+
+function events(
   verdict: PermissionVerdict,
   ctx: PermissionLogContext,
 ): readonly PermissionLogEntry<PermissionEvaluated | PermissionRejected>[] {
@@ -99,7 +119,10 @@ export function permissionEvents(
     throw new PermissionLogError("not a permission verdict");
   }
   if (verdict.kind === "rejected") {
-    const { guard, ruleId, reason, requestedName } = verdict;
+    const { tier, guard, ruleId, reason, requestedName } = verdict;
+    if ((tier as string) !== "deny") {
+      throw new PermissionLogError("a rejected verdict must deny");
+    }
     const named = requestedName === undefined ? {} : { requestedName };
     const payload: PermissionRejected = {
       kind: "permission.rejected",
@@ -110,14 +133,11 @@ export function permissionEvents(
       reason,
       ...named,
     };
-    return [entry(payload)];
+    return Object.freeze([entry(payload)]);
   }
   const { target } = verdict;
-  const points = Array.from(target.value);
-  const cut = points.length > MAX_TEXT;
-  const value = cut ? points.slice(0, MAX_TEXT).join("") : target.value;
+  const { value, truncated } = target;
   const detail = target.detail === undefined ? {} : { detail: target.detail };
-  const truncated = cut || target.truncated === true;
   const payload: PermissionEvaluated = {
     kind: "permission.evaluated",
     agentId,
@@ -137,7 +157,7 @@ export function permissionEvents(
     policyVersion: verdict.policyVersion,
     reason: verdict.reason,
   };
-  return [entry(payload)];
+  return Object.freeze([entry(payload)]);
 }
 
 /**
@@ -149,19 +169,21 @@ export function permissionAsked(
   presence: PermissionAsked["presence"],
   prompt: string,
 ): PermissionLogEntry<PermissionAsked> {
-  checkToolCallId(toolCallId);
-  const promptSha256 = sha256(prompt);
-  return entry<PermissionAsked>({
-    kind: "permission.asked",
-    toolCallId,
-    presence,
-    promptSha256,
+  return guarded("permission ask", () => {
+    checkToolCallId(toolCallId);
+    const promptSha256 = sha256(prompt);
+    return entry<PermissionAsked>({
+      kind: "permission.asked",
+      toolCallId,
+      presence,
+      promptSha256,
+    });
   });
 }
 
 /**
  * `permission.answered`, with no attestation until slice SIG. `waitMs` is a whole
- * number of milliseconds.
+ * number of milliseconds. Only `answer.answer` and `answer.by` are read (SF-2).
  * @throws PermissionLogError as `permissionEvents`.
  */
 export function permissionAnswered(
@@ -169,14 +191,17 @@ export function permissionAnswered(
   answer: PermissionAnswer,
   waitMs: number,
 ): PermissionLogEntry<PermissionAnswered> {
-  checkToolCallId(toolCallId);
-  const attestation = { kind: "none" } as const;
-  const payload: PermissionAnswered = {
-    kind: "permission.answered",
-    toolCallId,
-    ...answer,
-    waitMs,
-    attestation,
-  };
-  return entry(payload);
+  return guarded("permission answer", () => {
+    checkToolCallId(toolCallId);
+    const attestation = { kind: "none" } as const;
+    const payload = {
+      kind: "permission.answered",
+      toolCallId,
+      answer: answer.answer,
+      by: answer.by,
+      waitMs,
+      attestation,
+    } as PermissionAnswered;
+    return entry(payload);
+  });
 }
