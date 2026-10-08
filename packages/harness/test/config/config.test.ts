@@ -36,6 +36,8 @@ import {
 } from "../../src/config/config.ts";
 
 // Real git in a temp repo; no Docker. The CLI path is covered in test/e2e/cli.test.ts.
+// FLAKE-3: these tests spawn git, which can take over 5 s under load.
+const T = 30_000;
 let repo: string;
 
 function git(...args: string[]): void {
@@ -118,7 +120,7 @@ describe("runGit", () => {
   });
 });
 
-describe("loadRunConfig", () => {
+describe("loadRunConfig", { timeout: T }, () => {
   it("tags the Ring 0 digest with its format", () => {
     const ring0 = {
       format: "ring0/v1",
@@ -238,7 +240,7 @@ describe("loadRunConfig", () => {
   });
 });
 
-describe("ring0Status", () => {
+describe("ring0Status", { timeout: T }, () => {
   let state: string;
   let log: SessionLog;
   beforeEach(() => {
