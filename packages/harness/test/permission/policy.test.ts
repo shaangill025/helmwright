@@ -125,6 +125,11 @@ const HELMWRIGHT_GLOBS = [
   "packages/schema/generated/**",
   "packages/schema/scripts/**",
   "packages/*/package.json",
+  // B3-1: the sensor floor and the tests that guard the Ring 0 lists.
+  "packages/harness/src/floor/**",
+  "packages/harness/test/floor/**",
+  "packages/harness/test/permission/**",
+  "packages/harness/test/config/config.test.ts",
 ];
 const R0_SETTING = "always-ask.ring0-setting";
 const EGRESS = ["push", "pr.open", "pr.merge", "comment", "publish", "deploy"];
@@ -370,9 +375,10 @@ const HELMWRIGHT_ONLY = `packages/harness/src/permission/policy.ts
   rot-register.json packages/harness/package.json
   packages/harness/src/run/run.ts packages/harness/src/cli.ts
   packages/schema/src/index.ts packages/schema/generated/x.ts
-  packages/schema/scripts/generate.ts packages/harness/src/intake/rubric.ts`.split(
-  /\s+/,
-);
+  packages/schema/scripts/generate.ts packages/harness/src/intake/rubric.ts
+  packages/harness/src/floor/rules.ts packages/harness/test/floor/tree.test.ts
+  packages/harness/test/permission/policy.test.ts
+  packages/harness/test/config/config.test.ts`.split(/\s+/);
 
 describe("isRing0Path with RING0_PATHS", () => {
   it.each(

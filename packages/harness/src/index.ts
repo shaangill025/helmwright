@@ -185,3 +185,10 @@ export {
   overrideDirection,
   reclassifyUp,
 } from "./intake/rubric.ts";
+export type { FloorChange } from "./floor/rules.ts";
+export {
+  FLOOR_RULES_VERSION,
+  floorFindings,
+  sortFindings,
+} from "./floor/rules.ts";
+export { FloorError, floorChecked } from "./floor/events.ts";

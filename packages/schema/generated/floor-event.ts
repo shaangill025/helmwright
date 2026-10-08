@@ -5,14 +5,17 @@
  */
 export type FloorEvent = FloorChecked;
 /**
- * Rules of `floor-1`. `floor.limits`: the change was too large to check, so the floor fails closed.
+ * Rules of `floor-1` and `floor-2`. `assertion.removed` is `floor-1` only: `floor-2` replaces it with `protected.changed`, a finding for any change to a protected path. `floor.limits`: the change was too large to check, so the floor fails closed.
  */
 export type FloorRule =
   | "suppression.added"
   | "config.changed"
   | "package.changed"
   | "assertion.removed"
+  | "protected.changed"
   | "symlink.added"
+  | "gitlink.added"
+  | "encoding.unreadable"
   | "floor.limits";
 /**
  * A repo-relative path escaped for display: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates, not absolute and without empty, `.` or `..` segments.

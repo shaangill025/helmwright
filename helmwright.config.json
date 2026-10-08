@@ -93,7 +93,11 @@
         "packages/schema/src/index.ts",
         "packages/schema/generated/**",
         "packages/schema/scripts/**",
-        "packages/*/package.json"
+        "packages/*/package.json",
+        "packages/harness/src/floor/**",
+        "packages/harness/test/floor/**",
+        "packages/harness/test/permission/**",
+        "packages/harness/test/config/config.test.ts"
       ],
       "ring0Settings": [
         "intake.classification",

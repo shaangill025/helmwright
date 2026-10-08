@@ -280,6 +280,31 @@
     "reviewTrigger": ["model", "milestone"]
   },
   {
+    "component": "packages/harness/src/floor/rules.ts",
+    "ring": 0,
+    "assumption": "floor-2 is a fixed, pure rule table over the changes from the base commit to the candidate. Lines compare case-folded with whitespace runs collapsed, as a multiset, so a moved or respaced line is not added; markers and test forms match per line, so one split across lines is missed. Any change to a protected path (the run's Ring 0 paths) is a finding, even an approved one (OQ-B3-3). A candidate blob that is not UTF-8 without NUL is a finding, so any binary file rejects.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "decisions CI sensor floor",
+      "packages/harness/test/floor/rules.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/floor/events.ts",
+    "ring": 0,
+    "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed).",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/harness/test/floor/rules.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
     "component": "packages/harness/src/index.ts",
     "ring": 2,
     "assumption": "The harness is a private workspace package used in process: its index re-exports the module APIs, and no authenticated state/action API exists until B13.",
