@@ -1,8 +1,16 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { CONFIG_DEFAULTS, RING0_CONFIG_KEYS } from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,8 +20,16 @@ import {
   RING0_SETTINGS,
   canonicalJson,
   loadRunConfig,
+  openSessionLog,
   runGit,
+  type RunConfig,
+  type SessionLog,
 } from "../../src/index.ts";
+import {
+  CONFIG_ACCEPTED,
+  ring0SettingDigests,
+  ring0Status,
+} from "../../src/config/config.ts";
 
 // Real git in a temp repo; no Docker. The CLI path is covered in test/e2e/cli.test.ts.
 let repo: string;
@@ -215,5 +231,97 @@ describe("loadRunConfig", () => {
     const text = JSON.stringify({ permissions: { policy } }, null, 1);
     commit(file(text));
     expect(loadRunConfig(repo).policy.version).toBe(policy.version);
+  });
+});
+
+describe("ring0Status", () => {
+  let state: string;
+  let log: SessionLog;
+  beforeEach(() => {
+    state = mkdtempSync(join(tmpdir(), "hw-ring0-"));
+    log = openSessionLog(join(state, "session.sqlite"));
+  });
+  afterEach(() => {
+    log.close();
+    rmSync(state, { recursive: true, force: true });
+  });
+
+  const append = (runId: string, type: string, payload: object) =>
+    log.append({
+      ...{ eventId: randomUUID(), graphId: "g", runId, nodeId: "n", type },
+      ...{ at: new Date().toISOString(), payload: { ...payload } },
+    });
+  /** A clean run that accepted `config` (N1: run.started carries its digest). */
+  const accepted = (config: RunConfig, runId = "run-a") => {
+    append(runId, "run.started", { config: config.record });
+    const { ring0Sha256 } = config.record;
+    const settings = ring0SettingDigests(config.ring0);
+    const payload = { repo: config.repoId, ring0Sha256, how: "default" };
+    return { ...payload, settings };
+  };
+
+  it("walks the config history only without a baseline (N-b)", () => {
+    // A git first on PATH logs each call, then runs the real git.
+    const real = (process.env["PATH"] ?? "")
+      .split(delimiter)
+      .map((dir) => join(dir, "git"))
+      .find((path) => existsSync(path));
+    const bin = join(state, "bin");
+    const calls = join(state, "calls");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${real ?? "git"}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PATH", `${bin}${delimiter}${process.env["PATH"] ?? ""}`);
+    const walks = () =>
+      (existsSync(calls) ? readFileSync(calls, "utf8") : "")
+        .split("\n")
+        .filter((c) => / log -1 | --is-shallow-repository$/.test(c));
+    const config = loadRunConfig(repo);
+    expect(walks()).toEqual([]);
+    const payload = accepted(config);
+    append("run-a", CONFIG_ACCEPTED, payload);
+    expect(ring0Status(log, config)).toEqual({ kind: "unchanged" });
+    expect(walks()).toEqual([]);
+    // Without one, the committed file's history is found: the defaults are asked.
+    const other = { ...config, repoId: "/elsewhere" };
+    expect(ring0Status(log, other)).toMatchObject({
+      kind: "changed",
+      note: "no accepted baseline in this state dir; the config file has history, or the clone is shallow",
+    });
+    expect(walks()).toHaveLength(2);
+  });
+
+  it("re-checks the parsed repo of each baseline row (N-c)", () => {
+    const config = loadRunConfig(repo);
+    const payload = accepted(config);
+    // SQLite's json_extract reads the first "repo", JSON.parse the last.
+    const text = JSON.stringify(payload).slice(0, -1) + ',"repo":"/elsewhere"}';
+    const db = new DatabaseSync(join(state, "session.sqlite"));
+    try {
+      const insert =
+        "INSERT INTO events VALUES (?, 1, ?, 'g', 'run-a', 'n', ?, ?, ?)";
+      db.prepare(insert).run(
+        ...[1, "dup", CONFIG_ACCEPTED, "2026-10-07T00:00:00.000Z", text],
+      );
+    } finally {
+      db.close();
+    }
+    const [row] = log.events({ type: CONFIG_ACCEPTED, repo: config.repoId });
+    expect(row?.payload["repo"]).toBe("/elsewhere");
+    expect(ring0Status(log, config)).toMatchObject({ kind: "changed" });
+  });
+
+  it("takes no baseline from a forged or faulty run (N1)", () => {
+    const config = loadRunConfig(repo);
+    const payload = accepted(config);
+    append("run-a", CONFIG_ACCEPTED, { ...payload, how: "approved" });
+    append("run-b", CONFIG_ACCEPTED, { ...payload, how: "trusted" });
+    expect(ring0Status(log, config)).toMatchObject({ kind: "changed" });
+    append("run-c", "run.started", { config: config.record });
+    append("run-c", CONFIG_ACCEPTED, payload);
+    expect(ring0Status(log, config)).toEqual({ kind: "unchanged" });
   });
 });

@@ -15,6 +15,7 @@ import {
   type RunSetup,
   type SessionLog,
 } from "../../src/index.ts";
+import { stopReason } from "../../src/run/run.ts";
 
 const LIMITS = {
   maxIterations: 5,
@@ -437,5 +438,27 @@ describe("executeRun", () => {
       ).rejects.toThrow(RangeError);
     }
     expect(log.events()).toEqual([]);
+  });
+
+  it("rejects invalid limits before run.started (N-f)", async () => {
+    for (const timeoutMs of [0, Number.NaN]) {
+      const limits = { ...LIMITS, timeoutMs };
+      await expect(
+        run(mutatingEngine(0).engine, true, log, () => ok, { limits }),
+      ).rejects.toThrow(RangeError);
+    }
+    expect(log.events()).toEqual([]);
+  });
+
+  it("ranks cleanup unconfirmed above a stop (N-e)", () => {
+    const stop = { early: true, timedOut: true, cancelled: true };
+    expect(stopReason({ ...stop, unconfirmed: false })).toBe("timeout");
+    expect(stopReason({ ...stop, timedOut: false, unconfirmed: false })).toBe(
+      "cancelled",
+    );
+    expect(stopReason({ ...stop, unconfirmed: true })).toBeUndefined();
+    expect(
+      stopReason({ ...stop, early: false, unconfirmed: false }),
+    ).toBeUndefined();
   });
 });

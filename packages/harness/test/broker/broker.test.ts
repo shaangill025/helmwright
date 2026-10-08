@@ -696,3 +696,46 @@ describe("broker with the run's log", () => {
     },
   );
 });
+
+describe("acceptRing0", () => {
+  /** Asks a Ring 0 change (it has a view) of an owner who answers `answer`. */
+  const accept = (answer: unknown, signal = new AbortController().signal) => {
+    const policy = DEFAULT_PERMISSION_POLICY;
+    const presence: Presence = {
+      ask: () => Promise.resolve(answer as PresenceAnswer),
+    };
+    const broker = createBroker({
+      ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+      halt: () => undefined,
+      permission: {
+        ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
+        ring0: runRing0(workspace, policy),
+        presence,
+        emitAll: () => undefined,
+      },
+    });
+    const change = {
+      ...{ from: "a".repeat(64), to: "b".repeat(64) },
+      ...{ changed: ["permissions"], ring0: { permissions: { policy } } },
+    };
+    return broker.acceptRing0(change, signal);
+  };
+
+  it(
+    "denies, not cancels, an approval not viewed or not from the TTY (N-d)",
+    { timeout: T },
+    async () => {
+      const viewed = { answer: "approved", by: "tty", viewed: true };
+      expect(await accept(viewed)).toBe("approved");
+      expect(await accept({ ...viewed, viewed: false })).toBe("denied");
+      expect(await accept({ ...viewed, by: "noPresence" })).toBe("denied");
+      // Only a cancel at the prompt (Ctrl-C, end of input) or of the run cancels.
+      const cancelled = { answer: "denied", by: "cancelled", viewed: false };
+      expect(await accept(cancelled)).toBe("cancelled");
+      const controller = new AbortController();
+      controller.abort();
+      const late = { ...viewed, viewed: false };
+      expect(await accept(late, controller.signal)).toBe("cancelled");
+    },
+  );
+});

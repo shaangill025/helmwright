@@ -92,7 +92,9 @@ export interface Broker {
    * OQ1: rules on `change` as `config.set` of its first changed setting, with the
    * whole new Ring 0 object as the value, under RING0_CONFIG_CALL_ID, and asks it
    * as `executeTool` asks. "approved" only for an approved always-ask whose answer
-   * was logged; "cancelled" if the ask was; once per broker.
+   * was logged; "cancelled" only if `signal` aborted or the presence answered
+   * "cancelled" (Ctrl-C or end of input); else "denied" (N-d), such as for an
+   * approval not viewed to its end. Once per broker.
    */
   acceptRing0(
     change: Ring0Change,
@@ -106,7 +108,8 @@ type Ruled =
   | {
       readonly kind: "denied";
       readonly result: ToolResult;
-      readonly cancelled?: boolean;
+      /** N-d: the presence answered "cancelled", or the signal aborted. */
+      readonly stopped?: boolean;
     };
 
 /** Wall-clock bound on one `execute` (the loop's signal may end it sooner). */
@@ -359,10 +362,12 @@ function askPrompt(
 const NOBODY = { answer: "denied", by: "noPresence" } as const;
 const CANCELLED = { answer: "denied", by: "cancelled" } as const;
 const APPROVED = { answer: "approved", by: "tty" } as const;
+const DENIED = { answer: "denied", by: "tty" } as const;
 
 /**
  * The answer to log: an approval only from the TTY, and for an ask with a view only
- * once it was viewed to its end (`viewed` true); anything else denies.
+ * once it was viewed to its end (`viewed` true); anything else denies. `stopped`:
+ * the presence answered "cancelled", or `signal` aborted (N-d).
  */
 async function askOwner(
   presence: Presence,
@@ -370,7 +375,19 @@ async function askOwner(
   prompt: string,
   view: string | undefined,
   signal: AbortSignal,
-): Promise<PermissionAnswer> {
+): Promise<{ answer: PermissionAnswer; stopped: boolean }> {
+  const answer = await logged(presence, toolCallId, prompt, view, signal);
+  const stopped = answer.stopped || signal.aborted;
+  return { answer: answer.answer, stopped };
+}
+
+async function logged(
+  presence: Presence,
+  toolCallId: string,
+  prompt: string,
+  view: string | undefined,
+  signal: AbortSignal,
+): Promise<{ answer: PermissionAnswer; stopped: boolean }> {
   const request = {
     toolCallId,
     prompt,
@@ -381,19 +398,23 @@ async function askOwner(
     // Read as plain values: a wrapped presence (SIG) is checked, not trusted.
     const [answer, by]: readonly string[] = [got.answer, got.by];
     const seen: unknown = got.viewed;
+    const stopped = by === "cancelled";
     if (view === undefined) {
-      if (by !== "tty") return CANCELLED;
-      return answer === "approved" ? APPROVED : { answer: "denied", by: "tty" };
+      if (by !== "tty") return { answer: CANCELLED, stopped };
+      const tty = answer === "approved" ? APPROVED : DENIED;
+      return { answer: tty, stopped };
     }
     const viewed = seen === true;
     if (by !== "tty" || (answer === "approved" && !viewed)) {
-      return { ...CANCELLED, viewed };
+      return { answer: { ...CANCELLED, viewed }, stopped };
     }
     return answer === "approved"
-      ? { ...APPROVED, viewed: true }
-      : { answer: "denied", by: "tty", viewed };
+      ? { answer: { ...APPROVED, viewed: true }, stopped }
+      : { answer: { ...DENIED, viewed }, stopped };
   } catch {
-    return view === undefined ? CANCELLED : { ...CANCELLED, viewed: false };
+    const answer =
+      view === undefined ? CANCELLED : { ...CANCELLED, viewed: false };
+    return { answer, stopped: false };
   }
 }
 
@@ -519,7 +540,8 @@ export function createBroker(context: BrokerContext): Broker {
         }
         // The wait counts toward the run's timeout: `signal` ends it.
         const started = performance.now();
-        const answer = await askOwner(presence, id, shown, view, signal);
+        const asked = await askOwner(presence, id, shown, view, signal);
+        const { answer, stopped } = asked;
         const waitMs = Math.max(0, Math.round(performance.now() - started));
         let answered: PermissionLogEntry;
         try {
@@ -537,7 +559,7 @@ export function createBroker(context: BrokerContext): Broker {
             ? "the ask was cancelled"
             : "the owner did not approve";
           const result = denied("denied: " + what + rule + "; " + why);
-          return { kind: "denied", result, cancelled };
+          return { kind: "denied", result, stopped };
         }
         return { kind: "run", verdict };
       }
@@ -599,7 +621,7 @@ export function createBroker(context: BrokerContext): Broker {
       );
       // Fails closed: only an approved always-ask accepts the change.
       if (ruled.kind === "denied") {
-        return ruled.cancelled === true ? "cancelled" : "denied";
+        return ruled.stopped === true ? "cancelled" : "denied";
       }
       const ok =
         ruled.verdict.tier === "alwaysAsk" && haltedNow() === undefined;

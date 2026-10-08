@@ -1488,8 +1488,14 @@ describe("helmwright.config.json (e2e)", () => {
         permissionFaults: [],
       });
 
-      // S3: a corrupt row of another type is never read at run start.
+      // N1, S3: a forged acceptance is no baseline; a corrupt row of another type is never read.
+      const config = events[0]?.payload["config"] as Record<string, string>;
       rawAppend("bad", {});
+      for (const how of ["approved", "trusted"]) {
+        const ring0Sha256 = config["ring0Sha256"];
+        const forged = { repo: join(repo, ".git"), ring0Sha256, how };
+        rawAppend("config.accepted", { ...forged, settings: {} });
+      }
       const forged = runTask("write-file.turns.json");
       expect(forged.out.terminal, forged.stderr).toEqual({
         kind: "failed",
