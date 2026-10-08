@@ -7,7 +7,10 @@ it with pinned tools; no scanning job runs PR code. Jobs that run PR code stay o
 remain a backstop: `verify`, and the Grype image build (it runs the PR's Dockerfile). The harness's
 own sensor floor (B3) checks each run's candidate diff on the host, outside the candidate's control,
 and closes AC9's harness side: an added suppression, a weakened test command, a changed tool config or
-a removed protected assertion fails the run (e2e fixtures F0-F5). Base-pinned tool runs on candidate
+a removed protected assertion fails the run (e2e fixtures F0-F5). CI side of AC9 (B3-3, test PR #56,
+2026-10-08, closed unmerged): `verify` failed at ESLint, because `noInlineConfig` ignores an inline
+suppression and `--max-warnings 0` fails on its warning; a replaced `scripts.test` has no effect, because CI
+runs vitest directly with an explicit config. Base-pinned tool runs on candidate
 trees move to the B15 evaluator (OQ-B3-1, 2026-10-07). Replay faults a completed run without a passing
 `floor.checked`, so logs from before B3-2 fail replay; this is intended. B15 contract: the commit step
 rebuilds the candidate tree and commits only if its OID equals the logged `floor.checked.candidateTree`.
