@@ -8,7 +8,9 @@ remain a backstop: `verify`, and the Grype image build (it runs the PR's Dockerf
 own sensor floor (B3) checks each run's candidate diff on the host, outside the candidate's control,
 and closes AC9's harness side: an added suppression, a weakened test command, a changed tool config or
 a removed protected assertion fails the run (e2e fixtures F0-F5). Base-pinned tool runs on candidate
-trees move to the B15 evaluator (OQ-B3-1, 2026-10-07).
+trees move to the B15 evaluator (OQ-B3-1, 2026-10-07). Replay faults a completed run without a passing
+`floor.checked`, so logs from before B3-2 fail replay; this is intended. B15 contract: the commit step
+rebuilds the candidate tree and commits only if its OID equals the logged `floor.checked.candidateTree`.
 
 History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
 `pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.

@@ -2360,6 +2360,22 @@ describe("sensor floor (e2e, B3-2)", () => {
     },
   );
 
+  it(
+    "checks only after a background writer is gone (SF-1)",
+    { timeout: T },
+    async () => {
+      seedFloorRepo();
+      const run = runFloor("(sleep 3; echo x >> src/a.ts) & exit 0");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.checked).toMatchObject({ verdict: "pass" });
+      await new Promise((done) => setTimeout(done, 4_000));
+      const workspace = join(stateDir, "workspaces", run.out.runId);
+      expect(readFileSync(join(workspace, "src", "a.ts"), "utf8")).toBe(
+        "export const a = 1;\n",
+      );
+    },
+  );
+
   it("fails closed when the gitfile is rewritten (F5)", { timeout: T }, () => {
     seedFloorRepo();
     const run = runWith(writeTask(shTurns("echo 'gitdir: /tmp' > .git")));

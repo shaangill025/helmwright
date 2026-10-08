@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -263,5 +264,20 @@ describe("trusted git dirs (B1)", { timeout: 30_000 }, () => {
     expect(check("version unknown")).toThrow(FloorError);
     expect(check("git version 2.40.0")).not.toThrow();
     expect(check("git version 3.0.1 (x)")).not.toThrow();
+  });
+});
+
+describe("git failures (SF-3)", { timeout: 30_000 }, () => {
+  it("names only the git subcommand and exit status, never a path", () => {
+    const [id = ""] = readdirSync(join(common, "worktrees"));
+    writeFileSync(join(common, "worktrees", id, "HEAD"), "1".repeat(40) + "\n");
+    let error: unknown;
+    try {
+      checked();
+    } catch (thrown) {
+      error = thrown;
+    }
+    expect(error).toBeInstanceOf(FloorError);
+    expect((error as Error).message).toBe("git rev-parse failed (exit 128)");
   });
 });

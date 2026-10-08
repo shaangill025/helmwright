@@ -31,6 +31,7 @@ import {
   checkWorkspacePaths,
   dockerRunArgs,
   futureRealpath,
+  newSandboxContainerName,
   runInSandbox,
   type SandboxResult,
 } from "../sandbox/docker.ts";
@@ -61,6 +62,8 @@ export interface BrokerContext {
   readonly permission: PermissionContext;
   /** Ends the run as failed before its next engine step. */
   readonly halt: (reason: string) => void;
+  /** SF-1: gets the name of each sandbox container before it is started. */
+  readonly containers?: Set<string>;
 }
 
 /** A typed action's handler: acts only on the ruled input snapshot. */
@@ -204,15 +207,20 @@ const execute: Action = {
         "invalid input for execute: must be { argv: non-empty array of non-empty strings }",
       );
     }
-    const result = await runInSandbox({
-      argv: parsed.argv,
-      image: context.image,
-      workspace: context.workspace,
-      workspaceRoot: context.workspaceRoot,
-      timeoutMs: EXECUTE_TIMEOUT_MS,
-      maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
-      signal,
-    });
+    const containerName = newSandboxContainerName();
+    context.containers?.add(containerName);
+    const result = await runInSandbox(
+      {
+        argv: parsed.argv,
+        image: context.image,
+        workspace: context.workspace,
+        workspaceRoot: context.workspaceRoot,
+        timeoutMs: EXECUTE_TIMEOUT_MS,
+        maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+        signal,
+      },
+      { containerName },
+    );
     if (result.cleanupFailed) context.halt(SANDBOX_CLEANUP_FAILED);
     return sandboxToolResult(result);
   },

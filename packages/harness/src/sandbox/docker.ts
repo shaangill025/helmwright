@@ -588,6 +588,32 @@ async function dockerOutput(
   return proc.stdout.text();
 }
 
+/** The exact-name filter for `docker ps`. */
+const nameFilter = (name: string) =>
+  "name=^/" + name.split(".").join("\\.") + "$";
+
+/** A new sandbox container name, `helmwright-sandbox-<uuid>`. */
+export const newSandboxContainerName = (): string => NAME_PREFIX + randomUUID();
+
+/**
+ * SF-1: resolves true once one bounded `docker ps -a` lists none of the containers
+ * `names` (true at once for none); false if any is listed or docker fails.
+ */
+export async function sandboxContainersGone(
+  names: readonly string[],
+  deps: Omit<SandboxDeps, "containerName" | "buildTimeoutMs"> = {},
+): Promise<boolean> {
+  if (names.length === 0) return true;
+  try {
+    const docker = await dockerContext(deps);
+    const filters = names.flatMap((name) => ["--filter", nameFilter(name)]);
+    const out = await dockerOutput(docker, ["ps", "-a", "-q", ...filters]);
+    return out.trim() === "";
+  } catch {
+    return false;
+  }
+}
+
 /** Kills and removes the container (bounded); resolves true once confirmed gone. */
 async function stopContainer(
   docker: Docker,
@@ -603,7 +629,7 @@ async function stopContainer(
     await within(client.exited, KILL_SETTLE_MS);
   }
   client.destroy();
-  const filter = `name=^/${name.replace(/\./g, "\\.")}$`;
+  const filter = nameFilter(name);
   return dockerOutput(docker, ["ps", "-a", "-q", "--filter", filter]).then(
     (out) => out.trim() === "",
     () => false,
@@ -732,7 +758,8 @@ async function execute(
     if (reason !== undefined) {
       cleanupFailed = !(await stopContainer(docker, name, client));
     } else if (code === 125) {
-      await dockerQuiet(docker, ["rm", "-f", name]);
+      // SF-1: confirmed like a stop; the run's end checks every container again.
+      await stopContainer(docker, name, client);
       const stderr = bounded(client.stderr.text());
       throw new Error(
         `sandbox failed to start or the program exited 125; untrusted stderr: ${stderr}`,

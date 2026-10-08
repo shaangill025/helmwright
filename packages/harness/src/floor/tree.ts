@@ -163,7 +163,7 @@ export function candidateChanges(
     realpathSync(path),
   ) as [string, string];
   const trusted = (args: string[]) =>
-    runGit(common, ["--git-dir=" + common, ...args])
+    gitCall(args, () => runGit(common, ["--git-dir=" + common, ...args]))
       .toString("utf8")
       .trim();
   requireGitVersion(trusted(["version"]));
@@ -183,7 +183,9 @@ export function candidateChanges(
   try {
     const dir = join(temp, "git");
     const init = ["init", "--quiet", "--bare", "--template="];
-    runGit(temp, [...init, "--object-format=" + format, dir]);
+    gitCall(init, () =>
+      runGit(temp, [...init, "--object-format=" + format, dir]),
+    );
     mkdirSync(join(dir, "objects", "info"), { recursive: true });
     mkdirSync(join(dir, "info"), { recursive: true });
     const objects = join(common, "objects") + "\n";
@@ -191,9 +193,11 @@ export function candidateChanges(
     writeFileSync(join(dir, "info", "exclude"), exclude);
     const where = ["--git-dir=" + dir, "--work-tree=" + worktree];
     const git = (args: string[], maxBuffer?: number) =>
-      runGit(worktree, [...where, "--attr-source=" + baseCommit, ...args], {
-        maxBuffer,
-      });
+      gitCall(args, () =>
+        runGit(worktree, [...where, "--attr-source=" + baseCommit, ...args], {
+          maxBuffer,
+        }),
+      );
     git(["read-tree", head]);
     git(["add", "--all"], limits.bytes);
     const candidateTree = git(["write-tree"]).toString("utf8").trim();
@@ -204,6 +208,26 @@ export function candidateChanges(
 }
 
 type Git = (args: string[], maxBuffer?: number) => Buffer;
+
+/**
+ * SF-3: runs one git call. A failed one becomes a FloorError with fixed text, `git
+ * <subcommand> failed (exit N)`, never its command line, stderr or a path. A timeout
+ * (fixed text already) and ENOBUFS (a `floor.limits` finding) are thrown as they are.
+ */
+function gitCall(args: readonly string[], call: () => Buffer): Buffer {
+  try {
+    return call();
+  } catch (error) {
+    if (isOverBuffer(error)) throw error;
+    const { status, code } = (error ?? {}) as Record<string, unknown>;
+    if (status === undefined && code === undefined && error instanceof Error) {
+      throw error; // runGit's timeout error
+    }
+    const exit =
+      typeof status === "number" ? " (exit " + String(status) + ")" : "";
+    throw new FloorError("git " + (args[0] ?? "") + " failed" + exit);
+  }
+}
 
 const isOverBuffer = (error: unknown) =>
   (error as { code?: unknown } | null)?.code === "ENOBUFS";
