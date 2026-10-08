@@ -155,6 +155,7 @@ function writeTask(
   turns: string,
   limits: object = LIMITS,
   repoPath = repo,
+  extra: object = {},
 ): string {
   const file = join(tmp, "task.json");
   const task = {
@@ -166,6 +167,7 @@ function writeTask(
       turns: isAbsolute(turns) ? turns : join(FIXTURES, turns),
     },
     limits,
+    ...extra,
   };
   writeFileSync(file, JSON.stringify(task));
   return file;
@@ -178,7 +180,17 @@ interface RunOutput {
 }
 
 function runTask(turns: string, limits?: object) {
-  const result = cli("run", writeTask(turns, limits), "--state-dir", stateDir);
+  return runWith(writeTask(turns, limits));
+}
+
+/** B10-2: a task with an `intake` block (none if undefined), run with `args`. */
+function runIntake(turns: string, intake?: object, ...args: string[]) {
+  const extra = intake === undefined ? {} : { intake };
+  return runWith(writeTask(turns, LIMITS, repo, extra), ...args);
+}
+
+function runWith(task: string, ...args: string[]) {
+  const result = cli("run", task, "--state-dir", stateDir, ...args);
   const lines = result.stdout.trim().split("\n");
   expect(lines, result.stderr).toHaveLength(1);
   return { ...result, out: JSON.parse(lines[0] ?? "") as RunOutput };
@@ -198,7 +210,7 @@ const NO_PTY = SCRIPT === undefined && process.env["CI"] === undefined;
 if (NO_PTY) console.warn("e2e: script(1) not found; TTY ask tests skipped");
 /** Inside the pty: the CLI's stdout goes to a file, stdin and stderr stay on the pty. */
 const IN_PTY =
-  'exec "$HW_NODE" "$HW_CLI" run "$HW_TASK" --state-dir "$HW_STATE" > "$HW_OUT"';
+  'exec "$HW_NODE" "$HW_CLI" run "$HW_TASK" --state-dir "$HW_STATE" $HW_ARGS > "$HW_OUT"';
 /**
  * `cat` gives script a real pipe for stdin: BSD script refuses a socket, and Node's
  * stdio pipes are sockets. The test keeps cat's input open and types into it later.
@@ -287,7 +299,12 @@ function viewThenApprove(end: string): { drive: Driver; pages: () => number } {
  * is type-ahead, so the CLI says it was discarded as the window opens. A driver
  * instead types whatever it decides on each poll.
  */
-async function runAtTty(turns: string, answer: string | Driver, early = "x") {
+async function runAtTty(
+  turns: string,
+  answer: string | Driver,
+  early = "x",
+  task: { readonly intake?: object; readonly args?: string } = {},
+) {
   if (SCRIPT === undefined) throw new Error("script(1) not found");
   // A fresh directory per call: a result left by an earlier call in the same test
   // would look like this run's result and end input before the prompt is shown.
@@ -300,8 +317,14 @@ async function runAtTty(turns: string, answer: string | Driver, early = "x") {
     SHELL: "/bin/sh",
     HW_NODE: process.execPath,
     HW_CLI: CLI,
-    HW_TASK: writeTask(turns),
+    HW_TASK: writeTask(
+      turns,
+      LIMITS,
+      repo,
+      task.intake === undefined ? {} : { intake: task.intake },
+    ),
     HW_STATE: stateDir,
+    HW_ARGS: task.args ?? "",
     HW_OUT: stdoutFile,
   };
   const child = spawn("/bin/sh", PTY_ARGV, { stdio: ["pipe", fd, fd], env });
@@ -397,7 +420,7 @@ describe("helmwright CLI (e2e)", () => {
       // Each message is logged when it is created: cause before effect. The
       // first run on the defaults accepts them silently (OQ1).
       expect(events.map((e) => e.type)).toEqual([
-        ...["run.started", "config.accepted"],
+        ...["run.started", "config.accepted", "intake.classified"],
         ...["message.appended", "loop.iteration.started"],
         ...["message.appended", "loop.tool.started", "permission.evaluated"],
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
@@ -1247,8 +1270,8 @@ function rawAppend(type: string, payload: object): void {
   }
 }
 
-/** A turn whose execute call uses the reserved Ring 0 call ID. */
-function reservedTurns(): string {
+/** A turn whose execute call uses a reserved call ID (the Ring 0 one by default). */
+function reservedTurns(id = RING0_ID): string {
   const turns = join(tmp, "reserved.turns.json");
   const argv = ["sh", "-c", "echo hi > a.txt"];
   writeFileSync(
@@ -1256,7 +1279,7 @@ function reservedTurns(): string {
     JSON.stringify([
       {
         text: "Writing a.txt with the reserved ID.",
-        toolCalls: [{ id: RING0_ID, name: "execute", input: { argv } }],
+        toolCalls: [{ id, name: "execute", input: { argv } }],
         claimsDone: false,
       },
       { text: "It was refused.", toolCalls: [], claimsDone: true },
@@ -1816,6 +1839,284 @@ describe("helmwright.config.json (e2e)", () => {
       const workspace = join(stateDir, "workspaces", second.out.runId);
       expect(existsSync(join(workspace, "a.txt"))).toBe(false);
       expectReplayMatches(second.out.runId, later);
+    },
+  );
+});
+
+const OVERRIDE_ID = "helmwright.intake.override";
+const OVERRIDE_END =
+  "Approve config.set (always-ask.ring0-setting, alwaysAsk)? [y/N] ";
+const sha256Of = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const NONE_DECLARED = {
+  newDependencies: [],
+  newModules: [],
+  surfaceChanges: [],
+  newProcessBoundary: false,
+};
+const payloadsOf = (events: readonly Event[], type: string) =>
+  events.filter((e) => e.type === type).map((e) => e.payload);
+
+describe("intake (e2e, B10-2)", () => {
+  it(
+    "classifies a docs-only task as a chore before the first engine step",
+    { timeout: T },
+    () => {
+      const scope = ["docs/a.md", "docs/a.md"];
+      const { status, stderr, out } = runIntake("write-file.turns.json", {
+        scope,
+      });
+      expect(status, stderr).toBe(0);
+      expect(stderr).toContain(
+        "helmwright: intake chore (docsOnly: docs/a.md) friction minimal\n",
+      );
+      const events = expectWellFormedLog(out.runId);
+      expect(events.slice(0, 4).map((e) => e.type)).toEqual([
+        ...["run.started", "config.accepted", "intake.classified"],
+        "message.appended",
+      ]);
+      expect(events[2]?.payload).toEqual({
+        kind: "intake.classified",
+        taskId: "task-1",
+        class: "chore",
+        rubricVersion: "intake-rubric-1",
+        reasons: [{ rule: "docsOnly", entries: ["docs/a.md"] }],
+        scope: ["docs/a.md"],
+        scopeSha256: sha256Of(["docs/a.md"]),
+        ring0Sha256: events[2]?.payload["ring0Sha256"],
+        declared: NONE_DECLARED,
+        friction: { intensity: "minimal", source: "choreDowngrade" },
+        sparring: "optIn",
+      });
+      expect(events[2]?.payload["ring0Sha256"]).toMatch(/^[0-9a-f]{64}$/);
+      // No intake data enters the engine's context.
+      const texts = deriveMessages(events, out.runId).map((m) => m.text);
+      expect(texts.join("\n")).not.toContain("chore");
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "classifies declared facts, code, Ring 0 paths and no scope",
+    { timeout: T },
+    () => {
+      const cases: [object | undefined, string, object[]][] = [
+        [
+          { scope: ["src/a.ts"], declared: { newDependencies: ["left-pad"] } },
+          "architectural",
+          [{ rule: "newDependencies", entries: ["left-pad"] }],
+        ],
+        [
+          { scope: ["src/**"] },
+          "bounded",
+          [{ rule: "notDocsOrTests", entries: ["src/**"] }],
+        ],
+        [
+          { scope: ["docs/a.md", ".github/notes.md"] },
+          "bounded",
+          [{ rule: "ring0Path", entries: [".github/notes.md"] }],
+        ],
+        [
+          undefined,
+          "architectural",
+          [{ rule: "noDeclaredScope", entries: [] }],
+        ],
+      ];
+      for (const [i, [intake, cls, reasons]] of cases.entries()) {
+        stateDir = join(tmp, "state-" + String(i)); // one run per log
+        const { status, stderr, out } = runIntake("denied.turns.json", intake);
+        expect(status, stderr).toBe(0);
+        expect(stderr).toContain("helmwright: intake " + cls + " (");
+        const events = expectWellFormedLog(out.runId);
+        const [classified] = payloadsOf(events, "intake.classified");
+        expect(classified).toMatchObject({
+          class: cls,
+          reasons,
+          friction: { intensity: "moderate", source: "default" },
+        });
+        if (intake === undefined) {
+          expect(classified).toMatchObject({
+            scope: [],
+            scopeSha256: sha256Of([]),
+            declared: NONE_DECLARED,
+          });
+        }
+        expectReplayMatches(out.runId, events);
+      }
+    },
+  );
+
+  it(
+    "logs an upward override without an ask, and no event for the same class",
+    { timeout: T },
+    () => {
+      const intake = { scope: ["docs/a.md"] };
+      const up = runIntake(
+        "denied.turns.json",
+        intake,
+        ...["--class", "architectural", "--reason", "needs a review"],
+      );
+      expect(up.status, up.stderr).toBe(0);
+      const events = expectWellFormedLog(up.out.runId);
+      expect(events.slice(2, 5).map((e) => e.type)).toEqual([
+        ...["intake.classified", "intake.overridden", "message.appended"],
+      ]);
+      expect(events[3]?.payload).toEqual({
+        kind: "intake.overridden",
+        taskId: "task-1",
+        from: "chore",
+        to: "architectural",
+        reason: "needs a review",
+        by: "cli",
+        attestation: { kind: "none" },
+        scopeSha256: sha256Of(["docs/a.md"]),
+        rubricVersion: "intake-rubric-1",
+      });
+      const ids = events.map((e) => e.payload["toolCallId"]);
+      expect(ids).not.toContain(OVERRIDE_ID);
+      expectReplayMatches(up.out.runId, events);
+
+      const same = runIntake(
+        "denied.turns.json",
+        intake,
+        ...["--class", "chore", "--reason", "it is a chore"],
+      );
+      expect(same.status, same.stderr).toBe(0);
+      const later = logEvents().filter((e) => e.runId === same.out.runId);
+      expect(payloadsOf(later, "intake.overridden")).toEqual([]);
+    },
+  );
+
+  it(
+    "fails a downward override before any engine step with nobody present",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runIntake(
+        "write-file.turns.json",
+        { scope: ["src/a.ts"] },
+        ...["--class", "chore", "--reason", "formatting only"],
+      );
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({
+        kind: "failed",
+        error: "downward intake override was not approved",
+      });
+      const events = expectWellFormedLog(out.runId);
+      expect(events.map((e) => e.type)).toEqual([
+        ...["run.started", "config.accepted", "intake.classified"],
+        ...["permission.evaluated", "permission.asked", "permission.answered"],
+        "run.terminated",
+      ]);
+      expect(events.slice(3, 6).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: OVERRIDE_ID, requested: "config.set" },
+          ...{ tier: "alwaysAsk", ruleId: "always-ask.ring0-setting" },
+        },
+        { toolCallId: OVERRIDE_ID, presence: "none" },
+        { toolCallId: OVERRIDE_ID, answer: "denied", by: "noPresence" },
+      ]);
+      const replay = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        terminated: true,
+        permissionFaults: [],
+      });
+    },
+  );
+
+  it.skipIf(NO_PTY)(
+    "logs a downward override the owner approved at the TTY" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      const { status, shown, out } = await runAtTty(
+        "write-file.turns.json",
+        answerOnce("y", OVERRIDE_END),
+        "x",
+        {
+          intake: { scope: ["src/a.ts"] },
+          args: "--class chore --reason formatting-only",
+        },
+      );
+      expect(status, shown).toBe(0);
+      expect(shown).toContain("intake.classification");
+      const events = expectWellFormedLog(out.runId);
+      expect(events.slice(2, 8).map((e) => e.type)).toEqual([
+        ...["intake.classified", "permission.evaluated", "permission.asked"],
+        ...["permission.answered", "intake.overridden", "message.appended"],
+      ]);
+      expect(events[5]?.payload).toMatchObject({
+        toolCallId: OVERRIDE_ID,
+        answer: "approved",
+        by: "tty",
+      });
+      expect(events[6]?.payload).toMatchObject({
+        from: "bounded",
+        to: "chore",
+        reason: "formatting-only",
+      });
+      expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it("exits 64 on a bad override or scope, logging nothing", () => {
+    const bad: [object, string[]][] = [
+      [{ scope: ["docs/a.md"] }, ["--class", "chore"]],
+      [{ scope: ["docs/a.md"] }, ["--reason", "why"]],
+      [{ scope: ["docs/a.md"] }, ["--class", "trivial", "--reason", "why"]],
+      [{ scope: ["docs/a.md"] }, ["--class", "chore", "--reason", "  "]],
+      [{ scope: ["!src/*.md"] }, []],
+      [{ scope: ["docs/a.md"], extra: true }, []],
+      [{ declared: { newModules: "x" } }, []],
+    ];
+    for (const [intake, args] of bad) {
+      const task = writeTask("denied.turns.json", LIMITS, repo, { intake });
+      const result = cli("run", task, "--state-dir", stateDir, ...args);
+      expect(result.status, result.stderr).toBe(64);
+      expect(result.stdout).toBe("");
+    }
+    expect(existsSync(join(stateDir, "session.sqlite"))).toBe(false);
+    expect(existsSync(join(stateDir, "workspaces"))).toBe(false);
+  });
+
+  it(
+    "still always-asks a deploy in a chore, and refuses the reserved ID",
+    { timeout: T },
+    () => {
+      const intake = { scope: ["docs/a.md"] };
+      const chore = runIntake("deploy.turns.json", intake);
+      expect(chore.status, chore.stderr).toBe(0);
+      const events = expectWellFormedLog(chore.out.runId);
+      expect(payloadsOf(events, "intake.classified")).toMatchObject([
+        { class: "chore", friction: { intensity: "minimal" } },
+      ]);
+      expect(payloadsOf(events, "permission.evaluated")).toMatchObject([
+        {
+          toolCallId: "call-1",
+          tier: "alwaysAsk",
+          ruleId: "always-ask.deploy",
+        },
+      ]);
+      expect(payloadsOf(events, "loop.tool.called")).toMatchObject([
+        { status: "denied" },
+      ]);
+
+      const reserved = runIntake(reservedTurns(OVERRIDE_ID), intake);
+      expect(reserved.status, reserved.stderr).toBe(0);
+      const later = logEvents().filter((e) => e.runId === reserved.out.runId);
+      expect(
+        later.filter((e) => e.type.startsWith("permission.")),
+      ).toMatchObject([
+        {
+          type: "permission.rejected",
+          payload: {
+            toolCallId: OVERRIDE_ID,
+            ruleId: "schema.duplicate-call-id",
+          },
+        },
+      ]);
+      const workspace = join(stateDir, "workspaces", reserved.out.runId);
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+      expectReplayMatches(reserved.out.runId, later);
     },
   );
 });

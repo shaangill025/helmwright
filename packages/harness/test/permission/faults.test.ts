@@ -413,4 +413,69 @@ describe("permissionFaults (SF3)", () => {
       ]);
     }
   });
+
+  it("binds intake overrides to the classification and a downward ask (B10-2)", () => {
+    const ID = "helmwright.intake.override";
+    const classified = (cls: string): Payload => ({
+      kind: "intake.classified",
+      class: cls,
+    });
+    const overridden = (from: string, to: string): Payload => ({
+      kind: "intake.overridden",
+      from,
+      to,
+    });
+    const ruling = {
+      ...evaluated("alwaysAsk", ID),
+      requested: "config.set",
+      ruleId: "always-ask.ring0-setting",
+    };
+    const ask = [ruling, { ...asked(), toolCallId: ID }];
+    const approve = answered({ toolCallId: ID });
+    const NO_APPROVAL =
+      "downward intake.overridden without an approval of its ask";
+    const OTHER_FROM =
+      "intake.overridden from another class than the run's intake.classified";
+    const RESERVED = "tool call ran with the reserved intake override ID";
+    // Bound: upward without an ask; downward after its approved, bound ask.
+    expect(
+      permissionFaults(
+        run(classified("chore"), overridden("chore", "architectural")),
+      ),
+    ).toEqual([]);
+    expect(
+      permissionFaults(
+        run(
+          classified("bounded"),
+          ...ask,
+          approve,
+          overridden("bounded", "chore"),
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      permissionFaults(
+        run(
+          ...[classified("bounded"), overridden("bounded", "chore")],
+          ...[...ask, approve, overridden("bounded", "chore")],
+          ...[overridden("bounded", "chore")],
+          ...[overridden("architectural", "bounded"), called("ok", ID)],
+        ),
+      ),
+    ).toEqual([
+      `seq 1: ${NO_APPROVAL}`,
+      // An approval grants one override only.
+      `seq 6: ${NO_APPROVAL}`,
+      `seq 7: ${OTHER_FROM}`,
+      `seq 7: ${NO_APPROVAL}`,
+      `seq 8: ${RESERVED}`,
+    ]);
+    // Only an approved always-ask config.set ruling on the reserved ID grants it.
+    const other = [{ ...ruling, ruleId: "other" }, ask[1] ?? {}, approve];
+    expect(
+      permissionFaults(
+        run(classified("bounded"), ...other, overridden("bounded", "chore")),
+      ),
+    ).toEqual([`seq 4: ${NO_APPROVAL}`]);
+  });
 });
