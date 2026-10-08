@@ -123,7 +123,7 @@ describe("permissionEvents", () => {
       tier: "ask",
       guard: "policy",
       ruleId: "deps.add",
-      policyVersion: "default-1",
+      policyVersion: "default-2",
       reason: "rule deps.add",
     });
   });

@@ -294,19 +294,15 @@ const FLOOR_ACTIONS: NonEmpty<PermissionAction> = deepFreeze([
   "spend.raiseCap",
 ]);
 
-/** Always-ask to edit in every target repo until B6 makes the set per-project. */
+/**
+ * Always-ask to edit in every target repo: only paths that are Ring 0 in any repository
+ * (OQ2, 2026-10-07). A project adds its own Ring 0 paths in its committed
+ * `helmwright.config.json` (`permissions.policy.ring0Paths`); helmwright's own source
+ * globs are there (B6-5).
+ */
 const FLOOR_PATHS: NonEmpty<string> = deepFreeze([
-  "packages/harness/src/loop/**",
-  "packages/harness/src/log/**",
-  "packages/harness/src/permission/**",
-  "packages/harness/src/sandbox/**",
-  "packages/harness/src/ledger/**",
-  "packages/harness/src/scorer/**",
-  "packages/harness/sandbox/**",
-  "packages/schema/schemas/**",
   // Q56 eval files; their location is fixed when the behavioral evals land.
   "evals/**",
-  "packages/*/evals/**",
   ".github/**",
   "eslint.config.*",
   "tsconfig*.json",
@@ -349,7 +345,8 @@ const rule = (
 
 /** B9 initial policy. Deletes outside the worktree and Ring 0 edits are in the always-ask floor. */
 export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = deepFreeze({
-  version: "default-1",
+  // default-2 (B6-5): the floor's Ring 0 paths no longer list helmwright's source.
+  version: "default-2",
   governance: "tiered",
   rules: [
     rule("execute.worktree", "execute", "worktree", "allow"),
