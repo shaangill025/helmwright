@@ -407,7 +407,7 @@ export type Ring0Status =
       readonly from: string;
       /** The Ring 0 settings that differ, in RING0_CONFIG_KEYS order; never empty. */
       readonly changed: readonly string[];
-      /** Fixed text when there is no accepted baseline. */
+      /** Fixed text when there is no valid accepted baseline. */
       readonly note?: string;
     };
 
@@ -424,10 +424,11 @@ function clean(log: Pick<SessionLog, "events">, runId: string): boolean {
 
 /**
  * OQ1: compares `config`'s Ring 0 digest with the baseline for `config.repoId`: the
- * latest `config.accepted` with that repo, a known `how` and a digest, from a run whose
- * asks and acceptance have no fault (N1). Rows of other types are never read (S3).
- * N-c: each row's parsed `repo` is checked again, as SQLite's json_extract and
- * JSON.parse can read a duplicate key differently.
+ * latest `config.accepted` with that repo. N-c: each row's parsed `repo` is checked
+ * again, as SQLite's json_extract and JSON.parse can read a duplicate key differently.
+ * SF-1: only the latest counts; without a known `how` and a digest, or from a run
+ * whose asks and acceptance have a fault (N1), it is no baseline and every Ring 0
+ * setting is asked, never an older row. Rows of other types are never read (S3).
  * The baseline is scoped to this state dir. With none, the defaults are accepted
  * silently only if the config file has no history (S1); else the config is asked.
  * A change names the settings whose digests differ from the baseline's; if none can
@@ -438,17 +439,27 @@ export function ring0Status(
   config: Pick<RunConfig, "record" | "ring0" | "repoId" | "configHistory">,
 ): Ring0Status {
   const query = { type: CONFIG_ACCEPTED, repo: config.repoId };
-  const accepted = log
+  const latest = log
     .events(query)
-    .findLast(
-      ({ runId, payload }) =>
-        payload["repo"] === config.repoId &&
-        BASELINE_HOW.has(payload["how"]) &&
-        typeof payload["ring0Sha256"] === "string" &&
-        DIGEST.test(payload["ring0Sha256"]) &&
-        clean(log, runId),
-    )?.payload;
+    .findLast(({ payload }) => payload["repo"] === config.repoId);
+  const digest: unknown = latest?.payload["ring0Sha256"];
+  const valid =
+    latest !== undefined &&
+    BASELINE_HOW.has(latest.payload["how"]) &&
+    typeof digest === "string" &&
+    DIGEST.test(digest) &&
+    clean(log, latest.runId);
   const defaults = settle(undefined);
+  if (latest !== undefined && !valid) {
+    const shown = typeof digest === "string" && DIGEST.test(digest);
+    return {
+      kind: "changed",
+      from: shown ? digest : defaults.ring0Sha256,
+      changed: [...RING0_CONFIG_KEYS],
+      note: "the latest accepted baseline in this state dir is not valid",
+    };
+  }
+  const accepted = latest?.payload;
   const from = (accepted?.["ring0Sha256"] ?? defaults.ring0Sha256) as string;
   const none = accepted === undefined;
   // N-b: the history is read only when it decides the result.

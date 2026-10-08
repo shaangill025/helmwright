@@ -324,4 +324,28 @@ describe("ring0Status", () => {
     append("run-c", CONFIG_ACCEPTED, payload);
     expect(ring0Status(log, config)).toEqual({ kind: "unchanged" });
   });
+
+  it("never falls back past an invalid latest baseline (SF-1)", () => {
+    const x = loadRunConfig(repo);
+    const policy = { ...DEFAULT_PERMISSION_POLICY, version: "strict-1" };
+    const ring0Paths = [...policy.ring0Paths, "docs/**"];
+    commit(
+      file(
+        JSON.stringify({ permissions: { policy: { ...policy, ring0Paths } } }),
+      ),
+    );
+    const y = loadRunConfig(repo);
+    append("run-x", CONFIG_ACCEPTED, accepted(x, "run-x"));
+    append("run-y", CONFIG_ACCEPTED, accepted(y, "run-y"));
+    expect(ring0Status(log, y)).toEqual({ kind: "unchanged" });
+    // A fault in Y's run: its acceptance is no baseline, and X's is not used.
+    const ran = { toolCallId: "helmwright.config.ring0", status: "ok" };
+    append("run-y", "loop.tool.called", { ...ran, name: "config.set" });
+    expect(ring0Status(log, x)).toEqual({
+      kind: "changed",
+      from: y.record.ring0Sha256,
+      changed: [...RING0_CONFIG_KEYS],
+      note: "the latest accepted baseline in this state dir is not valid",
+    });
+  });
 });
