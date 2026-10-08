@@ -118,6 +118,8 @@ const HELMWRIGHT_GLOBS = [
   "rot-register.json",
   // S1 (B6-5 review): the run-start check, presence, Ring 0 data and its generator.
   "packages/harness/src/run/**",
+  // B10-1: the intake rubric is a Ring 0 step (03 Intake).
+  "packages/harness/src/intake/**",
   "packages/harness/src/cli.ts",
   "packages/schema/src/index.ts",
   "packages/schema/generated/**",
@@ -368,7 +370,9 @@ const HELMWRIGHT_ONLY = `packages/harness/src/permission/policy.ts
   rot-register.json packages/harness/package.json
   packages/harness/src/run/run.ts packages/harness/src/cli.ts
   packages/schema/src/index.ts packages/schema/generated/x.ts
-  packages/schema/scripts/generate.ts`.split(/\s+/);
+  packages/schema/scripts/generate.ts packages/harness/src/intake/rubric.ts`.split(
+  /\s+/,
+);
 
 describe("isRing0Path with RING0_PATHS", () => {
   it.each(
@@ -465,6 +469,7 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
     "packages/harness/src/config/x.ts",
     "rot-register.json",
     "packages/harness/src/run/x.ts",
+    "packages/harness/src/intake/rubric.ts",
     "packages/harness/src/cli.ts",
     "packages/schema/src/index.ts",
     "packages/schema/generated/x.ts",
