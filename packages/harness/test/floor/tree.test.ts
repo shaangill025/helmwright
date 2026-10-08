@@ -116,6 +116,16 @@ describe("candidateChanges", { timeout: 30_000 }, () => {
     write("d/e/x.ts", MARK);
     expect(paths()).toEqual([]);
     expect(rules()).toEqual([["config.changed", "d/.gitignore"]]);
+    // R1: a name that is pathspec magic is matched literally, not parsed.
+    rmSync(join(wt, "d"), { recursive: true });
+    write(":(top)x/.gitignore", "*\n");
+    write(":(top)x/e/y.ts", MARK);
+    write(":(attr:a)y/.gitignore", "*\n");
+    expect(paths()).toEqual([]);
+    expect(rules()).toEqual([
+      ["config.changed", ":(attr:a)y/.gitignore"],
+      ["config.changed", ":(top)x/.gitignore"],
+    ]);
   });
 
   it.each([
