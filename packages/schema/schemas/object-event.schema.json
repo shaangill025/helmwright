@@ -1,0 +1,499 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/object-event.schema.json",
+  "title": "ObjectEvent",
+  "description": "Payload of an object event in the session log (B5-2, Q61), validated before it is appended and when it is read. `kind` equals the event's `type`; the writer checks that relation. A payload holds only what its writer knows: each record's `createdAt` and `createdSeq` are the envelope's `at` and `seq`, and its kind, ring and creation-time constants come from objects.schema.json, so none of them is in a payload. `decision.recommendation.revealed` (A3) and every `decision.owner.*` type (SIG) are reserved: they have no variant, so this schema rejects them. Uniqueness inside arrays, sorted scope, the footprint content address and a Ruling's null class for intake are checked by the writer, not the schema.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/taskCreated" },
+    { "$ref": "#/$defs/runRecorded" },
+    { "$ref": "#/$defs/artifactRecorded" },
+    { "$ref": "#/$defs/decisionOpened" },
+    { "$ref": "#/$defs/decisionFootprintRecorded" },
+    { "$ref": "#/$defs/decisionOutcomeSignalled" }
+  ],
+  "$defs": {
+    "taskCreated": {
+      "title": "TaskCreated",
+      "description": "The harness created a Task at run start (TaskRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`, and `status` starts `open`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "repoId", "text", "scope"],
+      "properties": {
+        "kind": { "const": "task.created" },
+        "id": { "$ref": "#/$defs/taskId" },
+        "repoId": {
+          "$ref": "#/$defs/repoId",
+          "description": "The repository the task is for: the realpath of its common git dir, as in `config.accepted.repo`."
+        },
+        "text": {
+          "$ref": "#/$defs/text",
+          "description": "The task text given to the engine (the task file's `title`), not blank, at most 8192 code points."
+        },
+        "scope": {
+          "description": "The declared scope, sorted and unique (checked by the writer); empty when none was declared.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/scopeEntry" }
+        }
+      }
+    },
+    "runRecorded": {
+      "title": "RunRecorded",
+      "description": "The harness recorded a Run at run start (RunRecord): the record's `id`, `graphId` and `nodeId` are the envelope's `runId`, `graphId` and `nodeId`, `createdAt` and `createdSeq` its `at` and `seq`, and `terminal` starts `null`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "taskId", "engine", "baseCommit", "class"],
+      "properties": {
+        "kind": { "const": "run.recorded" },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The Task this run executes (typed link task→run)."
+        },
+        "engine": {
+          "description": "The engine kind; only the scripted engine exists until B11 adds the native and B13 the hosted engine with their fixtures (07 rule 1).",
+          "const": "scripted"
+        },
+        "baseCommit": {
+          "$ref": "#/$defs/oid",
+          "description": "The commit the worktree was created from (`run.started.baseCommit`)."
+        },
+        "class": { "$ref": "#/$defs/taskClass" }
+      }
+    },
+    "artifactRecorded": {
+      "title": "ArtifactRecorded",
+      "description": "The harness recorded an Artifact (ArtifactRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`. For `footprint.*` the writer checks the content address: `sha256` is the SHA-256 of the UTF-8 bytes of `JSON.stringify([type, repoId, ref])` and `id` is `artifact-<sha256>`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "type", "ref", "sha256"],
+      "properties": {
+        "kind": { "const": "artifact.recorded" },
+        "id": { "$ref": "#/$defs/artifactId" },
+        "type": { "$ref": "#/$defs/artifactType" },
+        "repoId": {
+          "$ref": "#/$defs/repoId",
+          "description": "The repository the artifact belongs to; absent only for a concept expansion."
+        },
+        "ref": {
+          "$ref": "#/$defs/displayText",
+          "description": "Type-specific escaped locator (diff: candidate tree OID; report: path under the state dir; conceptExpansion: concept slug; footprint.*: repo-relative path, `<path>#<exported name>`, dependency name or module ID), whose grammar the first writer of each type fixes (A2, B15, C2, A1)."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "For `footprint.*` the content address above; otherwise the SHA-256 of the stored content."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that produced it, when one did; footprints and expansions may be recorded outside a run (A1, A7, C2)."
+        }
+      },
+      "$comment": "`if` and `then` are copies of objects.schema.json's `artifact` `if` and `then`.",
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "diff",
+              "report",
+              "footprint.file",
+              "footprint.symbol",
+              "footprint.dependency",
+              "footprint.module"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": { "repoId": { "$ref": "#/$defs/repoId" } },
+        "required": ["repoId"]
+      }
+    },
+    "decisionOpened": {
+      "title": "DecisionOpened",
+      "description": "The harness opened a ledger entry: an owned decision with its brief, or a Ruling, which is the variant with authority harness, a ruling body and no brief.",
+      "oneOf": [
+        { "$ref": "#/$defs/decisionOpenedOwned" },
+        { "$ref": "#/$defs/decisionOpenedRuling" }
+      ]
+    },
+    "decisionOpenedOwned": {
+      "title": "DecisionOpenedOwned",
+      "description": "The harness opened a decision in an owned class with its brief (OwnedDecisionRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`, `footprint` and `outcomes` start empty and `status` starts `pending`. Owner-written fields arrive with SIG, A3, A1 and A7.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "authority",
+        "taskId",
+        "runId",
+        "signalIds",
+        "class",
+        "source",
+        "brief"
+      ],
+      "properties": {
+        "kind": { "const": "decision.opened" },
+        "id": { "$ref": "#/$defs/decisionId" },
+        "authority": {
+          "description": "Who decides: the owner.",
+          "const": "owner"
+        },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The task the decision belongs to (typed link task→decision)."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that opened the decision."
+        },
+        "signalIds": { "$ref": "#/$defs/signalIds" },
+        "class": { "$ref": "#/$defs/decisionClass" },
+        "source": {
+          "description": "What raised the decision: the plan's `decisions[]`, a floor signal over the brief threshold, or the agent's self-flag (Q45, Q53, Q54).",
+          "enum": ["plan", "floor", "selfFlag"]
+        },
+        "brief": { "$ref": "#/$defs/brief" }
+      }
+    },
+    "decisionOpenedRuling": {
+      "title": "DecisionOpenedRuling",
+      "description": "The harness recorded a Ruling (RulingRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`, `footprint` and `outcomes` start empty and `status` is `resolved`. A Ruling has no brief and no owner-written field; with source `intake` its class is `null` (checked by the writer).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "authority",
+        "taskId",
+        "runId",
+        "signalIds",
+        "class",
+        "source",
+        "ruling"
+      ],
+      "properties": {
+        "kind": { "const": "decision.opened" },
+        "id": { "$ref": "#/$defs/decisionId" },
+        "authority": {
+          "description": "Who decided: the harness.",
+          "const": "harness"
+        },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The task the decision belongs to (typed link task→decision)."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that opened the decision."
+        },
+        "signalIds": { "$ref": "#/$defs/signalIds" },
+        "class": {
+          "description": "The owned class of the call, or `null` when the call is outside the owned classes, such as intake (OD-2).",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/decisionClass" }]
+        },
+        "source": {
+          "description": "What raised the call: the plan-time pass, a floor signal under the brief threshold, or intake (Q53, Q54, Q-B5-2).",
+          "enum": ["plan", "floor", "intake"]
+        },
+        "ruling": { "$ref": "#/$defs/rulingBody" }
+      }
+    },
+    "decisionFootprintRecorded": {
+      "title": "DecisionFootprintRecorded",
+      "description": "The harness recorded the footprint of a decision when it closed (Q47); it sets the record's `footprint` once (checked by the writer).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decisionId", "artifactIds"],
+      "properties": {
+        "kind": { "const": "decision.footprint.recorded" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "artifactIds": {
+          "description": "The footprint artifact IDs, unique (checked by the writer).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/artifactId" }
+        }
+      }
+    },
+    "decisionOutcomeSignalled": {
+      "title": "DecisionOutcomeSignalled",
+      "description": "The harness found that a later run's diff matched a decision's footprint (Q47); it appends `{kind: \"signal\", signal, runId, artifactIds, at, seq}` to the record's `outcomes`, with the envelope's `at` and `seq`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decisionId", "signal", "runId", "artifactIds"],
+      "properties": {
+        "kind": { "const": "decision.outcome.signalled" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "signal": {
+          "description": "`rework`: the diff changed a symbol of a footprint file; `dependencyChanged`: it added or removed a footprint dependency (Q47).",
+          "$comment": "Copy of objects.schema.json's `outcomeSignal.properties.signal`.",
+          "enum": ["rework", "dependencyChanged"]
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run whose diff matched."
+        },
+        "artifactIds": {
+          "description": "The footprint entries the diff matched.",
+          "$comment": "Copy of objects.schema.json's `outcomeSignal.properties.artifactIds`.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/artifactId" }
+        }
+      }
+    },
+    "artifactType": {
+      "title": "ArtifactType",
+      "description": "What the artifact is; the footprint types are the Q47 representation: files, exported symbols, dependency names and module IDs.",
+      "$comment": "Copy of objects.schema.json's `artifact.properties.type`.",
+      "enum": [
+        "diff",
+        "report",
+        "conceptExpansion",
+        "footprint.file",
+        "footprint.symbol",
+        "footprint.dependency",
+        "footprint.module"
+      ]
+    },
+    "taskId": {
+      "description": "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `taskId`.",
+      "type": "string",
+      "pattern": "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$"
+    },
+    "runId": {
+      "description": "Kind-prefixed run ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `runId`.",
+      "type": "string",
+      "pattern": "^run-[A-Za-z0-9][A-Za-z0-9_-]{0,123}$"
+    },
+    "artifactId": {
+      "description": "Kind-prefixed artifact ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `artifactId`.",
+      "type": "string",
+      "pattern": "^artifact-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+    },
+    "decisionId": {
+      "description": "Kind-prefixed decision ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `decisionId`.",
+      "type": "string",
+      "pattern": "^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+    },
+    "repoId": {
+      "description": "Absolute realpath of a repository's common git dir: at most 4096 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "$comment": "Copy of objects.schema.json's `repoId`.",
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{0,4095}$"
+    },
+    "text": {
+      "description": "Text of 1 to 8192 code points, not only spaces; tabs and line breaks are kept, but no other control character, bidi control or lone surrogate.",
+      "$comment": "Copy of objects.schema.json's `text`.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "displayText": {
+      "description": "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "$comment": "Copy of objects.schema.json's `displayText`.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$"
+    },
+    "scopeEntry": {
+      "description": "A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.",
+      "$comment": "Copy of objects.schema.json's `scopeEntry`.",
+      "type": "string",
+      "pattern": "^[^\\\\\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,1024}$",
+      "not": { "pattern": "(^|/)\\.{0,2}(/|$)" }
+    },
+    "taskClass": {
+      "title": "TaskClass",
+      "description": "Task class, in rank order: chore < bounded < architectural.",
+      "$comment": "Copy of objects.schema.json's `taskClass`.",
+      "enum": ["chore", "bounded", "architectural"]
+    },
+    "sha256": {
+      "description": "Lowercase hex SHA-256.",
+      "$comment": "Copy of objects.schema.json's `sha256`.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "oid": {
+      "description": "A full lowercase hex git object ID (SHA-1 or SHA-256).",
+      "$comment": "Copy of objects.schema.json's `oid`.",
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "decisionClass": {
+      "title": "DecisionClass",
+      "description": "An owned decision class (03 Owned decision classes, X3): architecture, scope or technology.",
+      "$comment": "Copy of objects.schema.json's `decisionClass`.",
+      "enum": ["architecture", "scope", "technology"]
+    },
+    "signalId": {
+      "description": "The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.",
+      "$comment": "Copy of objects.schema.json's `signalId`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "signalIds": {
+      "description": "The signals that raised the decision, unique (checked by the writer); empty for a plan's `decisions[]`.",
+      "$comment": "Copy of objects.schema.json's `signalIds`.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/signalId" }
+    },
+    "brief": {
+      "title": "DecisionBrief",
+      "description": "The brief as presented (03 The brief, Q45), written by the harness when it opens the decision; it holds the recommendation only as a salted commitment until reveal (Q48).",
+      "$comment": "Copy of objects.schema.json's `brief`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "options",
+        "recommendationSha256",
+        "optionOrderSeed",
+        "confidence",
+        "costIfWrong",
+        "reversibility",
+        "uncertainty",
+        "blocked",
+        "concepts",
+        "proposedFootprint"
+      ],
+      "properties": {
+        "question": { "$ref": "#/$defs/question" },
+        "options": {
+          "description": "The 2 to 4 options actually considered, in stored order, with unique IDs (checked by the writer).",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/option" }
+        },
+        "recommendationSha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 256 random bits as 64 lowercase hex digits, and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it)."
+        },
+        "optionOrderSeed": {
+          "$ref": "#/$defs/seed",
+          "description": "The logged seed of the shuffled display order of the options (Q48)."
+        },
+        "confidence": {
+          "title": "DecisionConfidence",
+          "description": "The harness's confidence in its recommendation, shown in the brief before reveal (Q45, Q48, OD-4).",
+          "enum": ["low", "medium", "high"]
+        },
+        "costIfWrong": {
+          "$ref": "#/$defs/line",
+          "description": "The cost if the decision is wrong, as one line of at most 200 code points."
+        },
+        "reversibility": {
+          "description": "How hard the decision is to undo (03 The brief, OD-5).",
+          "enum": ["reversible", "costly", "irreversible"]
+        },
+        "uncertainty": {
+          "$ref": "#/$defs/line",
+          "description": "What the harness is uncertain about, as one line of at most 200 code points."
+        },
+        "blocked": {
+          "$ref": "#/$defs/line",
+          "description": "What is blocked while the decision waits, as one line of at most 200 code points."
+        },
+        "concepts": {
+          "description": "The concept slugs the brief references (X6), unique (checked by the writer); may be empty.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/conceptSlug" }
+        },
+        "proposedFootprint": {
+          "description": "The footprint the harness expects the decision to have (Q45), as content-addressed artifact IDs, unique (checked by the writer); may be empty.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/artifactId" }
+        }
+      }
+    },
+    "option": {
+      "title": "DecisionOption",
+      "description": "One option of a brief, whose ID stays the same under the shuffled display order (Q48).",
+      "$comment": "Copy of objects.schema.json's `option`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "tradeoffs"],
+      "properties": {
+        "id": { "enum": ["a", "b", "c", "d"] },
+        "label": { "$ref": "#/$defs/optionLabel" },
+        "tradeoffs": {
+          "$ref": "#/$defs/line",
+          "description": "The option's trade-offs, as one line of at most 200 code points (Q45)."
+        }
+      }
+    },
+    "rulingBody": {
+      "title": "Ruling",
+      "description": "What the harness decided, why, the cost if wrong and the version of the rubric that routed the call (03 Delegated authority, Q53).",
+      "$comment": "Copy of objects.schema.json's `rulingBody`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["what", "why", "costIfWrong", "rubricVersion"],
+      "properties": {
+        "what": {
+          "$ref": "#/$defs/line",
+          "description": "What the harness decided, as one line of at most 200 code points."
+        },
+        "why": {
+          "$ref": "#/$defs/text",
+          "description": "Why the harness decided it, not blank, at most 8192 code points."
+        },
+        "costIfWrong": {
+          "$ref": "#/$defs/line",
+          "description": "The cost if the call is wrong, as one line of at most 200 code points; B5-5 maps the intake event's longer, multi-line `costIfWrong` into this form, or the Ruling write fails."
+        },
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" }
+      }
+    },
+    "seed": {
+      "description": "A 128-bit seed as 32 lowercase hex characters.",
+      "$comment": "Copy of objects.schema.json's `seed`.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "conceptSlug": {
+      "description": "A concept slug (X6): 1 to 64 lowercase letters, digits and hyphens, not starting with a hyphen.",
+      "$comment": "Copy of objects.schema.json's `conceptSlug`.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "rubricVersion": {
+      "description": "The version of the rubric that routed the call, such as `intake-rubric-1` or `materiality-rubric-1`.",
+      "$comment": "Copy of objects.schema.json's `rubricVersion`.",
+      "type": "string",
+      "pattern": "^(?:intake|materiality)-rubric-[1-9][0-9]{0,5}$"
+    },
+    "question": {
+      "description": "One line of 1 to 160 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "$comment": "Copy of objects.schema.json's `question`.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,160}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "optionLabel": {
+      "description": "One line of 1 to 80 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "$comment": "Copy of objects.schema.json's `optionLabel`.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,80}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "line": {
+      "description": "One line of 1 to 200 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "$comment": "Copy of objects.schema.json's `line`.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,200}$",
+      "not": { "pattern": "^\\s*$" }
+    }
+  }
+}
