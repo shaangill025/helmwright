@@ -236,11 +236,17 @@ function ignoredGitignores(git: Git, max: number): FloorFinding[] {
     "--exclude-standard",
   ];
   const listed = entries(git([...others, "--directory"], max));
-  const dirs = listed.filter((path) => path.endsWith("/"));
-  // Without --stdin check-ignore has no -z; a quoted name fails the match and is searched.
+  // R1: names without the trailing slash, so only rules outside a directory decide
+  // whether it is ignored. check-ignore refuses --literal-pathspecs, so each name gets a
+  // `./` prefix: magic is parsed only at a leading `:`, and the output echoes the input.
+  const dirs = listed
+    .filter((path) => path.endsWith("/"))
+    .map((path) => path.slice(0, -1));
+  // runGit gives no stdin, so no --stdin -z: a quoted name fails the match and is searched.
   let outer = new Set<string>();
   try {
-    const args = ["-c", "core.quotePath=false", "check-ignore", "--", ...dirs];
+    const local = dirs.map((dir) => "./" + dir);
+    const args = ["-c", "core.quotePath=false", "check-ignore", "--", ...local];
     if (dirs.length)
       outer = new Set(git(args, max).toString("utf8").split("\n"));
   } catch (error) {
@@ -248,12 +254,13 @@ function ignoredGitignores(git: Git, max: number): FloorFinding[] {
     if ((error as { status?: unknown }).status !== 1) throw error;
   }
   const inner = dirs
-    .filter((dir) => !outer.has(dir))
-    .map((dir) => ":(glob)" + globLiteral(dir) + "**/.gitignore");
+    .filter((dir) => !outer.has("./" + dir))
+    .map((dir) => ":(glob)" + globLiteral(dir) + "/**/.gitignore");
   const nested = inner.length
     ? entries(git([...others, "--", ...inner], max))
     : [];
-  return [...listed, ...nested].filter(isGitignore).map(ignoredGitignore);
+  const found = new Set([...listed, ...nested]);
+  return [...found].filter(isGitignore).map(ignoredGitignore);
 }
 
 /** The candidate's changes with their blob bytes, bounded by `limits`. */
