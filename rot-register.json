@@ -393,6 +393,22 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/schema/schemas/objects.schema.json",
+    "ring": 0,
+    "assumption": "Five of the seven kinds (Task, Run, Artifact, Rule, Skill; Event is the envelope, Decision follows in B5-1b) are one JSON Schema whose kind-prefixed IDs are also valid envelope IDs, whose links are typed by ID pattern, whose ring is a per-kind constant, and whose every object carries the seq and time of its creating event; link existence, uniqueness inside arrays, sorted scope, the footprint content address and the once-only status transitions are checked by the harness, not the schema.",
+    "evidence": [
+      "10 Ontology position",
+      "05 Rings",
+      "decisions Q61",
+      "decisions Q47",
+      "decisions B5 owner answers",
+      "packages/schema/test/objects.test.ts"
+    ],
+    "added": "2026-10-08",
+    "lastReviewed": "2026-10-08",
+    "reviewTrigger": ["milestone"]
+  },
+  {
     "component": "packages/schema/schemas/permission-event.schema.json",
     "ring": 0,
     "assumption": "Each ruling is logged with the policy version and the input's SHA-256, each ask with its prompt's SHA-256, and an approval's attestation is none until slice SIG.",

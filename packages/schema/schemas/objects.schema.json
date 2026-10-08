@@ -1,0 +1,434 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/objects.schema.json",
+  "title": "ObjectRecord",
+  "description": "One record of the harness object model (10 Ontology position, Q61): the five kinds Task, Run, Artifact, Rule and Skill. Event is the session-log envelope (event.schema.json); Decision with Ruling arrives in B5-1b. Every object carries its ring, kind-prefixed ID, typed links by ID pattern, and the seq and time of the event that created it. Link existence, uniqueness inside arrays, sorted scope and the footprint content address are relations the harness checks, not the schema.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/task" },
+    { "$ref": "#/$defs/run" },
+    { "$ref": "#/$defs/artifact" },
+    { "$ref": "#/$defs/rule" },
+    { "$ref": "#/$defs/skill" }
+  ],
+  "$defs": {
+    "task": {
+      "title": "TaskRecord",
+      "description": "Declared work on one repository, written by the harness at run start; only `status` changes after creation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "repoId",
+        "text",
+        "scope",
+        "status"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/taskId" },
+        "kind": { "const": "task" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the ledger is Ring 0.",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "repoId": {
+          "$ref": "#/$defs/repoId",
+          "description": "The repository the task is for: the realpath of its common git dir, as in `config.accepted.repo`."
+        },
+        "text": {
+          "$ref": "#/$defs/text",
+          "description": "The task text given to the engine (the task file's `title`), not blank, at most 8192 code points."
+        },
+        "scope": {
+          "description": "The declared scope, sorted and unique (checked by the writer); empty when none was declared (then the class is architectural, OQ-B10-2).",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/scopeEntry" }
+        },
+        "status": {
+          "title": "TaskStatus",
+          "description": "`open` at creation; `done` only from the evaluator's verdict (B15, AC7), never from a run terminal or an engine claim.",
+          "enum": ["open", "done"]
+        }
+      }
+    },
+    "run": {
+      "title": "RunRecord",
+      "description": "One execution of a Task at a base commit with the intake class it started with (after any owner override; a later upward reclassification is an `intake.reclassified` event), written by the harness at run start; only `terminal` changes, once, at `run.terminated`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "taskId",
+        "graphId",
+        "nodeId",
+        "engine",
+        "baseCommit",
+        "class",
+        "terminal"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/runId",
+          "description": "Kind-prefixed ID, also the `runId` of every event of this run (run→events link)."
+        },
+        "kind": { "const": "run" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the log is Ring 0.",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The Task this run executes (typed link task→run)."
+        },
+        "graphId": {
+          "$ref": "#/$defs/envelopeId",
+          "description": "The graph ID on every event of this run."
+        },
+        "nodeId": {
+          "$ref": "#/$defs/envelopeId",
+          "description": "The run's root node ID (M1: the single agent node)."
+        },
+        "engine": {
+          "description": "The engine kind; only the scripted engine exists until B11 adds the native and B13 the hosted engine with their fixtures (07 rule 1).",
+          "const": "scripted"
+        },
+        "baseCommit": {
+          "$ref": "#/$defs/oid",
+          "description": "The commit the worktree was created from (`run.started.baseCommit`)."
+        },
+        "class": { "$ref": "#/$defs/taskClass" },
+        "terminal": {
+          "description": "`null` while the run is open, then the typed terminal state of `run.terminated`, where `completed` means the engine stopped, never that the task is done.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/terminal" }]
+        }
+      }
+    },
+    "artifact": {
+      "title": "ArtifactRecord",
+      "description": "A stored product of the harness: a diff, a report, a concept expansion (X6) or a footprint entry (Q47); `repoId` is required except for a concept expansion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "type",
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/artifactId" },
+        "kind": { "const": "artifact" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the log and ledger are Ring 0.",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "type": {
+          "title": "ArtifactType",
+          "description": "What the artifact is; the footprint types are the Q47 representation: files, exported symbols, dependency names and module IDs.",
+          "enum": [
+            "diff",
+            "report",
+            "conceptExpansion",
+            "footprint.file",
+            "footprint.symbol",
+            "footprint.dependency",
+            "footprint.module"
+          ]
+        },
+        "repoId": {
+          "$ref": "#/$defs/repoId",
+          "description": "The repository the artifact belongs to; absent only for a concept expansion."
+        },
+        "ref": {
+          "$ref": "#/$defs/displayText",
+          "description": "Type-specific escaped locator (diff: candidate tree OID; report: path under the state dir; conceptExpansion: concept slug; footprint.*: repo-relative path, `<path>#<exported name>`, dependency name or module ID), whose grammar the first writer of each type fixes (A2, B15, C2, A1)."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "For `footprint.*` the content address, SHA-256 of the canonical JSON `[type, repoId, ref]` with ID `artifact-<sha256>` (checked on write, B5-3); otherwise the SHA-256 of the stored content."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that produced it, when one did; footprints and expansions may be recorded outside a run (A1, A7, C2)."
+        }
+      },
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "diff",
+              "footprint.file",
+              "footprint.symbol",
+              "footprint.dependency",
+              "footprint.module"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": { "repoId": { "$ref": "#/$defs/repoId" } },
+        "required": ["repoId"]
+      }
+    },
+    "rule": {
+      "title": "RuleRecord",
+      "description": "An owner-approved rule in the rulebook (04 Bridge to the harness loop), written only through an owner action (Q6); no M1 writer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "text",
+        "authority",
+        "evidenceDecisionIds",
+        "assumption",
+        "reviewTrigger",
+        "status"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/ruleId" },
+        "kind": { "const": "rule" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the ledger and rulebook are Ring 0 (owner D-3; revisit at M3 with the evolve agent's rule proposals, T-04-14).",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "text": {
+          "$ref": "#/$defs/text",
+          "description": "The rule as the owner approved it, for example a pattern-we-do-not-use."
+        },
+        "authority": {
+          "description": "Who approved the rule: only the owner until the evolve agent proposes rules (M3, T-04-14).",
+          "const": "owner"
+        },
+        "evidenceDecisionIds": {
+          "description": "The ledger entries the rule rests on, unique (checked by the writer); may be empty for a hand-authored rule.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/decisionId" }
+        },
+        "assumption": {
+          "$ref": "#/$defs/assumption",
+          "description": "The assumption the rule rests on, as one line, like a rot-register entry."
+        },
+        "reviewTrigger": {
+          "$ref": "#/$defs/reviewTrigger",
+          "description": "What makes the rule due for re-audit; a model upgrade at least."
+        },
+        "status": {
+          "title": "RuleStatus",
+          "description": "`live` once approved and `retired` when the owner drops it; a harness-proposed status arrives with its M3 writer and fixture.",
+          "enum": ["live", "retired"]
+        }
+      }
+    },
+    "skill": {
+      "title": "SkillRecord",
+      "description": "One version of a skill file, promoted by the evolve agent through the composite gate (05, M3); no M1 writer.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "name",
+        "version",
+        "digest",
+        "status"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/skillId" },
+        "kind": { "const": "skill" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): skills are Ring 1.",
+          "const": 1
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "name": {
+          "description": "The skill's name, a lowercase slug.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "version": {
+          "description": "Revision number of this skill file; a new version is a new object (one logical change per commit).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the skill file at this version."
+        },
+        "status": {
+          "title": "SkillStatus",
+          "description": "`candidate` while a proposal, `live` after the gate and veto window, `retired` after rollback or pruning.",
+          "enum": ["candidate", "live", "retired"]
+        }
+      }
+    },
+    "taskId": {
+      "description": "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$"
+    },
+    "runId": {
+      "description": "Kind-prefixed run ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^run-[A-Za-z0-9][A-Za-z0-9_-]{0,123}$"
+    },
+    "artifactId": {
+      "description": "Kind-prefixed artifact ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^artifact-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+    },
+    "ruleId": {
+      "description": "Kind-prefixed rule ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^rule-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$"
+    },
+    "skillId": {
+      "description": "Kind-prefixed skill ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^skill-[A-Za-z0-9][A-Za-z0-9_-]{0,121}$"
+    },
+    "decisionId": {
+      "description": "Kind-prefixed decision ID, also a valid session-log ID (at most 128 characters).",
+      "type": "string",
+      "pattern": "^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+    },
+    "envelopeId": {
+      "description": "A session-log ID that is not an object kind, such as a graph or node ID.",
+      "$comment": "Copy of event.schema.json's `id`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "at": {
+      "description": "The `at` of the event that created the object.",
+      "$comment": "Copy of event.schema.json's `at`.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+    },
+    "seq": {
+      "description": "The `seq` of the event that created the object, so a rebuilt row is bound to its event.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "oid": {
+      "description": "A full lowercase hex git object ID (SHA-1 or SHA-256).",
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "sha256": {
+      "description": "Lowercase hex SHA-256.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repoId": {
+      "description": "Absolute realpath of a repository's common git dir: at most 4096 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "type": "string",
+      "pattern": "^/[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{0,4095}$"
+    },
+    "text": {
+      "description": "Escaped text, 1 to 8192 code points, not only spaces.",
+      "type": "string",
+      "pattern": "^[\\s\\S]{1,8192}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "displayText": {
+      "description": "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$"
+    },
+    "scopeEntry": {
+      "description": "A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.",
+      "$comment": "Copy of intake-event.schema.json's `scopeEntry`.",
+      "type": "string",
+      "pattern": "^[^\\\\\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,1024}$",
+      "not": { "pattern": "(^|/)\\.{0,2}(/|$)" }
+    },
+    "taskClass": {
+      "title": "TaskClass",
+      "description": "Task class, in rank order: chore < bounded < architectural.",
+      "$comment": "Copy of intake-event.schema.json's `class`.",
+      "enum": ["chore", "bounded", "architectural"]
+    },
+    "reviewTrigger": {
+      "description": "What makes the assumption due for review: a model change, an engine change or a milestone end.",
+      "$comment": "Copy of rot-register.schema.json's `reviewTrigger` array.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": { "enum": ["model", "engine", "milestone"] }
+    },
+    "assumption": {
+      "description": "One line without leading or trailing spaces, at most 1024 characters.",
+      "$comment": "Copy of rot-register.schema.json's `assumption`.",
+      "type": "string",
+      "pattern": "^\\S(.{0,1022}\\S)?$"
+    },
+    "terminal": {
+      "title": "RunTerminal",
+      "description": "Typed terminal state of a run, as in loop/terminal.ts.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "completed" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "reason"],
+          "properties": {
+            "kind": { "const": "incomplete" },
+            "reason": {
+              "enum": [
+                "timeout",
+                "max_iterations",
+                "max_tool_calls",
+                "no_progress",
+                "cancelled"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "error"],
+          "properties": {
+            "kind": { "const": "failed" },
+            "error": { "$ref": "#/$defs/displayText" }
+          }
+        }
+      ]
+    }
+  }
+}
