@@ -1662,6 +1662,14 @@ describe("helmwright.config.json (e2e)", () => {
       expect(JSON.parse(fresh.stdout)).toMatchObject({
         terminal: { kind: "failed", error: NOT_APPROVED },
       });
+      // A shallow clone of the removal hides the history: still asked.
+      const thin = join(tmp, "shallow");
+      git("clone", "--quiet", "--depth", "1", "file://" + repo, thin);
+      const shallow = writeTask("write-file.turns.json", LIMITS, thin);
+      const bare = cli("run", shallow, "--state-dir", join(tmp, "state3"));
+      expect(JSON.parse(bare.stdout)).toMatchObject({
+        terminal: { kind: "failed", error: NOT_APPROVED },
+      });
     },
   );
 
