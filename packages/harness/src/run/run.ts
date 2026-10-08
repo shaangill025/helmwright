@@ -7,7 +7,12 @@ import {
   rmSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { Event } from "@helmwright/schema";
+import {
+  CONFIG_DEFAULTS,
+  type Event,
+  type IntakeClass,
+  type IntakeDeclared,
+} from "@helmwright/schema";
 import {
   BROKER_TOOLS,
   SANDBOX_CLEANUP_FAILED,
@@ -26,6 +31,18 @@ import {
 } from "../config/config.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import {
+  INTAKE_OVERRIDE_NOT_APPROVED,
+  intakeClassified,
+  intakeOverridden,
+  type IntakeOverride,
+} from "../intake/events.ts";
+import {
+  IntakeError,
+  classify,
+  overrideDirection,
+  type IntakeResult,
+} from "../intake/rubric.ts";
+import {
   MESSAGE_APPENDED,
   assertNoDesync,
   deriveMessages,
@@ -40,7 +57,12 @@ import {
 } from "../loop/loop.ts";
 import { canonicalJson } from "../loop/reminders.ts";
 import { errorMessage, summarize, type Terminal } from "../loop/terminal.ts";
-import { displayText, runRing0, type RunRing0 } from "../permission/policy.ts";
+import {
+  RING0_PATHS,
+  displayText,
+  runRing0,
+  type RunRing0,
+} from "../permission/policy.ts";
 import type { Presence } from "../permission/presence.ts";
 import type {
   Emit,
@@ -77,7 +99,20 @@ export interface Task {
   /** `turns` is resolved against the task file's directory. */
   readonly engine: { readonly kind: "scripted"; readonly turns: string };
   readonly limits: LoopLimits;
+  /** B10-2: the task's declared intake facts, checked by `classify` (no scope: architectural). */
+  readonly intake: {
+    readonly scope?: unknown;
+    readonly declared: Readonly<Record<string, unknown>>;
+  };
 }
+
+/** Missing declared intake facts default to none. */
+const NOTHING_DECLARED = {
+  newDependencies: [],
+  newModules: [],
+  surfaceChanges: [],
+  newProcessBoundary: false,
+};
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 type Fields = Record<string, unknown>;
@@ -93,6 +128,31 @@ function fields(v: unknown, keys: readonly string[], where: string): Fields {
   return v;
 }
 
+/** `v` as an object with no key outside `keys`. @throws UsageError */
+function known(v: unknown, keys: readonly string[], where: string): Fields {
+  if (!isRecord(v)) throw new UsageError(`${where} must be an object`);
+  if (!Object.keys(v).every((key) => keys.includes(key))) {
+    throw new UsageError(`${where} may have only: ${keys.join(", ")}`);
+  }
+  return v;
+}
+
+function taskIntake(v: unknown): Task["intake"] {
+  if (v === undefined) return { declared: { ...NOTHING_DECLARED } };
+  const intake = known(v, ["scope", "declared"], "task.intake");
+  const facts = Object.keys(NOTHING_DECLARED);
+  const declared = known(
+    intake["declared"] ?? {},
+    facts,
+    "task.intake.declared",
+  );
+  const { scope } = intake;
+  return {
+    ...(scope === undefined ? {} : { scope }),
+    declared: { ...NOTHING_DECLARED, ...declared },
+  };
+}
+
 /** Reads and strictly validates a task file. @throws UsageError */
 export function loadTask(taskFile: string): Task {
   let json: unknown;
@@ -101,7 +161,9 @@ export function loadTask(taskFile: string): Task {
   } catch (error) {
     throw new UsageError(`cannot read task file: ${errorMessage(error)}`);
   }
-  const t = fields(json, ["id", "title", "repo", "engine", "limits"], "task");
+  const base = ["id", "title", "repo", "engine", "limits"];
+  const optional = isRecord(json) && "intake" in json ? ["intake"] : [];
+  const t = fields(json, [...base, ...optional], "task");
   const engine = fields(t["engine"], ["kind", "turns"], "task.engine");
   const { id, title, repo, limits } = t;
   if (typeof id !== "string" || !ID.test(id)) {
@@ -132,6 +194,7 @@ export function loadTask(taskFile: string): Task {
     repo,
     engine: { kind: "scripted", turns: resolve(dirname(taskFile), turns) },
     limits: limits as unknown as LoopLimits,
+    intake: taskIntake(t["intake"]),
   };
 }
 
@@ -492,6 +555,10 @@ export interface RunTaskOptions {
   readonly checkDesync?: boolean;
   /** Who answers permission asks; absent, every ask is denied (nobody present). */
   readonly presence?: Presence;
+  /** OQ-B10-1: the owner's class override (`--class`, `--reason`). */
+  readonly intakeOverride?: { readonly to: string; readonly reason: string };
+  /** Called once the task is classified, before any docker or git work. */
+  readonly onClassified?: (result: IntakeResult) => void;
 }
 
 export interface RunTaskResult extends RunOutcome {
@@ -521,11 +588,16 @@ export const RING0_NOT_APPROVED =
  * run's deadline (`limits.timeoutMs`); a cancel during it (the run's signal, or
  * Ctrl-C or end of input at the prompt) ends the run incomplete. N-d: any other
  * answer that is not an approval, such as one not viewed to its end, fails it.
- * @throws UsageError for an invalid task, repo, config or state dir; CancelledError if
+ * B10-2: the task is classified (intake-rubric-1) after the config is loaded, and
+ * `intake.classified` is logged after the Ring 0 check. An upward or downward
+ * override logs `intake.overridden`; a downward one is first asked like the Ring 0
+ * change, and unless approved the run fails with INTAKE_OVERRIDE_NOT_APPROVED.
+ * @throws UsageError for an invalid task, intake, override, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   const task = loadTask(options.taskFile);
+  const override = checkOverride(options.intakeOverride);
   let engine: Engine;
   try {
     engine = loadScriptedEngine(task.engine.turns);
@@ -541,6 +613,30 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     throw new UsageError(error.message, { cause: error });
   }
   const { baseCommit, policy } = config;
+  // The permission layer's Ring 0 paths: the policy's united with the floor.
+  const ring0Paths = [...new Set([...RING0_PATHS, ...policy.ring0Paths])];
+  let intake: IntakeResult;
+  try {
+    const { friction } = CONFIG_DEFAULTS; // 07 rule 1: only the default is admitted
+    intake = classify({ ...task.intake, ring0Paths, friction });
+  } catch (error) {
+    if (!(error instanceof IntakeError)) throw error;
+    throw new UsageError("task." + error.message, { cause: error });
+  }
+  const scope = Array.isArray(task.intake.scope)
+    ? (task.intake.scope as string[])
+    : [];
+  const declared = task.intake.declared as unknown as IntakeDeclared;
+  const classified = intakeClassified(task.id, scope, declared, intake);
+  const direction =
+    override === undefined
+      ? "same"
+      : overrideDirection(intake.class, override.to);
+  const overridden =
+    override === undefined || direction === "same"
+      ? undefined
+      : intakeOverridden(task.id, intake, override);
+  options.onClassified?.(intake);
   const stateDir = resolve(options.stateDir);
   const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
     (kind) => kind + "-" + randomUUID(),
@@ -638,6 +734,20 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           if (answer !== "approved") throw new Error(RING0_NOT_APPROVED);
           accepted("approved");
         }
+        // B10-2: after the Ring 0 check, before the first engine step; never in the context.
+        emit("intake.classified", { ...classified });
+        if (overridden !== undefined && direction === "down") {
+          const { from, to, reason, scopeSha256 } = overridden;
+          const change = { from, to, reason, scopeSha256 };
+          const answer = await broker.acceptIntakeOverride(change, signal);
+          if (answer === "cancelled") throw new CancelledError("cancelled");
+          if (answer !== "approved") {
+            throw new Error(INTAKE_OVERRIDE_NOT_APPROVED);
+          }
+        }
+        if (overridden !== undefined) {
+          emit("intake.overridden", { ...overridden });
+        }
         return broker.executeTool;
       },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -649,6 +759,23 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   } finally {
     log.close();
   }
+}
+
+const CLASSES: readonly IntakeClass[] = ["chore", "bounded", "architectural"];
+
+/** OQ-B10-1: a known class and a reason that is not blank, escaped. @throws UsageError */
+function checkOverride(
+  given: RunTaskOptions["intakeOverride"],
+): IntakeOverride | undefined {
+  if (given === undefined) return undefined;
+  const to = CLASSES.find((cls) => cls === given.to);
+  if (to === undefined) {
+    throw new UsageError("--class must be one of " + CLASSES.join(", "));
+  }
+  if (typeof given.reason !== "string" || given.reason.trim() === "") {
+    throw new UsageError("--reason must not be empty");
+  }
+  return { to, reason: displayText(given.reason) };
 }
 
 export type ReplayResult =

@@ -10,6 +10,7 @@ import type {
 import { errorMessage } from "../loop/terminal.ts";
 import {
   PermissionLogError,
+  INTAKE_OVERRIDE_CALL_ID,
   RING0_CONFIG_CALL_ID,
   permissionAnswered,
   permissionAsked,
@@ -85,6 +86,19 @@ export interface Ring0Change {
   readonly note?: string | undefined;
 }
 
+/** OQ-B10-1: a downward intake override, asked at run start. */
+export interface IntakeOverrideChange {
+  readonly from: string;
+  readonly to: string;
+  /** The owner's reason, as logged. */
+  readonly reason: string;
+  /** The scopeSha256 of the classification overridden. */
+  readonly scopeSha256: string;
+}
+
+/** How a run-start ask ended. */
+export type RunStartAnswer = "approved" | "denied" | "cancelled";
+
 export interface Broker {
   readonly tools: readonly ToolSpec[];
   readonly executeTool: ExecuteTool;
@@ -99,7 +113,16 @@ export interface Broker {
   acceptRing0(
     change: Ring0Change,
     signal: AbortSignal,
-  ): Promise<"approved" | "denied" | "cancelled">;
+  ): Promise<RunStartAnswer>;
+  /**
+   * OQ-B10-1: rules on a downward intake override as `config.set` of
+   * `intake.classification` with `change` as the value, under INTAKE_OVERRIDE_CALL_ID,
+   * and answers as `acceptRing0` does. Once per broker.
+   */
+  acceptIntakeOverride(
+    change: IntakeOverrideChange,
+    signal: AbortSignal,
+  ): Promise<RunStartAnswer>;
 }
 
 /** A ruling's outcome: run the action on the ruled snapshot, or this denial. */
@@ -567,9 +590,33 @@ export function createBroker(context: BrokerContext): Broker {
         return no("denied: " + verdict.reason + rule);
     }
   };
-  // OQ1: the run-start ask's ID is never an engine call's, so none inherits its approval.
-  usedIds.add(RING0_CONFIG_CALL_ID);
-  let ring0Asked = false;
+  // OQ1: a run-start ask's ID is never an engine call's, so none inherits its approval.
+  usedIds.add(RING0_CONFIG_CALL_ID).add(INTAKE_OVERRIDE_CALL_ID);
+  const runStartAsked = new Set<string>();
+  /** Asks a run-start `config.set` under the reserved `id`, once per ID. */
+  const acceptSetting = async (
+    id: string,
+    input: { readonly setting: string | undefined; readonly value: unknown },
+    context: readonly string[],
+    signal: AbortSignal,
+  ): Promise<RunStartAnswer> => {
+    if (halted !== undefined || runStartAsked.has(id)) return "denied";
+    runStartAsked.add(id);
+    const verdict = evaluate(permission.policy, {
+      action: "config.set",
+      input,
+      worktree: permission.worktree,
+      runId: permission.runId,
+      extraRing0Paths: permission.ring0,
+    });
+    const ruled = await ruleOn(id, verdict, signal, context);
+    // Fails closed: only an approved always-ask accepts the change.
+    if (ruled.kind === "denied") {
+      return ruled.stopped === true ? "cancelled" : "denied";
+    }
+    const ok = ruled.verdict.tier === "alwaysAsk" && haltedNow() === undefined;
+    return ok ? "approved" : "denied";
+  };
   return {
     tools: BROKER_TOOLS,
     async executeTool(call: ToolCall, signal: AbortSignal) {
@@ -597,35 +644,25 @@ export function createBroker(context: BrokerContext): Broker {
       }
       return action.handle(ruled.verdict.input, own, signal);
     },
-    async acceptRing0(change, signal) {
-      if (halted !== undefined || ring0Asked) return "denied";
-      ring0Asked = true;
+    acceptRing0(change, signal) {
       const { from, to, changed, ring0, note } = change;
-      const verdict = evaluate(permission.policy, {
-        action: "config.set",
-        input: { setting: changed[0], value: ring0 },
-        worktree: permission.worktree,
-        runId: permission.runId,
-        extraRing0Paths: permission.ring0,
-      });
       const context = [
         ...(note === undefined ? [] : ["  " + displayText(note)]),
         "  Ring 0 settings changed: " + displayText(changed.join(", ")),
         "  Ring 0 digest: " + displayText(from) + " -> " + displayText(to),
       ];
-      const ruled = await ruleOn(
-        RING0_CONFIG_CALL_ID,
-        verdict,
-        signal,
-        context,
-      );
-      // Fails closed: only an approved always-ask accepts the change.
-      if (ruled.kind === "denied") {
-        return ruled.stopped === true ? "cancelled" : "denied";
-      }
-      const ok =
-        ruled.verdict.tier === "alwaysAsk" && haltedNow() === undefined;
-      return ok ? "approved" : "denied";
+      const input = { setting: changed[0], value: ring0 };
+      return acceptSetting(RING0_CONFIG_CALL_ID, input, context, signal);
+    },
+    acceptIntakeOverride(change, signal) {
+      const { from, to, reason, scopeSha256 } = change;
+      const context = [
+        "  Downward intake override: " + displayText(from + " -> " + to),
+        "  Reason: " + displayText(reason),
+      ];
+      const value = { from, to, reason, scopeSha256 };
+      const input = { setting: "intake.classification", value };
+      return acceptSetting(INTAKE_OVERRIDE_CALL_ID, input, context, signal);
     },
   };
 }

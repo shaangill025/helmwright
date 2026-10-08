@@ -1,5 +1,5 @@
 import type { Event } from "@helmwright/schema";
-import { RING0_CONFIG_CALL_ID } from "./events.ts";
+import { INTAKE_OVERRIDE_CALL_ID, RING0_CONFIG_CALL_ID } from "./events.ts";
 
 /** Tiers whose ruling is followed by an ask. */
 const ASK_TIERS: ReadonlySet<unknown> = new Set(["ask", "alwaysAsk"]);
@@ -8,6 +8,22 @@ const ANSWERED_BY = new Map<unknown, ReadonlySet<unknown>>([
   ["tty", new Set(["tty", "cancelled"])],
   ["none", new Set(["noPresence"])],
 ]);
+
+/** Intake classes in rank order (Q52). */
+const RANK: readonly unknown[] = ["chore", "bounded", "architectural"];
+/** The reserved run-start IDs that no tool call may run with. */
+const RESERVED = new Map([
+  [RING0_CONFIG_CALL_ID, "tool call ran with the reserved Ring 0 config ID"],
+  [
+    INTAKE_OVERRIDE_CALL_ID,
+    "tool call ran with the reserved intake override ID",
+  ],
+]);
+/** The ruling a run-start ask on a reserved ID must have. */
+const isRunStartRuling = (payload: Event["payload"]): boolean =>
+  payload["requested"] === "config.set" &&
+  payload["tier"] === "alwaysAsk" &&
+  payload["ruleId"] === "always-ask.ring0-setting";
 
 /** What, if anything, lets a tool call's handler run now. */
 type Grant = "allow" | "approved" | "none";
@@ -35,7 +51,11 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  * - OQ1: a run has at most one `config.accepted`, with its `run.started` Ring 0
  *   digest; with `how` "approved" it follows a fault-free approval of an always-ask
  *   `config.set` ruling (always-ask.ring0-setting) on the RING0_CONFIG_CALL_ID ask
- *   and uses it up (N1); no `loop.tool.called` with that ID ran.
+ *   and uses it up (N1); no `loop.tool.called` with that ID ran;
+ * - B10-2: each `intake.overridden` is `from` the run's `intake.classified` class
+ *   (S3); one that is not upward follows a fault-free approval of the same ruling on
+ *   the INTAKE_OVERRIDE_CALL_ID ask and uses it up; no `loop.tool.called` with that
+ *   ID ran.
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -53,6 +73,9 @@ export function permissionFaults(events: readonly Event[]): string[] {
   /** OQ1: the run's Ring 0 digest, its ruling on the reserved ID, a config.accepted. */
   let ring0Sha256: unknown;
   let ring0Ruled = false;
+  /** B10-2: the run's intake class and its ruling on the reserved override ID. */
+  let intakeClass: unknown;
+  let overrideRuled = false;
   let acceptedSeen = false;
   for (const [i, { seq, type, payload }] of events.entries()) {
     const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
@@ -66,11 +89,10 @@ export function permissionFaults(events: readonly Event[]): string[] {
       type === "permission.rejected"
     ) {
       if (type === "permission.evaluated") {
-        if (key === RING0_CONFIG_CALL_ID) {
-          ring0Ruled =
-            payload["requested"] === "config.set" &&
-            payload["tier"] === "alwaysAsk" &&
-            payload["ruleId"] === "always-ask.ring0-setting";
+        if (key === RING0_CONFIG_CALL_ID)
+          ring0Ruled = isRunStartRuling(payload);
+        if (key === INTAKE_OVERRIDE_CALL_ID) {
+          overrideRuled = isRunStartRuling(payload);
         }
         if (key !== undefined && evaluatedIds.has(key)) {
           fault("more than one permission.evaluated for one tool call");
@@ -140,9 +162,28 @@ export function permissionFaults(events: readonly Event[]): string[] {
         fault("config.accepted approved without an approval of its ask");
       }
       grants.set(RING0_CONFIG_CALL_ID, "none");
+    } else if (type === "intake.classified") {
+      intakeClass = payload["class"];
+    } else if (type === "intake.overridden") {
+      const { from, to } = payload;
+      if (from !== intakeClass) {
+        fault(
+          "intake.overridden from another class than the run's intake.classified",
+        );
+      }
+      if (RANK.indexOf(to) > RANK.indexOf(from) && RANK.includes(from))
+        continue;
+      if (
+        grants.get(INTAKE_OVERRIDE_CALL_ID) !== "approved" ||
+        !overrideRuled
+      ) {
+        fault("downward intake.overridden without an approval of its ask");
+      }
+      grants.set(INTAKE_OVERRIDE_CALL_ID, "none");
     } else if (type === "loop.tool.called") {
-      if (key === RING0_CONFIG_CALL_ID && payload["status"] !== "denied") {
-        fault("tool call ran with the reserved Ring 0 config ID");
+      const reserved = key === undefined ? undefined : RESERVED.get(key);
+      if (reserved !== undefined && payload["status"] !== "denied") {
+        fault(reserved);
         continue;
       }
       const grant = key === undefined ? undefined : grants.get(key);

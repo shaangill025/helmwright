@@ -66,6 +66,11 @@ const TOOL_CALL_ID = /^[!-~]{1,256}$/;
  * counts it as used from the start, so an engine call with it is rejected (S2).
  */
 export const RING0_CONFIG_CALL_ID = "helmwright.config.ring0";
+/**
+ * OQ-B10-1: the tool call ID of the run-start ask for a downward intake override,
+ * reserved in the broker as RING0_CONFIG_CALL_ID is.
+ */
+export const INTAKE_OVERRIDE_CALL_ID = "helmwright.intake.override";
 
 const sha256 = (text: string) =>
   createHash("sha256").update(text, "utf8").digest("hex");

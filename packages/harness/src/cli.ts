@@ -11,7 +11,7 @@ import {
 } from "./run/run.ts";
 
 const USAGE =
-  "usage: cli.ts run <task.json> --state-dir <dir>\n" +
+  "usage: cli.ts run <task.json> --state-dir <dir> [--class <class> --reason <text>]\n" +
   "       cli.ts replay <runId> --state-dir <dir>\n" +
   "       cli.ts reap --state-dir <dir>";
 
@@ -62,7 +62,11 @@ function command(args: readonly string[]) {
       args: [...args],
       allowPositionals: true,
       strict: true,
-      options: { "state-dir": { type: "string" } },
+      options: {
+        "state-dir": { type: "string" },
+        class: { type: "string" },
+        reason: { type: "string" },
+      },
     });
   } catch (error) {
     throw new UsageError(errorMessage(error));
@@ -74,12 +78,24 @@ function command(args: readonly string[]) {
   if (operands.length !== arity || stateDir === undefined) {
     throw new UsageError("expected the command's arguments and --state-dir");
   }
-  return { name, target: operands[0] ?? "", stateDir };
+  // OQ-B10-1: an override always has its reason, and only `run` takes one.
+  const { class: to, reason } = parsed.values;
+  if ((to === undefined) !== (reason === undefined)) {
+    throw new UsageError("--class and --reason go together");
+  }
+  if (to !== undefined && name !== "run") {
+    throw new UsageError("--class is for run only");
+  }
+  const override =
+    to === undefined || reason === undefined
+      ? {}
+      : { intakeOverride: { to, reason } };
+  return { name, target: operands[0] ?? "", stateDir, override };
 }
 
 async function main(args: readonly string[]): Promise<number> {
   try {
-    const { name, target, stateDir } = command(args);
+    const { name, target, stateDir, override } = command(args);
     if (name === "reap") {
       const result = await reapRuns(stateDir);
       console.log(jsonLine(result));
@@ -109,6 +125,16 @@ async function main(args: readonly string[]): Promise<number> {
       taskFile: target,
       stateDir,
       signal: controller.signal,
+      ...override,
+      onClassified: ({ class: cls, reasons, friction }) => {
+        const why = reasons.map(({ rule, entries }) =>
+          entries.length === 0 ? rule : rule + ": " + entries.join(", "),
+        );
+        const line = cls + " (" + why.join("; ") + ") friction ";
+        console.error(
+          "helmwright: intake " + displayText(line + friction.intensity),
+        );
+      },
       ...(present
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
         : {}),

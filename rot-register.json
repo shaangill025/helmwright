@@ -266,6 +266,20 @@
     "reviewTrigger": ["model", "milestone"]
   },
   {
+    "component": "packages/harness/src/intake/events.ts",
+    "ring": 0,
+    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG).",
+    "evidence": [
+      "03 Intake",
+      "decisions Q52",
+      "packages/harness/test/e2e/cli.test.ts",
+      "packages/harness/test/permission/faults.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["model", "milestone"]
+  },
+  {
     "component": "packages/harness/src/index.ts",
     "ring": 2,
     "assumption": "The harness is a private workspace package used in process: its index re-exports the module APIs, and no authenticated state/action API exists until B13.",
