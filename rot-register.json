@@ -330,6 +330,18 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/schema/schemas/floor-event.schema.json",
+    "ring": 0,
+    "assumption": "Each floor check is logged once with the rules version, the base commit, the candidate tree, a verdict that is reject exactly when a finding exists, at most 256 escaped findings and a truncated flag; reject-iff-finding is enforced by the harness, not the schema.",
+    "evidence": [
+      "06 Ring 0 contents",
+      "packages/schema/test/floor-event.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
     "component": "packages/schema/schemas/intake-event.schema.json",
     "ring": 0,
     "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths; an owner override with the task ID, the scope hash, the rubric version, a non-empty reason and attestation none until slice SIG; and a reclassification with the task ID and its signals. Scope and declared entries exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema.",
