@@ -586,6 +586,9 @@ describe("floor-4 review fixes", () => {
     ["pend" + "ing" + "('r');"],
     ["test" + D + "fail" + "('x', () => {});"],
     ["it" + D + "fail" + "();"],
+    ["pend" + "ing" + "();"],
+    ["test" + D + " " + "fail" + "('x', () => {});"],
+    ["it " + D + "fail" + "('x', () => {});"],
     // One space after the dot.
     ["it" + D + " " + SKIP + "('x', () => {});"],
     ["describe" + D + " " + "only" + "('x', () => {});"],
@@ -608,6 +611,8 @@ describe("floor-4 review fixes", () => {
   it.each([
     ["// run this" + D + " " + "only" + " the first case"],
     ["assert" + D + "fail" + "('x');"],
+    ["// pend" + "ing (see #12)"],
+    [" * the rest is pend" + "ing (see #12)."],
     ["//@" + SKIP + "('r')"],
     ["const u = 'https://x/@" + SKIP + "';"],
     ["const q = { " + SKIP + " /* rows */: 10 };"],

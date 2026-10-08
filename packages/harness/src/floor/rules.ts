@@ -99,10 +99,12 @@ const TEST_FORMS = deepFreeze([
       "describe|f" +
       "context) ?\\(",
   ),
-  // Bare calls: unittest's SkipTest and Jasmine's pending; Playwright's test or it fail
-  // (not a bare fail, which would match assert's).
-  new RegExp("(?<![\\w$.])(?:skiptest|pending) ?\\("),
-  new RegExp("(?<![\\w$.])(?:test|it)\\.fail ?\\("),
+  // Bare calls: unittest's SkipTest, Jasmine's pending() or pending("r") (not prose such as
+  // "pending (see #12)"), and Playwright's test or it fail (not a bare fail, which would
+  // match assert's).
+  new RegExp("(?<![\\w$.])skiptest ?\\("),
+  new RegExp("(?<![\\w$.])pending ?\\((?: ?\\)|[\"'`])"),
+  new RegExp("(?<![\\w$.])(?:test|it) ?\\. ?fail ?\\("),
   // A bare imported decorator, such as unittest's `@skip("r")` or PEP 614's `@(skip)`, not
   // a scoped package name, a string or a `//` comment or URL (`*/` before it counts).
   new RegExp(
