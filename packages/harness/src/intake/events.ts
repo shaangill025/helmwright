@@ -1,11 +1,13 @@
 import {
   validateIntakeEvent,
+  type HelmwrightConfig,
   type IntakeClass,
   type IntakeClassified,
   type IntakeDeclared,
+  type IntakeFriction,
   type IntakeOverridden,
 } from "@helmwright/schema";
-import type { IntakeResult } from "./rubric.ts";
+import { IntakeError, type IntakeResult } from "./rubric.ts";
 
 /** OQ-B10-1: the fixed reason a run fails when a downward override is not approved. */
 export const INTAKE_OVERRIDE_NOT_APPROVED =
@@ -17,11 +19,24 @@ export interface IntakeOverride {
   readonly reason: string;
 }
 
-/** `payload` if it is a valid intake event of its kind. @throws Error with fixed text */
+/**
+ * S2: the friction `cls` sets under `config`, by the rubric's rule: minimal for a chore
+ * when the chore downgrade is on, else the default intensity.
+ */
+export function effectiveFriction(
+  cls: IntakeClass,
+  config: Required<NonNullable<HelmwrightConfig["friction"]>>,
+): IntakeFriction {
+  return cls === "chore" && config.choreDowngrade === "on"
+    ? { intensity: "minimal", source: "choreDowngrade" }
+    : { intensity: config.defaultIntensity, source: "default" };
+}
+
+/** `payload` if it is a valid intake event of its kind. @throws IntakeError with fixed text */
 function checked<P extends IntakeClassified | IntakeOverridden>(payload: P): P {
   // A copy, so the guard does not narrow `payload` itself.
   if (!validateIntakeEvent({ ...payload })) {
-    throw new Error(payload.kind + " cannot be logged");
+    throw new IntakeError(payload.kind + " cannot be logged");
   }
   return payload;
 }

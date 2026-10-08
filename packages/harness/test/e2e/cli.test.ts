@@ -1974,6 +1974,10 @@ describe("intake (e2e, B10-2)", () => {
       });
       const ids = events.map((e) => e.payload["toolCallId"]);
       expect(ids).not.toContain(OVERRIDE_ID);
+      // N8: the effective class and its friction (S2: default, not the chore's minimal).
+      expect(up.stderr).toContain(
+        "helmwright: intake override: architectural friction moderate\n",
+      );
       expectReplayMatches(up.out.runId, events);
 
       const same = runIntake(
@@ -2067,6 +2071,13 @@ describe("intake (e2e, B10-2)", () => {
       [{ scope: ["!src/*.md"] }, []],
       [{ scope: ["docs/a.md"], extra: true }, []],
       [{ declared: { newModules: "x" } }, []],
+      // N4: the rubric's limits are the schema's.
+      [{ declared: { surfaceChanges: Array(65).fill("wire") } }, []],
+      // N6: a reason of only invisible characters is blank.
+      [
+        { scope: ["docs/a.md"] },
+        ["--class", "chore", "--reason", "\u200b\u2060"],
+      ],
     ];
     for (const [intake, args] of bad) {
       const task = writeTask("denied.turns.json", LIMITS, repo, { intake });
@@ -2077,6 +2088,36 @@ describe("intake (e2e, B10-2)", () => {
     expect(existsSync(join(stateDir, "session.sqlite"))).toBe(false);
     expect(existsSync(join(stateDir, "workspaces"))).toBe(false);
   });
+
+  it(
+    "classifies a scope reached through a Ring 0 symlink as bounded (S1)",
+    { timeout: T },
+    () => {
+      mkdirSync(join(repo, "docs"));
+      mkdirSync(join(repo, ".github"));
+      writeFileSync(join(repo, "docs", "owners.md"), "* @owner\n");
+      symlinkSync("../docs/owners.md", join(repo, ".github", "CODEOWNERS"));
+      git("-C", repo, "add", "-A");
+      git(
+        ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "link"],
+      );
+      const { status, stderr, out } = runIntake("denied.turns.json", {
+        scope: ["docs/owners.md"],
+      });
+      expect(status, stderr).toBe(0);
+      expect(stderr).toContain("helmwright: intake bounded (ring0Path: ");
+      const events = expectWellFormedLog(out.runId);
+      expect(payloadsOf(events, "intake.classified")).toMatchObject([
+        {
+          class: "bounded",
+          reasons: [{ rule: "ring0Path", entries: ["docs/owners.md"] }],
+          friction: { intensity: "moderate", source: "default" },
+        },
+      ]);
+      expectReplayMatches(out.runId, events);
+    },
+  );
 
   it(
     "still always-asks a deploy in a chore, and refuses the reserved ID",

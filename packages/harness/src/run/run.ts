@@ -12,6 +12,8 @@ import {
   type Event,
   type IntakeClass,
   type IntakeDeclared,
+  type IntakeFriction,
+  type IntakeReason,
 } from "@helmwright/schema";
 import {
   BROKER_TOOLS,
@@ -32,6 +34,7 @@ import {
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
+  effectiveFriction,
   intakeClassified,
   intakeOverridden,
   type IntakeOverride,
@@ -48,6 +51,7 @@ import {
   deriveMessages,
 } from "../log/messages.ts";
 import { openSessionLog, type SessionLog } from "../log/session-log.ts";
+import { INVISIBLE, hasControl } from "../permission/normalize.ts";
 import { permissionFaults } from "../permission/faults.ts";
 import {
   MAX_LIMIT,
@@ -557,8 +561,39 @@ export interface RunTaskOptions {
   readonly presence?: Presence;
   /** OQ-B10-1: the owner's class override (`--class`, `--reason`). */
   readonly intakeOverride?: { readonly to: string; readonly reason: string };
-  /** Called once the task is classified, before any docker or git work. */
-  readonly onClassified?: (result: IntakeResult) => void;
+  /** Called with the run's class before the first engine step, then with any override's. */
+  readonly onIntake?: (shown: IntakeShown) => void;
+}
+
+/** What a run shows of its intake: the class and its friction (N8). */
+export interface IntakeShown {
+  readonly kind: "classified" | "overridden";
+  readonly class: IntakeClass;
+  /** Empty for an override. */
+  readonly reasons: readonly IntakeReason[];
+  readonly friction: IntakeFriction;
+}
+
+/** A run's intake events for `result`, built and checked up front. @throws IntakeError */
+function intakeRecords(
+  task: Task,
+  result: IntakeResult,
+  override: IntakeOverride | undefined,
+) {
+  const scope = Array.isArray(task.intake.scope)
+    ? (task.intake.scope as string[])
+    : [];
+  const declared = task.intake.declared as unknown as IntakeDeclared;
+  const direction =
+    override === undefined
+      ? "same"
+      : overrideDirection(result.class, override.to);
+  const overridden =
+    override === undefined || direction === "same"
+      ? undefined
+      : intakeOverridden(task.id, result, override);
+  const classified = intakeClassified(task.id, scope, declared, result);
+  return { result, classified, direction, overridden };
 }
 
 export interface RunTaskResult extends RunOutcome {
@@ -615,28 +650,23 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   const { baseCommit, policy } = config;
   // The permission layer's Ring 0 paths: the policy's united with the floor.
   const ring0Paths = [...new Set([...RING0_PATHS, ...policy.ring0Paths])];
-  let intake: IntakeResult;
+  // N3: loadRunConfig admits only the default friction (07 rule 1; e2e "refuses a
+  // listed alternative"), so the default is the loaded config's.
+  const { friction } = CONFIG_DEFAULTS;
+  const classifyWith = (links: readonly string[]) =>
+    classify({
+      ...task.intake,
+      ring0Paths: [...ring0Paths, ...links],
+      friction,
+    });
+  // Validated before any workspace work; reclassified with the link targets in connect.
+  let intake: ReturnType<typeof intakeRecords>;
   try {
-    const { friction } = CONFIG_DEFAULTS; // 07 rule 1: only the default is admitted
-    intake = classify({ ...task.intake, ring0Paths, friction });
+    intake = intakeRecords(task, classifyWith([]), override);
   } catch (error) {
     if (!(error instanceof IntakeError)) throw error;
     throw new UsageError("task." + error.message, { cause: error });
   }
-  const scope = Array.isArray(task.intake.scope)
-    ? (task.intake.scope as string[])
-    : [];
-  const declared = task.intake.declared as unknown as IntakeDeclared;
-  const classified = intakeClassified(task.id, scope, declared, intake);
-  const direction =
-    override === undefined
-      ? "same"
-      : overrideDirection(intake.class, override.to);
-  const overridden =
-    override === undefined || direction === "same"
-      ? undefined
-      : intakeOverridden(task.id, intake, override);
-  options.onClassified?.(intake);
   const stateDir = resolve(options.stateDir);
   const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
     (kind) => kind + "-" + randomUUID(),
@@ -734,8 +764,15 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           if (answer !== "approved") throw new Error(RING0_NOT_APPROVED);
           accepted("approved");
         }
+        // S1: the worktree's Ring 0 link targets count too; this only raises the class.
+        const linked = classifyWith(ring0);
+        if (overrideDirection(intake.result.class, linked.class) === "up") {
+          intake = intakeRecords(task, linked, override);
+        }
+        const { result, classified, direction, overridden } = intake;
         // B10-2: after the Ring 0 check, before the first engine step; never in the context.
         emit("intake.classified", { ...classified });
+        options.onIntake?.({ kind: "classified", ...result });
         if (overridden !== undefined && direction === "down") {
           const { from, to, reason, scopeSha256 } = overridden;
           const change = { from, to, reason, scopeSha256 };
@@ -747,6 +784,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         }
         if (overridden !== undefined) {
           emit("intake.overridden", { ...overridden });
+          const { to } = overridden;
+          const effective = effectiveFriction(to, friction);
+          const shown = { class: to, reasons: [], friction: effective };
+          options.onIntake?.({ kind: "overridden", ...shown });
         }
         return broker.executeTool;
       },
@@ -772,7 +813,13 @@ function checkOverride(
   if (to === undefined) {
     throw new UsageError("--class must be one of " + CLASSES.join(", "));
   }
-  if (typeof given.reason !== "string" || given.reason.trim() === "") {
+  // N6: blank also when only invisible or control characters remain.
+  const shown = (c: string) =>
+    c.trim() !== "" && !INVISIBLE.test(c) && !hasControl(c);
+  if (
+    typeof given.reason !== "string" ||
+    !Array.from(given.reason).some(shown)
+  ) {
     throw new UsageError("--reason must not be empty");
   }
   return { to, reason: displayText(given.reason) };

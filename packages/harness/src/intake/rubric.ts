@@ -216,7 +216,8 @@ function parse(value: unknown): IntakeInput {
         "intake.declared.newDependencies",
       ),
       newModules: texts(d["newModules"], "intake.declared.newModules"),
-      surfaceChanges: texts(d["surfaceChanges"], surfaces).map((s) =>
+      // N4: the schema's limit.
+      surfaceChanges: texts(d["surfaceChanges"], surfaces, 64).map((s) =>
         oneOf(s, SURFACES, surfaces),
       ),
       newProcessBoundary: boundary === true,
