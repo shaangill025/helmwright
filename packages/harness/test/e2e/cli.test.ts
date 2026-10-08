@@ -2288,7 +2288,7 @@ function expectRejected(run: ReturnType<typeof runFloor>, base: string) {
   expect(run.status, run.stderr).toBe(1);
   expect(run.out.terminal).toEqual({ kind: "failed", error: FLOOR_REJECTED });
   expect(run.checked).toMatchObject({
-    ...{ kind: "floor.checked", rules: "floor-3", baseCommit: base },
+    ...{ kind: "floor.checked", rules: "floor-4", baseCommit: base },
     ...{ verdict: "reject", truncated: false },
   });
   const findings = String(run.found.length) + " findings (";
@@ -2303,7 +2303,7 @@ describe("sensor floor (e2e, B3-2)", () => {
     expect(run.status, run.stderr).toBe(0);
     expect(run.out.terminal).toEqual({ kind: "completed" });
     expect(run.checked).toMatchObject({
-      ...{ rules: "floor-3", baseCommit: base, verdict: "pass" },
+      ...{ rules: "floor-4", baseCommit: base, verdict: "pass" },
       ...{ findings: [], truncated: false },
     });
     expect(run.checked["candidateTree"]).toMatch(/^[0-9a-f]{40}$/);

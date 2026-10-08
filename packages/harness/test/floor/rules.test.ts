@@ -402,7 +402,7 @@ describe("findings", () => {
 
   it("builds a valid floor.checked, truncated past 256 findings", () => {
     const tree = "c".repeat(40);
-    expect(FLOOR_RULES_VERSION).toBe("floor-3");
+    expect(FLOOR_RULES_VERSION).toBe("floor-4");
     expect(floorChecked("a".repeat(40), tree, [])).toEqual({
       kind: "floor.checked",
       rules: FLOOR_RULES_VERSION,
@@ -563,4 +563,107 @@ describe("tracked agent files (F4)", () => {
     expect(rules(change("docs/claude.md.txt", "a", "b"))).toEqual([]);
     expect(rules(change("src/claude/x.ts", "a", "b"))).toEqual([]);
   });
+});
+
+describe("floor-4 review fixes", () => {
+  const SKIP = "skip";
+  const at = (path: string, ...text: string[]) =>
+    floorFindings([change(path, "", lines(...text))], PROTECTED).map((f) => [
+      f.rule,
+      f.line,
+    ]);
+  const found = [["suppression.added", 1]];
+
+  it.each([
+    // Python's in-body skips.
+    ["self" + D + "skipTest" + "('r')"],
+    ["raise unittest" + D + "SkipTest" + "('r')"],
+    ["raise " + "SkipTest" + "('r')"],
+    ["np = pytest" + D + "importorskip" + "('numpy')"],
+    // Mocha's context, Jasmine's pending and Playwright's expected failure.
+    ["x" + "context" + "('x', () => {});"],
+    ["f" + "context" + "('x', () => {});"],
+    ["pend" + "ing" + "('r');"],
+    ["test" + D + "fail" + "('x', () => {});"],
+    ["it" + D + "fail" + "();"],
+    ["pend" + "ing" + "();"],
+    ["test" + D + " " + "fail" + "('x', () => {});"],
+    ["it " + D + "fail" + "('x', () => {});"],
+    // One space after the dot.
+    ["it" + D + " " + SKIP + "('x', () => {});"],
+    ["describe" + D + " " + "only" + "('x', () => {});"],
+    ["@pytest" + D + "mark" + D + " " + SKIP + "('r')"],
+    ["t" + D + " " + "Skip" + "()"],
+    // PEP 614, a decorator after a block comment's end, and parens in a bracket.
+    ["@(" + SKIP + "('r'))"],
+    ["@ (" + SKIP + "('r'))"],
+    [" */@" + SKIP + "('r')"],
+    ["it" + "[('" + SKIP + "')]" + "('x', () => {});"],
+    // A comment around a truthy value, and a line comment after a bare key.
+    ["{ " + SKIP + " /* c */ : true }"],
+    ["{ " + SKIP + ": /* c */ true }"],
+    ["{ " + SKIP + " /* c */ }"],
+    ["{ " + SKIP + " // c"],
+  ])("finds the test form in %j", (text) => {
+    expect(at("test/a.test.ts", text)).toEqual(found);
+  });
+
+  it.each([
+    ["// run this" + D + " " + "only" + " the first case"],
+    ["assert" + D + "fail" + "('x');"],
+    ["// pend" + "ing (see #12)"],
+    [" * the rest is pend" + "ing (see #12)."],
+    ["//@" + SKIP + "('r')"],
+    ["const u = 'https://x/@" + SKIP + "';"],
+    ["const q = { " + SKIP + " /* rows */: 10 };"],
+    ["const q = { " + SKIP + ": false /* c */ };"],
+    ["  " + SKIP + ": 0 /* first */,"],
+  ])("ignores %j", (text) => {
+    expect(at("test/a.test.ts", text)).toEqual([]);
+  });
+
+  it.each(["\u2028", "\u2029", "\r"])(
+    "checks each piece of a line split by %j",
+    (end) => {
+      const text = ["it('x', {", "  // note " + end + "  " + SKIP + ": true,"];
+      expect(at("test/a.test.ts", ...text, "}, f);")).toEqual([
+        ["suppression.added", 2],
+      ]);
+    },
+  );
+
+  it.each([
+    ["src/a.ts", "jest"],
+    ["src/a.ts", "tap"],
+    ["src/a.ts", "uvu"],
+    ["src/a.ts", "jasmine"],
+    ["src/a.ts", "qunit"],
+    ["src/a.ts", "chai"],
+    ["src/a.vue", "vit" + "est"],
+    ["src/a.svelte", "vit" + "est"],
+    ["src/a.astro", "vit" + "est"],
+  ])("counts test forms in %j importing %j (S2)", (path, framework) => {
+    const text = ["import t from '" + framework + "';", "t" + D + SKIP + "();"];
+    expect(at(path, ...text)).toEqual([["suppression.added", 2]]);
+  });
+
+  // 4 MiB of directives: the quadratic count took over 120 s on 8 MiB, so over 30 s here;
+  // 15 s leaves room for a loaded machine running the whole suite.
+  it(
+    "finds block directives in a large file in linear time",
+    { timeout: 60_000 },
+    () => {
+      const text =
+        "a\nb\n" + "/*\neslint x*/\n".repeat(Math.floor((4 << 20) / 14));
+      const start = Date.now();
+      const findings = floorFindings(
+        [change("src/a.ts", "a\n", text)],
+        PROTECTED,
+      );
+      expect(Date.now() - start).toBeLessThan(15_000);
+      expect(findings.map((f) => [f.rule, f.line, f.detail])).toEqual([
+        ["suppression.added", 3, "block-comment directive added"],
+      ]);
+    },
+  );
 });
