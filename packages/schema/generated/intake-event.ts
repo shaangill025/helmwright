@@ -125,7 +125,7 @@ export interface IntakeFriction {
   source: "default" | "choreDowngrade";
 }
 /**
- * The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.
+ * The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.
  */
 export interface IntakeOverridden {
   kind: "intake.overridden";
@@ -143,6 +143,7 @@ export interface IntakeOverridden {
    */
   scopeSha256: string;
   rubricVersion: RubricVersion;
+  friction: IntakeFriction;
 }
 export interface IntakeAttestationNone {
   kind: "none";

@@ -65,6 +65,49 @@ const other = (kind: string, toolCallId = "call-1"): Payload => ({
   toolCallId,
 });
 
+/** B10-2: intake events and the ask on the reserved override ID. */
+const ID = "helmwright.intake.override";
+const classified = (cls: string): Payload => ({
+  kind: "intake.classified",
+  class: cls,
+});
+const scopeSha256 = SHA;
+/** B10-3 S2: the friction the rule gives `to` under the default friction config. */
+const frictionOf = (to: string) =>
+  to === "chore"
+    ? { intensity: "minimal", source: "choreDowngrade" }
+    : { intensity: "moderate", source: "default" };
+const overridden = (
+  from: string,
+  to: string,
+  fields: Payload = {},
+): Payload => ({
+  kind: "intake.overridden",
+  from,
+  to,
+  reason: "why",
+  scopeSha256,
+  friction: frictionOf(to),
+  ...fields,
+});
+const inputSha256 = (from: string, to: string, reason = "why") =>
+  createHash("sha256")
+    .update(
+      canonicalJson({
+        setting: "intake.classification",
+        value: { from, to, reason, scopeSha256 },
+      }),
+    )
+    .digest("hex");
+const ruling = {
+  ...evaluated("alwaysAsk", ID),
+  requested: "config.set",
+  ruleId: "always-ask.ring0-setting",
+  inputSha256: inputSha256("bounded", "chore"),
+};
+const ask = [ruling, { ...asked(), toolCallId: ID }];
+const approve = answered({ toolCallId: ID });
+
 describe("permissionFaults (SF3)", () => {
   it("finds no fault in asks bound as the live broker binds them", () => {
     expect(
@@ -422,36 +465,6 @@ describe("permissionFaults (SF3)", () => {
   });
 
   it("binds intake overrides to the classification and a downward ask (B10-2)", () => {
-    const ID = "helmwright.intake.override";
-    const classified = (cls: string): Payload => ({
-      kind: "intake.classified",
-      class: cls,
-    });
-    const overridden = (from: string, to: string): Payload => ({
-      kind: "intake.overridden",
-      from,
-      to,
-      reason: "why",
-      scopeSha256,
-    });
-    const scopeSha256 = SHA;
-    const inputSha256 = (from: string, to: string, reason = "why") =>
-      createHash("sha256")
-        .update(
-          canonicalJson({
-            setting: "intake.classification",
-            value: { from, to, reason, scopeSha256 },
-          }),
-        )
-        .digest("hex");
-    const ruling = {
-      ...evaluated("alwaysAsk", ID),
-      requested: "config.set",
-      ruleId: "always-ask.ring0-setting",
-      inputSha256: inputSha256("bounded", "chore"),
-    };
-    const ask = [ruling, { ...asked(), toolCallId: ID }];
-    const approve = answered({ toolCallId: ID });
     const NO_APPROVAL =
       "downward intake.overridden without an approval of its ask";
     const OTHER_FROM =
@@ -514,5 +527,90 @@ describe("permissionFaults (SF3)", () => {
     expect(
       permissionFaults(run(classified("chore"), classified("chore"))),
     ).toEqual(["seq 1: more than one intake.classified in one run"]);
+  });
+  it("binds an override's friction to its class (B10-3 S2)", () => {
+    const WRONG =
+      "intake.overridden with another friction than the rule gives its class";
+    const up = overridden("chore", "architectural", {
+      friction: frictionOf("chore"),
+    });
+    expect(permissionFaults(run(classified("chore"), up))).toEqual([
+      `seq 1: ${WRONG}`,
+    ]);
+    const down = overridden("bounded", "chore", { friction: frictionOf("x") });
+    expect(
+      permissionFaults(run(classified("bounded"), ...ask, approve, down)),
+    ).toEqual([`seq 4: ${WRONG}`]);
+    const missing = overridden("chore", "bounded", { friction: undefined });
+    expect(permissionFaults(run(classified("chore"), missing))).toEqual([
+      `seq 1: ${WRONG}`,
+    ]);
+  });
+
+  it("orders intake before the first engine step (B10-3 N2)", () => {
+    const LATE = "intake event after the run's first engine step";
+    const message = (role: string): Payload => ({
+      kind: "message.appended",
+      message: { role, text: "x" },
+    });
+    // The task's own message may come first; an assistant message or a call may not.
+    expect(
+      permissionFaults(
+        run(
+          message("user"),
+          classified("chore"),
+          overridden("chore", "bounded"),
+        ),
+      ),
+    ).toEqual([]);
+    expect(
+      permissionFaults(
+        run(
+          message("assistant"),
+          classified("chore"),
+          overridden("chore", "bounded"),
+        ),
+      ),
+    ).toEqual([`seq 1: ${LATE}`, `seq 2: ${LATE}`]);
+    expect(
+      permissionFaults(
+        run(
+          classified("chore"),
+          other("loop.tool.called"),
+          overridden("chore", "bounded"),
+        ),
+      ),
+    ).toEqual([
+      "seq 1: tool call ended without denial and without any ruling",
+      `seq 2: ${LATE}`,
+    ]);
+  });
+
+  it("faults an approved override ask with no override (B10-3 N2)", () => {
+    const UNUSED = "approved intake override ask without an intake.overridden";
+    expect(
+      permissionFaults(run(classified("bounded"), ...ask, approve)),
+    ).toEqual([`seq 3: ${UNUSED}`]);
+    // An upward override does not use the approval up.
+    expect(
+      permissionFaults(
+        run(
+          classified("bounded"),
+          ...ask,
+          approve,
+          overridden("bounded", "architectural"),
+        ),
+      ),
+    ).toEqual([`seq 3: ${UNUSED}`]);
+    // A denied answer grants nothing, so nothing is left unused.
+    expect(
+      permissionFaults(
+        run(
+          classified("bounded"),
+          ...ask,
+          answered({ toolCallId: ID, answer: "denied" }),
+        ),
+      ),
+    ).toEqual([]);
   });
 });

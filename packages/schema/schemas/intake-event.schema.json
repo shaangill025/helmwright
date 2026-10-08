@@ -65,7 +65,7 @@
     },
     "overridden": {
       "title": "IntakeOverridden",
-      "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.",
+      "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -77,7 +77,8 @@
         "by",
         "attestation",
         "scopeSha256",
-        "rubricVersion"
+        "rubricVersion",
+        "friction"
       ],
       "properties": {
         "kind": { "const": "intake.overridden" },
@@ -96,7 +97,8 @@
           "$ref": "#/$defs/sha256",
           "description": "The `scopeSha256` of the classification overridden, so the override is bound to the scope the owner saw."
         },
-        "rubricVersion": { "$ref": "#/$defs/rubricVersion" }
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" },
+        "friction": { "$ref": "#/$defs/friction" }
       }
     },
     "reclassified": {

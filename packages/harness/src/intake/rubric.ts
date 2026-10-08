@@ -397,18 +397,29 @@ export function classify(value: unknown): IntakeResult {
             ["notDocsOrTests", other],
           ]);
   }
-  const downgrade = cls === "chore" && input.friction.choreDowngrade === "on";
   return deepFreeze({
     class: cls,
     rubricVersion: INTAKE_RUBRIC_VERSION,
     reasons: why,
-    friction: downgrade
-      ? { intensity: "minimal", source: "choreDowngrade" }
-      : { intensity: input.friction.defaultIntensity, source: "default" },
+    friction: frictionFor(cls, input.friction),
     sparring: "optIn",
     scopeSha256: sha256(canonical(scope)),
     ring0Sha256: sha256(canonical(ring0)),
   });
+}
+
+/**
+ * The friction rule (B10-3 S2): the friction `cls` sets under `config`, minimal for a
+ * chore when the chore downgrade is on, else the default intensity. The one rule for a
+ * classification, an override and the replay's check of an override.
+ */
+export function frictionFor(
+  cls: IntakeClass,
+  config: IntakeInput["friction"],
+): IntakeFriction {
+  return cls === "chore" && config.choreDowngrade === "on"
+    ? { intensity: "minimal", source: "choreDowngrade" }
+    : { intensity: config.defaultIntensity, source: "default" };
 }
 
 const sha256 = (text: string) =>

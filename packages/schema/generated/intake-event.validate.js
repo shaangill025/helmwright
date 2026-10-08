@@ -77,7 +77,7 @@ const schema31 = {
     overridden: {
       title: "IntakeOverridden",
       description:
-        "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.",
+        "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.",
       type: "object",
       additionalProperties: false,
       required: [
@@ -90,6 +90,7 @@ const schema31 = {
         "attestation",
         "scopeSha256",
         "rubricVersion",
+        "friction",
       ],
       properties: {
         kind: { const: "intake.overridden" },
@@ -111,6 +112,7 @@ const schema31 = {
             "The `scopeSha256` of the classification overridden, so the override is bound to the scope the owner saw.",
         },
         rubricVersion: { $ref: "#/$defs/rubricVersion" },
+        friction: { $ref: "#/$defs/friction" },
       },
     },
     reclassified: {
@@ -1788,7 +1790,7 @@ validate21.evaluated = {
 const schema48 = {
   title: "IntakeOverridden",
   description:
-    "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.",
+    "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.",
   type: "object",
   additionalProperties: false,
   required: [
@@ -1801,6 +1803,7 @@ const schema48 = {
     "attestation",
     "scopeSha256",
     "rubricVersion",
+    "friction",
   ],
   properties: {
     kind: { const: "intake.overridden" },
@@ -1822,6 +1825,7 @@ const schema48 = {
         "The `scopeSha256` of the classification overridden, so the override is bound to the scope the owner saw.",
     },
     rubricVersion: { $ref: "#/$defs/rubricVersion" },
+    friction: { $ref: "#/$defs/friction" },
   },
 };
 const pattern15 = new RegExp("^\\s*$", "u");
@@ -2116,31 +2120,29 @@ function validate27(
       }
       errors++;
     }
+    if (data.friction === undefined) {
+      const err9 = {
+        instancePath,
+        schemaPath: "#/required",
+        keyword: "required",
+        params: { missingProperty: "friction" },
+        message: "must have required property '" + "friction" + "'",
+      };
+      if (vErrors === null) {
+        vErrors = [err9];
+      } else {
+        vErrors.push(err9);
+      }
+      errors++;
+    }
     for (const key0 in data) {
       if (!func1.call(schema48.properties, key0)) {
-        const err9 = {
+        const err10 = {
           instancePath,
           schemaPath: "#/additionalProperties",
           keyword: "additionalProperties",
           params: { additionalProperty: key0 },
           message: "must NOT have additional properties",
-        };
-        if (vErrors === null) {
-          vErrors = [err9];
-        } else {
-          vErrors.push(err9);
-        }
-        errors++;
-      }
-    }
-    if (data.kind !== undefined) {
-      if ("intake.overridden" !== data.kind) {
-        const err10 = {
-          instancePath: instancePath + "/kind",
-          schemaPath: "#/properties/kind/const",
-          keyword: "const",
-          params: { allowedValue: "intake.overridden" },
-          message: "must be equal to constant",
         };
         if (vErrors === null) {
           vErrors = [err10];
@@ -2150,11 +2152,28 @@ function validate27(
         errors++;
       }
     }
+    if (data.kind !== undefined) {
+      if ("intake.overridden" !== data.kind) {
+        const err11 = {
+          instancePath: instancePath + "/kind",
+          schemaPath: "#/properties/kind/const",
+          keyword: "const",
+          params: { allowedValue: "intake.overridden" },
+          message: "must be equal to constant",
+        };
+        if (vErrors === null) {
+          vErrors = [err11];
+        } else {
+          vErrors.push(err11);
+        }
+        errors++;
+      }
+    }
     if (data.taskId !== undefined) {
       let data1 = data.taskId;
       if (typeof data1 === "string") {
         if (!pattern4.test(data1)) {
-          const err11 = {
+          const err12 = {
             instancePath: instancePath + "/taskId",
             schemaPath: "#/$defs/taskId/pattern",
             keyword: "pattern",
@@ -2165,14 +2184,14 @@ function validate27(
               '"',
           };
           if (vErrors === null) {
-            vErrors = [err11];
+            vErrors = [err12];
           } else {
-            vErrors.push(err11);
+            vErrors.push(err12);
           }
           errors++;
         }
       } else {
-        const err12 = {
+        const err13 = {
           instancePath: instancePath + "/taskId",
           schemaPath: "#/$defs/taskId/type",
           keyword: "type",
@@ -2180,9 +2199,9 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err12];
+          vErrors = [err13];
         } else {
-          vErrors.push(err12);
+          vErrors.push(err13);
         }
         errors++;
       }
@@ -2194,30 +2213,8 @@ function validate27(
         data2 === "bounded" ||
         data2 === "architectural"
       )) {
-        const err13 = {
-          instancePath: instancePath + "/from",
-          schemaPath: "#/$defs/class/enum",
-          keyword: "enum",
-          params: { allowedValues: schema34.enum },
-          message: "must be equal to one of the allowed values",
-        };
-        if (vErrors === null) {
-          vErrors = [err13];
-        } else {
-          vErrors.push(err13);
-        }
-        errors++;
-      }
-    }
-    if (data.to !== undefined) {
-      let data3 = data.to;
-      if (!(
-        data3 === "chore" ||
-        data3 === "bounded" ||
-        data3 === "architectural"
-      )) {
         const err14 = {
-          instancePath: instancePath + "/to",
+          instancePath: instancePath + "/from",
           schemaPath: "#/$defs/class/enum",
           keyword: "enum",
           params: { allowedValues: schema34.enum },
@@ -2231,24 +2228,46 @@ function validate27(
         errors++;
       }
     }
+    if (data.to !== undefined) {
+      let data3 = data.to;
+      if (!(
+        data3 === "chore" ||
+        data3 === "bounded" ||
+        data3 === "architectural"
+      )) {
+        const err15 = {
+          instancePath: instancePath + "/to",
+          schemaPath: "#/$defs/class/enum",
+          keyword: "enum",
+          params: { allowedValues: schema34.enum },
+          message: "must be equal to one of the allowed values",
+        };
+        if (vErrors === null) {
+          vErrors = [err15];
+        } else {
+          vErrors.push(err15);
+        }
+        errors++;
+      }
+    }
     if (data.reason !== undefined) {
       let data4 = data.reason;
       const _errs13 = errors;
       const _errs14 = errors;
       if (typeof data4 === "string") {
         if (!pattern15.test(data4)) {
-          const err15 = {};
+          const err16 = {};
           if (vErrors === null) {
-            vErrors = [err15];
+            vErrors = [err16];
           } else {
-            vErrors.push(err15);
+            vErrors.push(err16);
           }
           errors++;
         }
       }
       var valid4 = _errs14 === errors;
       if (valid4) {
-        const err16 = {
+        const err17 = {
           instancePath: instancePath + "/reason",
           schemaPath: "#/properties/reason/not",
           keyword: "not",
@@ -2256,9 +2275,9 @@ function validate27(
           message: "must NOT be valid",
         };
         if (vErrors === null) {
-          vErrors = [err16];
+          vErrors = [err17];
         } else {
-          vErrors.push(err16);
+          vErrors.push(err17);
         }
         errors++;
       } else {
@@ -2273,7 +2292,7 @@ function validate27(
       }
       if (typeof data4 === "string") {
         if (!pattern16.test(data4)) {
-          const err17 = {
+          const err18 = {
             instancePath: instancePath + "/reason",
             schemaPath: "#/properties/reason/pattern",
             keyword: "pattern",
@@ -2281,14 +2300,14 @@ function validate27(
             message: 'must match pattern "' + "^[\\s\\S]{1,8192}$" + '"',
           };
           if (vErrors === null) {
-            vErrors = [err17];
+            vErrors = [err18];
           } else {
-            vErrors.push(err17);
+            vErrors.push(err18);
           }
           errors++;
         }
       } else {
-        const err18 = {
+        const err19 = {
           instancePath: instancePath + "/reason",
           schemaPath: "#/properties/reason/type",
           keyword: "type",
@@ -2296,16 +2315,16 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err18];
+          vErrors = [err19];
         } else {
-          vErrors.push(err18);
+          vErrors.push(err19);
         }
         errors++;
       }
     }
     if (data.by !== undefined) {
       if ("cli" !== data.by) {
-        const err19 = {
+        const err20 = {
           instancePath: instancePath + "/by",
           schemaPath: "#/properties/by/const",
           keyword: "const",
@@ -2313,9 +2332,9 @@ function validate27(
           message: "must be equal to constant",
         };
         if (vErrors === null) {
-          vErrors = [err19];
+          vErrors = [err20];
         } else {
-          vErrors.push(err19);
+          vErrors.push(err20);
         }
         errors++;
       }
@@ -2341,7 +2360,7 @@ function validate27(
       let data7 = data.scopeSha256;
       if (typeof data7 === "string") {
         if (!pattern9.test(data7)) {
-          const err20 = {
+          const err21 = {
             instancePath: instancePath + "/scopeSha256",
             schemaPath: "#/$defs/sha256/pattern",
             keyword: "pattern",
@@ -2349,14 +2368,14 @@ function validate27(
             message: 'must match pattern "' + "^[0-9a-f]{64}$" + '"',
           };
           if (vErrors === null) {
-            vErrors = [err20];
+            vErrors = [err21];
           } else {
-            vErrors.push(err20);
+            vErrors.push(err21);
           }
           errors++;
         }
       } else {
-        const err21 = {
+        const err22 = {
           instancePath: instancePath + "/scopeSha256",
           schemaPath: "#/$defs/sha256/type",
           keyword: "type",
@@ -2364,9 +2383,9 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err21];
+          vErrors = [err22];
         } else {
-          vErrors.push(err21);
+          vErrors.push(err22);
         }
         errors++;
       }
@@ -2375,7 +2394,7 @@ function validate27(
       let data8 = data.rubricVersion;
       if (typeof data8 === "string") {
         if (!pattern5.test(data8)) {
-          const err22 = {
+          const err23 = {
             instancePath: instancePath + "/rubricVersion",
             schemaPath: "#/$defs/rubricVersion/pattern",
             keyword: "pattern",
@@ -2384,14 +2403,14 @@ function validate27(
               'must match pattern "' + "^intake-rubric-[1-9][0-9]{0,5}$" + '"',
           };
           if (vErrors === null) {
-            vErrors = [err22];
+            vErrors = [err23];
           } else {
-            vErrors.push(err22);
+            vErrors.push(err23);
           }
           errors++;
         }
       } else {
-        const err23 = {
+        const err24 = {
           instancePath: instancePath + "/rubricVersion",
           schemaPath: "#/$defs/rubricVersion/type",
           keyword: "type",
@@ -2399,15 +2418,122 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err23];
+          vErrors = [err24];
         } else {
-          vErrors.push(err23);
+          vErrors.push(err24);
+        }
+        errors++;
+      }
+    }
+    if (data.friction !== undefined) {
+      let data9 = data.friction;
+      if (data9 && typeof data9 == "object" && !Array.isArray(data9)) {
+        if (data9.intensity === undefined) {
+          const err25 = {
+            instancePath: instancePath + "/friction",
+            schemaPath: "#/$defs/friction/required",
+            keyword: "required",
+            params: { missingProperty: "intensity" },
+            message: "must have required property '" + "intensity" + "'",
+          };
+          if (vErrors === null) {
+            vErrors = [err25];
+          } else {
+            vErrors.push(err25);
+          }
+          errors++;
+        }
+        if (data9.source === undefined) {
+          const err26 = {
+            instancePath: instancePath + "/friction",
+            schemaPath: "#/$defs/friction/required",
+            keyword: "required",
+            params: { missingProperty: "source" },
+            message: "must have required property '" + "source" + "'",
+          };
+          if (vErrors === null) {
+            vErrors = [err26];
+          } else {
+            vErrors.push(err26);
+          }
+          errors++;
+        }
+        for (const key1 in data9) {
+          if (!(key1 === "intensity" || key1 === "source")) {
+            const err27 = {
+              instancePath: instancePath + "/friction",
+              schemaPath: "#/$defs/friction/additionalProperties",
+              keyword: "additionalProperties",
+              params: { additionalProperty: key1 },
+              message: "must NOT have additional properties",
+            };
+            if (vErrors === null) {
+              vErrors = [err27];
+            } else {
+              vErrors.push(err27);
+            }
+            errors++;
+          }
+        }
+        if (data9.intensity !== undefined) {
+          let data10 = data9.intensity;
+          if (!(
+            data10 === "moderate" ||
+            data10 === "minimal" ||
+            data10 === "low" ||
+            data10 === "high"
+          )) {
+            const err28 = {
+              instancePath: instancePath + "/friction/intensity",
+              schemaPath: "#/$defs/friction/properties/intensity/enum",
+              keyword: "enum",
+              params: { allowedValues: schema46.properties.intensity.enum },
+              message: "must be equal to one of the allowed values",
+            };
+            if (vErrors === null) {
+              vErrors = [err28];
+            } else {
+              vErrors.push(err28);
+            }
+            errors++;
+          }
+        }
+        if (data9.source !== undefined) {
+          let data11 = data9.source;
+          if (!(data11 === "default" || data11 === "choreDowngrade")) {
+            const err29 = {
+              instancePath: instancePath + "/friction/source",
+              schemaPath: "#/$defs/friction/properties/source/enum",
+              keyword: "enum",
+              params: { allowedValues: schema46.properties.source.enum },
+              message: "must be equal to one of the allowed values",
+            };
+            if (vErrors === null) {
+              vErrors = [err29];
+            } else {
+              vErrors.push(err29);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err30 = {
+          instancePath: instancePath + "/friction",
+          schemaPath: "#/$defs/friction/type",
+          keyword: "type",
+          params: { type: "object" },
+          message: "must be object",
+        };
+        if (vErrors === null) {
+          vErrors = [err30];
+        } else {
+          vErrors.push(err30);
         }
         errors++;
       }
     }
   } else {
-    const err24 = {
+    const err31 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -2415,9 +2541,9 @@ function validate27(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err24];
+      vErrors = [err31];
     } else {
-      vErrors.push(err24);
+      vErrors.push(err31);
     }
     errors++;
   }
@@ -2429,7 +2555,7 @@ validate27.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema56 = {
+const schema57 = {
   title: "IntakeReclassified",
   description:
     "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's reclassifyUp guard enforces it in code before the event is written.",
@@ -2720,7 +2846,7 @@ function validate31(
           instancePath: instancePath + "/source",
           schemaPath: "#/properties/source/enum",
           keyword: "enum",
-          params: { allowedValues: schema56.properties.source.enum },
+          params: { allowedValues: schema57.properties.source.enum },
           message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {

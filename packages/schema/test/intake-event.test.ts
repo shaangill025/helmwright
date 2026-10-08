@@ -40,6 +40,7 @@ const overridden: IntakeOverridden = {
   attestation: { kind: "none" },
   scopeSha256: "a".repeat(64),
   rubricVersion: "intake-rubric-1",
+  friction: { intensity: "minimal", source: "choreDowngrade" },
 };
 const reclassified: IntakeReclassified = {
   kind: "intake.reclassified",
@@ -162,8 +163,15 @@ describe("IntakeEvent", () => {
         { from: "chore", to: "architectural" },
         { from: "bounded", to: "bounded" },
         { reason: " a " },
+        // B10-3 S2: the effective friction of `to`.
+        { to: "bounded", friction: { intensity: "high", source: "default" } },
       ],
       [
+        { friction: { intensity: "minimal" } },
+        { friction: { intensity: "none", source: "default" } },
+        { friction: { intensity: "minimal", source: "override" } },
+        { friction: { ...minimal, extra: true } },
+        { friction: "minimal" },
         { reason: "" },
         { reason: "   " },
         { reason: "x".repeat(8193) },
