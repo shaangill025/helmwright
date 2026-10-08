@@ -169,3 +169,7 @@ async function main(args: readonly string[]): Promise<number> {
 }
 
 process.exitCode = await main(process.argv.slice(2));
+
+// AC9 CI fixture (throwaway PR, never merged): an inline suppression.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const ac9Probe: any = 1;
