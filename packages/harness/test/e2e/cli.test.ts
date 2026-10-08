@@ -424,7 +424,7 @@ describe("helmwright CLI (e2e)", () => {
         ...["message.appended", "loop.iteration.started"],
         ...["message.appended", "loop.tool.started", "permission.evaluated"],
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
-        ...["message.appended", "run.terminated"],
+        ...["message.appended", "floor.checked", "run.terminated"],
       ]);
       expect(events[0]?.payload["policyVersion"]).toBe("default-2");
       // Allowed in the worktree without asking: one ruling, then the effect.
@@ -1047,6 +1047,7 @@ describe("helmwright CLI (e2e)", () => {
       const events = expectWellFormedLog(out.runId);
       expect(events.map((e) => e.type)).toEqual([
         "run.started",
+        "floor.checked",
         "run.terminated",
       ]);
       const workspace = join(stateDir, "workspaces", out.runId);
@@ -1493,6 +1494,7 @@ describe("helmwright.config.json (e2e)", () => {
         "permission.evaluated",
         "permission.asked",
         "permission.answered",
+        "floor.checked",
         "run.terminated",
       ]);
       expect(events[0]?.payload).toMatchObject({ policyVersion: "strict-1" });
@@ -1786,6 +1788,7 @@ describe("helmwright.config.json (e2e)", () => {
         "permission.evaluated",
         "permission.asked",
         "permission.answered",
+        "floor.checked",
         "run.terminated",
       ]);
       expect(events.slice(1, 4).map((e) => e.payload)).toMatchObject([
@@ -2011,6 +2014,7 @@ describe("intake (e2e, B10-2)", () => {
       expect(events.map((e) => e.type)).toEqual([
         ...["run.started", "config.accepted", "intake.classified"],
         ...["permission.evaluated", "permission.asked", "permission.answered"],
+        "floor.checked",
         "run.terminated",
       ]);
       expect(events.slice(3, 6).map((e) => e.payload)).toMatchObject([
@@ -2065,32 +2069,36 @@ describe("intake (e2e, B10-2)", () => {
     },
   );
 
-  it("exits 64 on a bad override or scope, logging nothing", () => {
-    const bad: [object, string[]][] = [
-      [{ scope: ["docs/a.md"] }, ["--class", "chore"]],
-      [{ scope: ["docs/a.md"] }, ["--reason", "why"]],
-      [{ scope: ["docs/a.md"] }, ["--class", "trivial", "--reason", "why"]],
-      [{ scope: ["docs/a.md"] }, ["--class", "chore", "--reason", "  "]],
-      [{ scope: ["!src/*.md"] }, []],
-      [{ scope: ["docs/a.md"], extra: true }, []],
-      [{ declared: { newModules: "x" } }, []],
-      // N4: the rubric's limits are the schema's.
-      [{ declared: { surfaceChanges: Array(65).fill("wire") } }, []],
-      // N6: a reason of only invisible characters is blank.
-      [
-        { scope: ["docs/a.md"] },
-        ["--class", "chore", "--reason", "\u200b\u2060"],
-      ],
-    ];
-    for (const [intake, args] of bad) {
-      const task = writeTask("denied.turns.json", LIMITS, repo, { intake });
-      const result = cli("run", task, "--state-dir", stateDir, ...args);
-      expect(result.status, result.stderr).toBe(64);
-      expect(result.stdout).toBe("");
-    }
-    expect(existsSync(join(stateDir, "session.sqlite"))).toBe(false);
-    expect(existsSync(join(stateDir, "workspaces"))).toBe(false);
-  });
+  it(
+    "exits 64 on a bad override or scope, logging nothing",
+    { timeout: T },
+    () => {
+      const bad: [object, string[]][] = [
+        [{ scope: ["docs/a.md"] }, ["--class", "chore"]],
+        [{ scope: ["docs/a.md"] }, ["--reason", "why"]],
+        [{ scope: ["docs/a.md"] }, ["--class", "trivial", "--reason", "why"]],
+        [{ scope: ["docs/a.md"] }, ["--class", "chore", "--reason", "  "]],
+        [{ scope: ["!src/*.md"] }, []],
+        [{ scope: ["docs/a.md"], extra: true }, []],
+        [{ declared: { newModules: "x" } }, []],
+        // N4: the rubric's limits are the schema's.
+        [{ declared: { surfaceChanges: Array(65).fill("wire") } }, []],
+        // N6: a reason of only invisible characters is blank.
+        [
+          { scope: ["docs/a.md"] },
+          ["--class", "chore", "--reason", "\u200b\u2060"],
+        ],
+      ];
+      for (const [intake, args] of bad) {
+        const task = writeTask("denied.turns.json", LIMITS, repo, { intake });
+        const result = cli("run", task, "--state-dir", stateDir, ...args);
+        expect(result.status, result.stderr).toBe(64);
+        expect(result.stdout).toBe("");
+      }
+      expect(existsSync(join(stateDir, "session.sqlite"))).toBe(false);
+      expect(existsSync(join(stateDir, "workspaces"))).toBe(false);
+    },
+  );
 
   it(
     "classifies a scope reached through a Ring 0 symlink as bounded (S1)",
@@ -2150,7 +2158,12 @@ describe("intake (e2e, B10-2)", () => {
       });
       const events = expectWellFormedLog(out.runId);
       expect(events.map((e) => e.type)).toEqual([
-        ...["run.started", "config.accepted", "run.terminated"],
+        ...[
+          "run.started",
+          "config.accepted",
+          "floor.checked",
+          "run.terminated",
+        ],
       ]);
       const replay = cli("replay", out.runId, "--state-dir", stateDir);
       expect(JSON.parse(replay.stdout)).toMatchObject({
@@ -2201,4 +2214,164 @@ describe("intake (e2e, B10-2)", () => {
       expectReplayMatches(reserved.out.runId, later);
     },
   );
+});
+
+const FLOOR_REJECTED = "sensor floor rejected the candidate";
+const FLOOR_UNCHECKED = "sensor floor could not check the candidate: ";
+
+/** B3-2: a repo with a test script, a source file, and a test with two assertions. */
+function seedFloorRepo(): string {
+  mkdirSync(join(repo, "src"));
+  mkdirSync(join(repo, "test"));
+  const scripts = { test: "vitest run" };
+  const pkg = { name: "seed", private: true, scripts };
+  writeFileSync(join(repo, "package.json"), JSON.stringify(pkg, null, 2));
+  writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n");
+  const test = [
+    'import { expect, it } from "vitest";',
+    'import { a } from "../src/a.ts";',
+    'it("adds", () => {',
+    "  expect(a).toBe(1);",
+    "  expect(a + 1).toBe(2);",
+    "});",
+  ];
+  writeFileSync(join(repo, "test", "a.test.ts"), test.join("\n") + "\n");
+  git("-C", repo, "add", "-A");
+  git(
+    ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+    ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"],
+  );
+  return git("-C", repo, "rev-parse", "HEAD").trim();
+}
+
+/** Turns whose one execute call runs `script` with sh in the worktree. */
+function shTurns(script: string): string {
+  const turns = join(tmp, "floor.turns.json");
+  const argv = ["sh", "-c", script];
+  writeFileSync(
+    turns,
+    JSON.stringify([
+      {
+        text: "Changing the candidate.",
+        toolCalls: [{ id: "call-1", name: "execute", input: { argv } }],
+        claimsDone: false,
+      },
+      { text: "Changed.", toolCalls: [], claimsDone: true },
+    ]),
+  );
+  return turns;
+}
+
+const rulePath = (f: Record<string, unknown>) => [f["rule"], f["path"]];
+
+/** The run's one floor.checked, which must come directly before run.terminated. */
+function floorOf(events: readonly Event[]) {
+  expect(events.filter((e) => e.type === "floor.checked")).toHaveLength(1);
+  expect(events.at(-2)?.type).toBe("floor.checked");
+  const checked = events.at(-2)?.payload ?? {};
+  const findings = (checked["findings"] ?? []) as Record<string, unknown>[];
+  return { checked, findings, found: findings.map(rulePath) };
+}
+
+/** Runs `script` in a run of the CLI; returns its output, log and floor check. */
+function runFloor(script: string) {
+  const result = runWith(writeTask(shTurns(script)));
+  const events = expectWellFormedLog(result.out.runId);
+  return { ...result, events, ...floorOf(events) };
+}
+
+/** OQ-B3-2: a would-be completed run fails, the CLI says why and exits 1. */
+function expectRejected(run: ReturnType<typeof runFloor>, base: string) {
+  expect(run.status, run.stderr).toBe(1);
+  expect(run.out.terminal).toEqual({ kind: "failed", error: FLOOR_REJECTED });
+  expect(run.checked).toMatchObject({
+    ...{ kind: "floor.checked", rules: "floor-2", baseCommit: base },
+    ...{ verdict: "reject", truncated: false },
+  });
+  const findings = String(run.found.length) + " findings (";
+  expect(run.stderr).toContain("helmwright: floor reject: " + findings);
+  expectReplayMatches(run.out.runId, run.events);
+}
+
+describe("sensor floor (e2e, B3-2)", () => {
+  it("passes a source edit and completes (F0)", { timeout: T }, () => {
+    const base = seedFloorRepo();
+    const run = runFloor("echo 'export const b = 2;' >> src/a.ts");
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.out.terminal).toEqual({ kind: "completed" });
+    expect(run.checked).toMatchObject({
+      ...{ rules: "floor-2", baseCommit: base, verdict: "pass" },
+      ...{ findings: [], truncated: false },
+    });
+    expect(run.checked["candidateTree"]).toMatch(/^[0-9a-f]{40}$/);
+    expect(run.stderr).toContain("helmwright: floor pass\n");
+    expectReplayMatches(run.out.runId, run.events);
+  });
+
+  it("rejects an added lint suppression (F1, AC9)", { timeout: T }, () => {
+    const base = seedFloorRepo();
+    const marker = "// eslint-" + "disable-next-line no-console";
+    const run = runFloor("echo '" + marker + "' >> src/a.ts");
+    expectRejected(run, base);
+    expect(run.found).toEqual([["suppression.added", "src/a.ts"]]);
+  });
+
+  it("rejects a weakened test command (F2, AC9)", { timeout: T }, () => {
+    const base = seedFloorRepo();
+    const run = runFloor("sed -i 's/vitest run/exit 0/' package.json");
+    expectRejected(run, base);
+    expect(run.found).toEqual([
+      ["package.changed", "package.json"],
+      ["protected.changed", "package.json"],
+    ]);
+    expect(run.findings[0]?.["detail"]).toBe("scripts.test changed");
+  });
+
+  it("rejects a nested test config (F3)", { timeout: T }, () => {
+    const base = seedFloorRepo();
+    const run = runFloor("echo 'export default 1;' > src/vitest.config.ts");
+    expectRejected(run, base);
+    expect(run.found).toEqual([["config.changed", "src/vitest.config.ts"]]);
+  });
+
+  it.skipIf(NO_PTY)(
+    "rejects a removed assertion in an approved Ring 0 test (F4, OQ-B3-3)" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      seedFloorRepo();
+      commitStrict("floor-test-1", ["test/**"]);
+      const base = git("-C", repo, "rev-parse", "HEAD").trim();
+      const turns = shTurns("sed -i '/a + 1/d' test/a.test.ts");
+      const { drive } = viewThenApprove(RING0_END);
+      const tty = await runAtTty(turns, drive);
+      expect(tty.status, tty.shown).toBe(1);
+      expect(tty.out.terminal).toEqual({
+        kind: "failed",
+        error: FLOOR_REJECTED,
+      });
+      const events = expectWellFormedLog(tty.out.runId);
+      expect(events.map((e) => e.type)).toContain("config.accepted");
+      const { checked, found } = floorOf(events);
+      expect(checked).toMatchObject({ baseCommit: base, verdict: "reject" });
+      expect(found).toContainEqual(["protected.changed", "test/a.test.ts"]);
+      expect(tty.shown).toContain("helmwright: floor reject: ");
+      expectReplayMatches(tty.out.runId, events);
+    },
+  );
+
+  it("fails closed when the gitfile is rewritten (F5)", { timeout: T }, () => {
+    seedFloorRepo();
+    const run = runWith(writeTask(shTurns("echo 'gitdir: /tmp' > .git")));
+    expect(run.status, run.stderr).toBe(1);
+    expect(run.out.terminal).toEqual({
+      kind: "failed",
+      error: FLOOR_UNCHECKED + "the worktree's .git does not match its git dir",
+    });
+    expect(run.stderr).toContain("helmwright: floor not checked\n");
+    const events = expectWellFormedLog(run.out.runId);
+    expect(events.some((e) => e.type === "floor.checked")).toBe(false);
+    expect(events.at(-2)?.type).toBe("message.appended");
+    expectReplayMatches(run.out.runId, events);
+  });
 });

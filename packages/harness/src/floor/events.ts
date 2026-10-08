@@ -1,5 +1,6 @@
 import {
   validateFloorEvent,
+  type Event,
   type FloorChecked,
   type FloorFinding,
 } from "@helmwright/schema";
@@ -37,4 +38,33 @@ export function floorChecked(
     throw new FloorError("floor.checked cannot be logged");
   }
   return payload;
+}
+
+/**
+ * B3-2 replay faults of one run's events: a `floor.checked` that is not a valid floor
+ * event or not the run's only one, and a `run.terminated` that is completed without a
+ * passing `floor.checked` before it (rejected, or the floor skipped). Each fault is
+ * fixed text and the event's `seq`, like `permissionFaults`.
+ */
+export function floorFaults(events: readonly Event[]): string[] {
+  const faults: string[] = [];
+  let verdict: unknown;
+  for (const { seq, type, payload } of events) {
+    const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
+    if (type === "floor.checked") {
+      if (verdict !== undefined)
+        fault("more than one floor.checked in one run");
+      if (!validateFloorEvent({ ...payload })) {
+        fault("floor.checked that is not a valid floor event");
+      }
+      verdict = payload["verdict"];
+    } else if (type === "run.terminated") {
+      const terminal: unknown = payload["terminal"];
+      const kind = (terminal as Record<string, unknown> | null)?.["kind"];
+      if (kind === "completed" && verdict !== "pass") {
+        fault("completed run without a passing floor.checked");
+      }
+    }
+  }
+  return faults;
 }
