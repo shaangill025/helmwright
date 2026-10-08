@@ -27,11 +27,13 @@ import {
   DEFAULT_PERMISSION_POLICY,
   contextDigest,
   deriveMessages,
+  loadRunConfig,
   openSessionLog,
   permissionAnswered,
   permissionAsked,
   type ToolSpec,
 } from "../../src/index.ts";
+import { ring0SettingDigests } from "../../src/config/config.ts";
 
 // Real CLI process, real git, real Docker, real node:sqlite. Fails (never skips) without Docker.
 const T = 120_000;
@@ -1713,6 +1715,64 @@ describe("helmwright.config.json (e2e)", () => {
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
       ]);
       expect(events.some((e) => e.type === "config.accepted")).toBe(false);
+    },
+  );
+
+  it(
+    "asks once in a repo whose latest baseline is a default-1 one (B6-5, S3)",
+    { timeout: T },
+    () => {
+      // The default-1 policy: helmwright's source globs were in the floor then.
+      const harness = ["loop", "log", "permission", "sandbox", "ledger"]
+        .concat("scorer")
+        .map((dir) => `packages/harness/src/${dir}/**`);
+      const old = ["packages/harness/sandbox/**", "packages/schema/schemas/**"];
+      const [evals, ...generic] = DEFAULT_PERMISSION_POLICY.ring0Paths;
+      const ring0Paths = [...harness, ...old, evals, "packages/*/evals/**"];
+      const policy = { ...DEFAULT_PERMISSION_POLICY, version: "default-1" };
+      // Its Ring 0 digest, through the loader, from a scratch repo that commits it.
+      const scratch = join(tmp, "scratch");
+      git("init", "--quiet", scratch);
+      const text = JSON.stringify({
+        permissions: {
+          policy: { ...policy, ring0Paths: [...ring0Paths, ...generic] },
+        },
+      });
+      writeFileSync(join(scratch, CONFIG), text);
+      git("-C", scratch, "add", CONFIG);
+      git(
+        ...["-C", scratch, "-c", "user.name=e2e", "-c", "user.email=e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "old"],
+      );
+      const before = loadRunConfig(scratch);
+      // A clean default run, then a default-1-era acceptance as the latest baseline.
+      expect(runTask("write-file.turns.json").status).toBe(0);
+      const ring0Sha256 = before.record.ring0Sha256;
+      rawAppend("run.started", { config: { ring0Sha256 } });
+      rawAppend("config.accepted", {
+        ...{ repo: join(repo, ".git"), ring0Sha256, how: "default" },
+        settings: ring0SettingDigests(before.ring0),
+      });
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      // Asked before the first message and any tool call; only `permissions` changed.
+      expect(events.map((e) => e.type)).toEqual([
+        "run.started",
+        "permission.evaluated",
+        "permission.asked",
+        "permission.answered",
+        "run.terminated",
+      ]);
+      expect(events.slice(1, 4).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
+          ...{ policyVersion: "default-2", target: { value: "permissions" } },
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
     },
   );
 

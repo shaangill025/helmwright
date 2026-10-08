@@ -138,7 +138,7 @@
   {
     "component": "packages/harness/src/permission/policy.ts",
     "ring": 0,
-    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json).",
+    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy changed (default-2), so every repo with a default-1 baseline is asked once at its next run.",
     "evidence": [
       "06 Ring 0 contents",
       "decisions Q51",
@@ -226,8 +226,8 @@
   },
   {
     "component": "packages/harness/src/run/run.ts",
-    "ring": 2,
-    "assumption": "The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; without a hash chain over the log, the context digest detects divergence, not tampering. Its git calls (repo root check, worktree add and remove) run through runGit and share config.ts's trust in .git/config.",
+    "ring": 0,
+    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; without a hash chain over the log, the context digest detects divergence, not tampering. Its git calls (repo root check, worktree add and remove) run through runGit and share config.ts's trust in .git/config.",
     "evidence": [
       "06 Spine",
       "decisions Q5",
@@ -241,8 +241,8 @@
   },
   {
     "component": "packages/harness/src/cli.ts",
-    "ring": 2,
-    "assumption": "The CLI calls the harness in process, with no authenticated API until B13 brings the first second-process surface; each output line is JSON without control or invisible characters because it reaches a terminal.",
+    "ring": 0,
+    "assumption": "The CLI decides presence (an interactive TTY) for every approval, so it is the trust root of approvals until SIG. The CLI calls the harness in process, with no authenticated API until B13 brings the first second-process surface; each output line is JSON without control or invisible characters because it reaches a terminal.",
     "evidence": [
       "decisions X2 API transport",
       "06 Surfaces and deployment",
@@ -266,8 +266,8 @@
   },
   {
     "component": "packages/schema/src/index.ts",
-    "ring": 2,
-    "assumption": "JSON Schema is the source of truth: the index re-exports types and Ajv standalone validators generated from the schemas, so Ajv stays a build-time dependency and CI fails on drift.",
+    "ring": 0,
+    "assumption": "The index holds CONFIG_DEFAULTS and RING0_CONFIG_KEYS, which decide the Ring 0 digest. JSON Schema is the source of truth: the index re-exports types and Ajv standalone validators generated from the schemas, so Ajv stays a build-time dependency and CI fails on drift.",
     "evidence": [
       "decisions Schema tooling",
       "decisions Generated code",

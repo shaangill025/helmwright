@@ -116,6 +116,13 @@ const HELMWRIGHT_GLOBS = [
   "packages/schema/schemas/**",
   "packages/*/evals/**",
   "rot-register.json",
+  // S1 (B6-5 review): the run-start check, presence, Ring 0 data and its generator.
+  "packages/harness/src/run/**",
+  "packages/harness/src/cli.ts",
+  "packages/schema/src/index.ts",
+  "packages/schema/generated/**",
+  "packages/schema/scripts/**",
+  "packages/*/package.json",
 ];
 const R0_SETTING = "always-ask.ring0-setting";
 const EGRESS = ["push", "pr.open", "pr.merge", "comment", "publish", "deploy"];
@@ -358,7 +365,10 @@ const HELMWRIGHT_ONLY = `packages/harness/src/permission/policy.ts
   packages/harness/src/scorer/a.ts packages/harness/src/broker/broker.ts
   packages/harness/src/config/config.ts packages/harness/sandbox/Dockerfile
   packages/schema/schemas/a.schema.json packages/harness/evals/x.json
-  rot-register.json`.split(/\s+/);
+  rot-register.json packages/harness/package.json
+  packages/harness/src/run/run.ts packages/harness/src/cli.ts
+  packages/schema/src/index.ts packages/schema/generated/x.ts
+  packages/schema/scripts/generate.ts`.split(/\s+/);
 
 describe("isRing0Path with RING0_PATHS", () => {
   it.each(
@@ -372,7 +382,7 @@ describe("isRing0Path with RING0_PATHS", () => {
   });
 
   it.each(
-    `packages/harness/package.json packages/harness/src/run/run.ts
+    `packages/harness/src/engine/x.ts packages/harness/src/runs/x.ts
     packages/harness/src/loopy/x.ts src/tsconfig.json docs/decisions.md
     .githubx/a`.split(/\s+/),
   )("does not match %j", (path) => {
@@ -393,10 +403,13 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
   let dir: string;
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), "helmwright-own-"));
-    for (const sub of ["loop", "broker", "config", "run"]) {
+    for (const sub of ["loop", "broker", "config", "run", "engine"]) {
       mkdirSync(join(dir, "packages", "harness", "src", sub), {
         recursive: true,
       });
+    }
+    for (const sub of ["src", "generated", "scripts"]) {
+      mkdirSync(join(dir, "packages", "schema", sub), { recursive: true });
     }
   });
   afterAll(() => {
@@ -451,6 +464,12 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
     "packages/harness/src/broker/x.ts",
     "packages/harness/src/config/x.ts",
     "rot-register.json",
+    "packages/harness/src/run/x.ts",
+    "packages/harness/src/cli.ts",
+    "packages/schema/src/index.ts",
+    "packages/schema/generated/x.ts",
+    "packages/schema/scripts/generate.ts",
+    "packages/harness/package.json",
   ])("always asks to edit %j under helmwright's own policy", (path) => {
     expect(edit(helmwrightPolicy(), path)).toEqual({
       tier: "alwaysAsk",
@@ -459,7 +478,9 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
   });
 
   it("allows an edit outside helmwright's Ring 0 paths under its policy", () => {
-    expect(edit(helmwrightPolicy(), "packages/harness/src/run/x.ts")).toEqual({
+    expect(
+      edit(helmwrightPolicy(), "packages/harness/src/engine/x.ts"),
+    ).toEqual({
       tier: "allow",
       ruleId: "fs.edit.worktree",
     });

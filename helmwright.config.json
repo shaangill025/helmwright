@@ -86,7 +86,13 @@
         "packages/harness/sandbox/**",
         "packages/schema/schemas/**",
         "packages/*/evals/**",
-        "rot-register.json"
+        "rot-register.json",
+        "packages/harness/src/run/**",
+        "packages/harness/src/cli.ts",
+        "packages/schema/src/index.ts",
+        "packages/schema/generated/**",
+        "packages/schema/scripts/**",
+        "packages/*/package.json"
       ],
       "ring0Settings": [
         "intake.classification",
