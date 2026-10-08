@@ -300,14 +300,15 @@ describe("object event builders and createdRecord (OD-1, OD-8)", () => {
       append("artifact.recorded", artifact),
       append("decision.opened", decisionOpened(owned)),
       append("decision.opened", decisionOpened(ruling)),
+      // B5-3: only a resolved decision (here the Ruling) takes a footprint.
       append(
         "decision.footprint.recorded",
-        decisionFootprintRecorded("decision-1", [footprint.id]),
+        decisionFootprintRecorded("decision-2", [footprint.id]),
       ),
       append(
         "decision.outcome.signalled",
         decisionOutcomeSignalled({
-          decisionId: "decision-1",
+          decisionId: "decision-2",
           signal: "rework",
           runId,
           artifactIds: [footprint.id],

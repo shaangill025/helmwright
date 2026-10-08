@@ -106,6 +106,7 @@ function failing(type: string, n = 1): SessionLog {
     },
     transaction: (fn) => log.transaction(fn),
     events: (query) => log.events(query),
+    object: (id) => log.object(id),
     lastSeq: () => log.lastSeq(),
     close: () => {
       log.close();

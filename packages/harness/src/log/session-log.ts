@@ -1,18 +1,28 @@
 import { chmodSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
-import { validateEvent, type Event } from "@helmwright/schema";
+import {
+  validateEvent,
+  type Event,
+  type ObjectRecord,
+} from "@helmwright/schema";
 import { checkObjectEvent } from "../objects/events.ts";
+import {
+  OBJECTS_SCHEMA,
+  applyEvent,
+  createSqlStore,
+  type ProjectionStore,
+} from "../objects/projection.ts";
 import { MESSAGE_APPENDED, isStorableMessagePayload } from "./messages.ts";
 
 /** `PRAGMA user_version` of a session log this code can read and write. */
-export const SESSION_LOG_SCHEMA_VERSION = 2;
+export const SESSION_LOG_SCHEMA_VERSION = 3;
 /** `schemaVersion` written into each new event row. */
 const EVENT_SCHEMA_VERSION = 1;
 const BUSY_TIMEOUT_MS = 5_000;
 
 // Ring 0: the events table is append-only and gap-free even for a raw connection.
-const SCHEMA = `
+const EVENTS_SCHEMA = `
 CREATE TABLE events (
   seq INTEGER PRIMARY KEY CHECK (seq >= 0),
   schema_version INTEGER NOT NULL,
@@ -37,8 +47,8 @@ END;
 CREATE TRIGGER events_no_delete BEFORE DELETE ON events BEGIN
   SELECT RAISE(ABORT, 'events is append-only: DELETE rejected');
 END;
-PRAGMA user_version = ${String(SESSION_LOG_SCHEMA_VERSION)};
 `;
+const SET_VERSION = `PRAGMA user_version = ${String(SESSION_LOG_SCHEMA_VERSION)}`;
 const COLUMNS =
   "seq, schema_version, event_id, graph_id, run_id, node_id, type, at, payload";
 
@@ -89,7 +99,8 @@ const objectIssue = (reason: string): EventIssue => ({
 export interface SessionLog {
   /**
    * Validates (also with checkObjectEvent), assigns the next gap-free seq and stores
-   * the event atomically.
+   * the event atomically, with its change to the objects projection (B5-3): if
+   * applyEvent refuses it, neither is stored, even inside a caught `transaction` error.
    */
   append(input: AppendInput): Event;
   /**
@@ -102,6 +113,8 @@ export interface SessionLog {
    */
   transaction<T>(fn: () => T extends PromiseLike<unknown> ? never : T): T;
   events(query?: EventsQuery): Event[];
+  /** The projected record with `id` (B5-3), read back checked, or undefined. */
+  object(id: string): ObjectRecord | undefined;
   /** The highest stored seq, or `undefined` for an empty log. */
   lastSeq(): number | undefined;
   close(): void;
@@ -127,19 +140,22 @@ export function openSessionLog(path: string): SessionLog {
   for (const file of [path, `${path}-wal`, `${path}-shm`])
     restrict(file, 0o600);
   const db = new DatabaseSync(path);
+  let store: ProjectionStore;
   try {
+    // Before migrate: the objects triggers call the function that this registers.
+    store = createSqlStore(db);
     db.exec(`PRAGMA busy_timeout = ${String(BUSY_TIMEOUT_MS)}`);
     const mode = db.prepare("PRAGMA journal_mode = WAL").get();
     if (mode?.["journal_mode"] !== "wal") {
       throw new Error(`session log ${path}: cannot enable WAL mode`);
     }
     db.exec("PRAGMA synchronous = FULL");
-    migrate(db, path);
+    migrate(db, path, store);
   } catch (error) {
     db.close();
     throw error;
   }
-  return createLog(db);
+  return createLog(db, store);
 }
 
 /** Sets `mode` on `path` if it exists with any group/other permission bit. */
@@ -155,11 +171,15 @@ function userVersion(db: DatabaseSync): number {
   return Number(db.prepare("PRAGMA user_version").get()?.["user_version"]);
 }
 
-function migrate(db: DatabaseSync, path: string): void {
+function migrate(db: DatabaseSync, path: string, store: ProjectionStore): void {
   if (userVersion(db) === SESSION_LOG_SCHEMA_VERSION) return;
   inTransaction(db, () => {
     const version = userVersion(db);
     if (version === SESSION_LOG_SCHEMA_VERSION) return;
+    if (version === 2) {
+      migrateV2(db, path, store);
+      return;
+    }
     if (version !== 0) {
       throw new Error(
         `session log ${path}: unsupported schema version ${String(version)}`,
@@ -168,8 +188,37 @@ function migrate(db: DatabaseSync, path: string): void {
     if (db.prepare("SELECT 1 FROM sqlite_schema").get() !== undefined) {
       throw new Error(`session log ${path}: not a session log database`);
     }
-    db.exec(SCHEMA);
+    db.exec(EVENTS_SCHEMA + OBJECTS_SCHEMA + SET_VERSION);
   });
+}
+
+/**
+ * v2 to v3 (B5-3), inside migrate's transaction: adds the objects table and applies
+ * every event, read through the checked path, in seq order. Any failure rolls the file
+ * back to v2 with no objects table.
+ */
+function migrateV2(db: DatabaseSync, path: string, store: ProjectionStore) {
+  const tables = "SELECT 1 FROM sqlite_schema WHERE type = 'table'";
+  try {
+    if (db.prepare(tables + " AND name = 'events'").get() === undefined) {
+      throw new Error("no events table");
+    }
+    db.exec(OBJECTS_SCHEMA);
+    const rows = db.prepare(`SELECT ${COLUMNS} FROM events ORDER BY seq`).all();
+    for (const event of rows.map(toEvent)) {
+      const refused = applyEvent(store, event);
+      if (refused !== undefined) {
+        const seq = String(event.seq);
+        throw new Error(`cannot apply event at seq ${seq}: ${refused}`);
+      }
+    }
+    db.exec(SET_VERSION);
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "unknown error";
+    throw new Error(`session log ${path}: cannot migrate v2 to v3: ${cause}`, {
+      cause: error,
+    });
+  }
 }
 
 function inTransaction<T>(db: DatabaseSync, fn: () => T): T {
@@ -201,6 +250,31 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
   }
 }
 
+/**
+ * Runs `fn` inside a savepoint of the open transaction, so a failed append stores
+ * nothing even when the caller of `SessionLog.transaction` catches its error.
+ */
+function atomically<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec("SAVEPOINT hw_append");
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    // SQLite may already have rolled back the whole transaction (e.g. SQLITE_FULL).
+    if (db.isTransaction) {
+      try {
+        db.exec("ROLLBACK TO hw_append");
+        db.exec("RELEASE hw_append");
+      } catch (rollback) {
+        throw new RollbackError(rollback, error);
+      }
+    }
+    throw error;
+  }
+  db.exec("RELEASE hw_append");
+  return result;
+}
+
 /** The RollbackErrors made here, recognized by identity alone (no Proxy trap runs). */
 const rollbackErrors = new WeakSet<object>();
 
@@ -216,7 +290,7 @@ class RollbackError extends Error {
   }
 }
 
-function createLog(db: DatabaseSync): SessionLog {
+function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
   const insert = db.prepare(
     `INSERT INTO events (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
@@ -238,10 +312,10 @@ function createLog(db: DatabaseSync): SessionLog {
   // N-3: after a failed rollback a write could join the stale transaction and never
   // commit, so every later write throws instead.
   let poisoned: RollbackError | undefined;
-  const write = <T>(fn: () => T): T => {
+  const write = <T>(fn: () => T, savepoint = false): T => {
     if (poisoned !== undefined) throw poisoned;
     try {
-      return inTransaction(db, fn);
+      return inTransaction(db, savepoint ? () => atomically(db, fn) : fn);
     } catch (error) {
       if (rollbackErrors.has(error as object))
         poisoned = error as RollbackError;
@@ -281,7 +355,7 @@ function createLog(db: DatabaseSync): SessionLog {
           e.at,
           payload,
         );
-        return toEvent({
+        const stored = toEvent({
           seq,
           schema_version: schemaVersion,
           event_id: e.eventId,
@@ -292,7 +366,13 @@ function createLog(db: DatabaseSync): SessionLog {
           at: e.at,
           payload,
         });
-      });
+        // B5-3: the projection changes in the event's transaction, or neither is stored.
+        const unapplied = applyEvent(store, stored);
+        if (unapplied !== undefined) {
+          throw new EventValidationError([objectIssue(unapplied)]);
+        }
+        return stored;
+      }, true);
     },
     transaction(fn) {
       if (poisoned !== undefined) throw poisoned;
@@ -317,6 +397,9 @@ function createLog(db: DatabaseSync): SessionLog {
             ? all.all(fromSeq)
             : byRun.all(runId, fromSeq);
       return rows.map(toEvent);
+    },
+    object(id) {
+      return store.get(id);
     },
     lastSeq,
     close() {

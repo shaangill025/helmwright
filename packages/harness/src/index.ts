@@ -206,6 +206,8 @@ export {
   runRecorded,
   taskCreated,
 } from "./objects/events.ts";
+export type { ProjectionStore } from "./objects/projection.ts";
+export { applyEvent, createMapStore } from "./objects/projection.ts";
 export type { CandidateChanges, FloorLimits, FloorRepo } from "./floor/tree.ts";
 export {
   FLOOR_LIMITS,
