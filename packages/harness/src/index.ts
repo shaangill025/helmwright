@@ -183,5 +183,5 @@ export {
   IntakeError,
   classify,
   overrideDirection,
-  upgradeOnly,
+  reclassifyUp,
 } from "./intake/rubric.ts";
