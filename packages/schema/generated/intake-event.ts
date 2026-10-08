@@ -6,6 +6,10 @@
 export type IntakeEvent =
   IntakeClassified | IntakeOverridden | IntakeReclassified;
 /**
+ * The task's ID.
+ */
+export type TaskId = string;
+/**
  * Task class, in rank order: chore < bounded < architectural.
  */
 export type IntakeClass = "chore" | "bounded" | "architectural";
@@ -31,13 +35,17 @@ export type IntakeRule =
  */
 export type Text = string;
 /**
- * A declared path, glob, module or dependency: 1 to 1024 characters without control characters.
+ * A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.
  */
-export type Entry = string;
+export type ScopeEntry = string;
 /**
  * Lowercase hex SHA-256.
  */
 export type Sha256 = string;
+/**
+ * A declared module or dependency: 1 to 1024 code points without C0 or C1 controls, format characters (bidi controls, zero-width), line or paragraph separators or lone surrogates (\p{Cf}, \p{Zl}, \p{Zp}, \p{Cs}).
+ */
+export type Entry = string;
 export type IntakeSurfaceChange = "schema" | "publicApi" | "storage" | "wire";
 /**
  * Proof of who overrode. Until slice SIG only `none` exists.
@@ -45,11 +53,11 @@ export type IntakeSurfaceChange = "schema" | "publicApi" | "storage" | "wire";
 export type IntakeAttestation = IntakeAttestationNone;
 
 /**
- * The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none), so the class is bound to the exact scope it was computed from.
+ * The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none) and `ring0Sha256` that of the sorted Ring 0 paths the rubric used, so the class is bound to the exact scope and Ring 0 paths it was computed from.
  */
 export interface IntakeClassified {
   kind: "intake.classified";
-  taskId: string;
+  taskId: TaskId;
   class: IntakeClass;
   rubricVersion: RubricVersion;
   /**
@@ -62,10 +70,14 @@ export interface IntakeClassified {
   /**
    * The declared scope, sorted: repo-relative paths or globs (`*` within a segment, `**` for any number of segments). Empty when the task declared none.
    *
-   * @maxItems 1024
+   * @maxItems 256
    */
-  scope: Entry[];
+  scope: ScopeEntry[];
   scopeSha256: Sha256;
+  /**
+   * Lowercase hex SHA-256.
+   */
+  ring0Sha256: string;
   declared: IntakeDeclared;
   friction: IntakeFriction;
   /**
@@ -117,6 +129,7 @@ export interface IntakeFriction {
  */
 export interface IntakeOverridden {
   kind: "intake.overridden";
+  taskId: TaskId;
   from: IntakeClass;
   to: IntakeClass;
   /**
@@ -125,15 +138,21 @@ export interface IntakeOverridden {
   reason: string;
   by: "cli";
   attestation: IntakeAttestation;
+  /**
+   * Lowercase hex SHA-256.
+   */
+  scopeSha256: string;
+  rubricVersion: RubricVersion;
 }
 export interface IntakeAttestationNone {
   kind: "none";
 }
 /**
- * The harness reclassified the task because of a floor signal or the plan-time pass. Upward only (Q52): `to` ranks above `from` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it before the event is written.
+ * The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it in code before the event is written.
  */
 export interface IntakeReclassified {
   kind: "intake.reclassified";
+  taskId: TaskId;
   from: IntakeClass;
   to: IntakeClass;
   /**

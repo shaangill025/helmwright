@@ -12,7 +12,7 @@
   "$defs": {
     "classified": {
       "title": "IntakeClassified",
-      "description": "The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none), so the class is bound to the exact scope it was computed from.",
+      "description": "The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none) and `ring0Sha256` that of the sorted Ring 0 paths the rubric used, so the class is bound to the exact scope and Ring 0 paths it was computed from.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -23,17 +23,14 @@
         "reasons",
         "scope",
         "scopeSha256",
+        "ring0Sha256",
         "declared",
         "friction",
         "sparring"
       ],
       "properties": {
         "kind": { "const": "intake.classified" },
-        "taskId": {
-          "$comment": "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
-        },
+        "taskId": { "$ref": "#/$defs/taskId" },
         "class": { "$ref": "#/$defs/class" },
         "rubricVersion": { "$ref": "#/$defs/rubricVersion" },
         "reasons": {
@@ -46,10 +43,14 @@
         "scope": {
           "description": "The declared scope, sorted: repo-relative paths or globs (`*` within a segment, `**` for any number of segments). Empty when the task declared none.",
           "type": "array",
-          "maxItems": 1024,
-          "items": { "$ref": "#/$defs/entry" }
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/scopeEntry" }
         },
         "scopeSha256": { "$ref": "#/$defs/sha256" },
+        "ring0Sha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the canonical JSON of the sorted Ring 0 paths (the resolved policy's and the floor's) the class was computed with."
+        },
         "declared": { "$ref": "#/$defs/declared" },
         "friction": { "$ref": "#/$defs/friction" },
         "sparring": {
@@ -67,9 +68,20 @@
       "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "from", "to", "reason", "by", "attestation"],
+      "required": [
+        "kind",
+        "taskId",
+        "from",
+        "to",
+        "reason",
+        "by",
+        "attestation",
+        "scopeSha256",
+        "rubricVersion"
+      ],
       "properties": {
         "kind": { "const": "intake.overridden" },
+        "taskId": { "$ref": "#/$defs/taskId" },
         "from": { "$ref": "#/$defs/class" },
         "to": { "$ref": "#/$defs/class" },
         "reason": {
@@ -79,16 +91,22 @@
           "not": { "pattern": "^\\s*$" }
         },
         "by": { "const": "cli" },
-        "attestation": { "$ref": "#/$defs/attestation" }
+        "attestation": { "$ref": "#/$defs/attestation" },
+        "scopeSha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "The `scopeSha256` of the classification overridden, so the override is bound to the scope the owner saw."
+        },
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" }
       }
     },
     "reclassified": {
       "title": "IntakeReclassified",
-      "description": "The harness reclassified the task because of a floor signal or the plan-time pass. Upward only (Q52): `to` ranks above `from` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it before the event is written.",
+      "description": "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it in code before the event is written.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "kind",
+        "taskId",
         "from",
         "to",
         "source",
@@ -97,6 +115,7 @@
       ],
       "properties": {
         "kind": { "const": "intake.reclassified" },
+        "taskId": { "$ref": "#/$defs/taskId" },
         "from": { "$ref": "#/$defs/class" },
         "to": { "$ref": "#/$defs/class" },
         "source": {
@@ -218,9 +237,9 @@
       "properties": { "kind": { "const": "none" } }
     },
     "entry": {
-      "description": "A declared path, glob, module or dependency: 1 to 1024 characters without control characters.",
+      "description": "A declared module or dependency: 1 to 1024 code points without C0 or C1 controls, format characters (bidi controls, zero-width), line or paragraph separators or lone surrogates (\\p{Cf}, \\p{Zl}, \\p{Zp}, \\p{Cs}).",
       "type": "string",
-      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]{1,1024}$"
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,1024}$"
     },
     "sha256": {
       "description": "Lowercase hex SHA-256.",
@@ -231,6 +250,18 @@
       "description": "Escaped display text, at most 8192 code points.",
       "type": "string",
       "pattern": "^[\\s\\S]{0,8192}$"
+    },
+    "taskId": {
+      "description": "The task's ID.",
+      "$comment": "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "scopeEntry": {
+      "description": "A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.",
+      "type": "string",
+      "pattern": "^[^\\\\\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,1024}$",
+      "not": { "pattern": "(^|/)\\.{0,2}(/|$)" }
     }
   }
 }
