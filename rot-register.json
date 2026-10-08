@@ -303,6 +303,19 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/schema/schemas/intake-event.schema.json",
+    "ring": 0,
+    "assumption": "Each classification is logged with its rubric version and the SHA-256 of its sorted scope, an owner override with a non-empty reason and attestation none until slice SIG, and a reclassification with its signals; upward only is enforced by the harness, not the schema.",
+    "evidence": [
+      "03 Intake",
+      "decisions Q52",
+      "packages/schema/test/intake-event.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["milestone"]
+  },
+  {
     "component": "packages/schema/schemas/permission-event.schema.json",
     "ring": 0,
     "assumption": "Each ruling is logged with the policy version and the input's SHA-256, each ask with its prompt's SHA-256, and an approval's attestation is none until slice SIG.",

@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/intake-event.schema.json",
+  "title": "IntakeEvent",
+  "description": "Payload of an intake event in the session log (B10, Q52), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. Intake is a Ring 0 step (03 Intake): each task is classified once by the deterministic rubric, an owner override is logged with its reason, and the harness may later reclassify only upward.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/classified" },
+    { "$ref": "#/$defs/overridden" },
+    { "$ref": "#/$defs/reclassified" }
+  ],
+  "$defs": {
+    "classified": {
+      "title": "IntakeClassified",
+      "description": "The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none), so the class is bound to the exact scope it was computed from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "taskId",
+        "class",
+        "rubricVersion",
+        "reasons",
+        "scope",
+        "scopeSha256",
+        "declared",
+        "friction",
+        "sparring"
+      ],
+      "properties": {
+        "kind": { "const": "intake.classified" },
+        "taskId": {
+          "$comment": "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        },
+        "class": { "$ref": "#/$defs/class" },
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" },
+        "reasons": {
+          "description": "Why the rubric chose the class: one reason per rule that fired, in rule order.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/reason" }
+        },
+        "scope": {
+          "description": "The declared scope, sorted: repo-relative paths or globs (`*` within a segment, `**` for any number of segments). Empty when the task declared none.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/entry" }
+        },
+        "scopeSha256": { "$ref": "#/$defs/sha256" },
+        "declared": { "$ref": "#/$defs/declared" },
+        "friction": { "$ref": "#/$defs/friction" },
+        "sparring": {
+          "description": "The sparring default the class sets. Only opt-in exists until A5.",
+          "const": "optIn"
+        },
+        "costIfWrong": {
+          "description": "What a wrong class would cost, as escaped display text: a misclassification is a ruling the owner can review (03 Intake).",
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "overridden": {
+      "title": "IntakeOverridden",
+      "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "from", "to", "reason", "by", "attestation"],
+      "properties": {
+        "kind": { "const": "intake.overridden" },
+        "from": { "$ref": "#/$defs/class" },
+        "to": { "$ref": "#/$defs/class" },
+        "reason": {
+          "description": "The owner's reason, escaped: not empty and not only spaces.",
+          "type": "string",
+          "pattern": "^[\\s\\S]{1,8192}$",
+          "not": { "pattern": "^\\s*$" }
+        },
+        "by": { "const": "cli" },
+        "attestation": { "$ref": "#/$defs/attestation" }
+      }
+    },
+    "reclassified": {
+      "title": "IntakeReclassified",
+      "description": "The harness reclassified the task because of a floor signal or the plan-time pass. Upward only (Q52): `to` ranks above `from` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it before the event is written.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "from",
+        "to",
+        "source",
+        "signalIds",
+        "rubricVersion"
+      ],
+      "properties": {
+        "kind": { "const": "intake.reclassified" },
+        "from": { "$ref": "#/$defs/class" },
+        "to": { "$ref": "#/$defs/class" },
+        "source": {
+          "description": "`floor`: a structural floor signal. `plan`: the plan-time pass.",
+          "enum": ["floor", "plan"]
+        },
+        "signalIds": {
+          "description": "The signals that caused the reclassification.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        },
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" }
+      }
+    },
+    "class": {
+      "title": "IntakeClass",
+      "description": "Task class, in rank order: chore < bounded < architectural.",
+      "enum": ["chore", "bounded", "architectural"]
+    },
+    "rubricVersion": {
+      "description": "The rubric version, such as `intake-rubric-1`.",
+      "type": "string",
+      "pattern": "^intake-rubric-[1-9][0-9]{0,5}$"
+    },
+    "reason": {
+      "title": "IntakeReason",
+      "description": "One rule that fired and the entries it fired on, escaped for display. `noDeclaredScope` and `newProcessBoundary` have no entries.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "entries"],
+      "properties": {
+        "rule": { "$ref": "#/$defs/rule" },
+        "entries": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "rule": {
+      "title": "IntakeRule",
+      "description": "Rubric rules: no scope and the declared facts give architectural; Ring 0 paths and entries outside the docs and tests categories give bounded; docs-only and tests-only entries give chore.",
+      "enum": [
+        "noDeclaredScope",
+        "newDependencies",
+        "newModules",
+        "surfaceChanges",
+        "newProcessBoundary",
+        "ring0Path",
+        "notDocsOrTests",
+        "docsOnly",
+        "testsOnly"
+      ]
+    },
+    "declared": {
+      "title": "IntakeDeclared",
+      "description": "Facts the task declares about its change. Any one of them makes the task architectural.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "newDependencies",
+        "newModules",
+        "surfaceChanges",
+        "newProcessBoundary"
+      ],
+      "properties": {
+        "newDependencies": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/entry" }
+        },
+        "newModules": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/entry" }
+        },
+        "surfaceChanges": {
+          "type": "array",
+          "$comment": "A bound above 20 keeps the generated type an array, not a union of tuples.",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/surfaceChange" }
+        },
+        "newProcessBoundary": { "type": "boolean" }
+      }
+    },
+    "surfaceChange": {
+      "title": "IntakeSurfaceChange",
+      "enum": ["schema", "publicApi", "storage", "wire"]
+    },
+    "friction": {
+      "title": "IntakeFriction",
+      "description": "The friction the class sets: `minimal` from the chore downgrade, otherwise the configured default intensity.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intensity", "source"],
+      "properties": {
+        "intensity": {
+          "$comment": "Copy of friction.defaultIntensity in helmwright-config.schema.json.",
+          "enum": ["moderate", "minimal", "low", "high"]
+        },
+        "source": { "enum": ["default", "choreDowngrade"] }
+      }
+    },
+    "attestation": {
+      "title": "IntakeAttestation",
+      "description": "Proof of who overrode. Until slice SIG only `none` exists.",
+      "oneOf": [{ "$ref": "#/$defs/attestationNone" }]
+    },
+    "attestationNone": {
+      "title": "IntakeAttestationNone",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": { "kind": { "const": "none" } }
+    },
+    "entry": {
+      "description": "A declared path, glob, module or dependency: 1 to 1024 characters without control characters.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]{1,1024}$"
+    },
+    "sha256": {
+      "description": "Lowercase hex SHA-256.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "text": {
+      "description": "Escaped display text, at most 8192 code points.",
+      "type": "string",
+      "pattern": "^[\\s\\S]{0,8192}$"
+    }
+  }
+}
