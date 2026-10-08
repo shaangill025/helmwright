@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/shaangill025/helmwright/schemas/objects.schema.json",
   "title": "ObjectRecord",
-  "description": "One record of the harness object model (10 Ontology position, Q61): the five kinds Task, Run, Artifact, Rule and Skill. Event is the session-log envelope (event.schema.json); Decision with Ruling arrives in B5-1b. Every object carries its ring, kind-prefixed ID, typed links by ID pattern, and the seq and time of the event that created it. Link existence, uniqueness inside arrays, sorted scope and the footprint content address are relations the harness checks, not the schema.",
+  "description": "One record of the harness object model (10 Ontology position, Q61): the six kinds Task, Run, Artifact, Rule, Skill and Decision, where a Ruling is the Decision variant with authority harness. Event is the session-log envelope (event.schema.json). Every object carries its ring, kind-prefixed ID, typed links by ID pattern, and the seq and time of the event that created it. Link existence, uniqueness inside arrays, sorted scope and the footprint content address are relations the harness checks, not the schema.",
   "type": "object",
   "oneOf": [
     { "$ref": "#/$defs/task" },
     { "$ref": "#/$defs/run" },
     { "$ref": "#/$defs/artifact" },
     { "$ref": "#/$defs/rule" },
-    { "$ref": "#/$defs/skill" }
+    { "$ref": "#/$defs/skill" },
+    { "$ref": "#/$defs/decision" }
   ],
   "$defs": {
     "task": {
@@ -292,6 +293,273 @@
         }
       }
     },
+    "decision": {
+      "title": "DecisionRecord",
+      "description": "A ledger entry (04 Decision ledger, Q61): an owned decision with its brief, or a Ruling, which is the variant with authority harness, a ruling body and no brief or owner-written field.",
+      "oneOf": [
+        { "$ref": "#/$defs/ownedDecision" },
+        { "$ref": "#/$defs/ruling" }
+      ]
+    },
+    "ownedDecision": {
+      "title": "OwnedDecisionRecord",
+      "description": "A decision in an owned class, opened by the harness with its brief; owner-written fields are absent until SIG, A3, A1 and A7 add them with their writers (B5-1b owner answers OD-1).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "authority",
+        "taskId",
+        "runId",
+        "signalIds",
+        "footprint",
+        "outcomes",
+        "class",
+        "source",
+        "status",
+        "brief"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/decisionId" },
+        "kind": { "const": "decision" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the ledger is Ring 0.",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "authority": {
+          "description": "Who decides: the owner.",
+          "const": "owner"
+        },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The task the decision belongs to (typed link task→decision)."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that opened the decision."
+        },
+        "signalIds": { "$ref": "#/$defs/signalIds" },
+        "footprint": { "$ref": "#/$defs/footprint" },
+        "outcomes": { "$ref": "#/$defs/outcomes" },
+        "class": { "$ref": "#/$defs/decisionClass" },
+        "source": {
+          "description": "What raised the decision: the plan's `decisions[]`, a floor signal over the brief threshold, or the agent's self-flag (Q45, Q53, Q54).",
+          "enum": ["plan", "floor", "selfFlag"]
+        },
+        "status": {
+          "description": "`pending` until the owner's first answer, then `resolved` once (card contract), which cannot happen before SIG.",
+          "enum": ["pending", "resolved"]
+        },
+        "brief": { "$ref": "#/$defs/brief" }
+      }
+    },
+    "ruling": {
+      "title": "RulingRecord",
+      "description": "A delegated call the harness decided and recorded as a Ruling (03 Delegated authority, Q53, Q61); it has no brief and no owner-written field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ring",
+        "createdAt",
+        "createdSeq",
+        "authority",
+        "taskId",
+        "runId",
+        "signalIds",
+        "footprint",
+        "outcomes",
+        "class",
+        "source",
+        "status",
+        "ruling"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/decisionId" },
+        "kind": { "const": "decision" },
+        "ring": {
+          "description": "The ring of the store that owns the object (05 Rings): the ledger is Ring 0.",
+          "const": 0
+        },
+        "createdAt": { "$ref": "#/$defs/at" },
+        "createdSeq": { "$ref": "#/$defs/seq" },
+        "authority": {
+          "description": "Who decided: the harness.",
+          "const": "harness"
+        },
+        "taskId": {
+          "$ref": "#/$defs/taskId",
+          "description": "The task the decision belongs to (typed link task→decision)."
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run that opened the decision."
+        },
+        "signalIds": { "$ref": "#/$defs/signalIds" },
+        "footprint": { "$ref": "#/$defs/footprint" },
+        "outcomes": { "$ref": "#/$defs/outcomes" },
+        "class": {
+          "description": "The owned class of the call, or `null` when the call is outside the owned classes, such as intake (OD-2).",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/decisionClass" }]
+        },
+        "source": {
+          "description": "What raised the call: the plan-time pass, a floor signal under the brief threshold, or intake (Q53, Q54, Q-B5-2).",
+          "enum": ["plan", "floor", "intake"]
+        },
+        "status": {
+          "description": "A Ruling is resolved when it is recorded, because the harness made the call.",
+          "const": "resolved"
+        },
+        "ruling": { "$ref": "#/$defs/rulingBody" }
+      }
+    },
+    "brief": {
+      "title": "DecisionBrief",
+      "description": "The brief as presented (03 The brief, Q45), written by the harness when it opens the decision; it holds the recommendation only as a salted commitment until reveal (Q48).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "options",
+        "recommendationSha256",
+        "optionOrderSeed",
+        "confidence",
+        "costIfWrong",
+        "reversibility",
+        "uncertainty",
+        "blocked",
+        "concepts",
+        "proposedFootprint"
+      ],
+      "properties": {
+        "question": { "$ref": "#/$defs/question" },
+        "options": {
+          "description": "The 2 to 4 options actually considered, in stored order, with unique IDs (checked by the writer).",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/option" }
+        },
+        "recommendationSha256": {
+          "$ref": "#/$defs/sha256",
+          "description": "The recommendation as a salted commitment: SHA-256 of the canonical JSON `[decisionId, optionId, nonce]` with a 256-bit nonce, where the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it)."
+        },
+        "optionOrderSeed": {
+          "$ref": "#/$defs/seed",
+          "description": "The logged seed of the shuffled display order of the options (Q48)."
+        },
+        "confidence": {
+          "title": "DecisionConfidence",
+          "description": "The harness's confidence in its recommendation, shown in the brief before reveal (Q45, Q48, OD-4).",
+          "enum": ["low", "medium", "high"]
+        },
+        "costIfWrong": {
+          "$ref": "#/$defs/line",
+          "description": "The cost if the decision is wrong, as one line of at most 200 code points."
+        },
+        "reversibility": {
+          "description": "How hard the decision is to undo (03 The brief, OD-5).",
+          "enum": ["reversible", "costly", "irreversible"]
+        },
+        "uncertainty": {
+          "$ref": "#/$defs/line",
+          "description": "What the harness is uncertain about, as one line of at most 200 code points."
+        },
+        "blocked": {
+          "$ref": "#/$defs/line",
+          "description": "What is blocked while the decision waits, as one line of at most 200 code points."
+        },
+        "concepts": {
+          "description": "The concept slugs the brief references (X6), unique (checked by the writer); may be empty.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/conceptSlug" }
+        },
+        "proposedFootprint": {
+          "description": "The footprint the harness expects the decision to have (Q45), as content-addressed artifact IDs, unique (checked by the writer); may be empty.",
+          "type": "array",
+          "maxItems": 1024,
+          "items": { "$ref": "#/$defs/artifactId" }
+        }
+      }
+    },
+    "option": {
+      "title": "DecisionOption",
+      "description": "One option of a brief, whose ID stays the same under the shuffled display order (Q48).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "tradeoffs"],
+      "properties": {
+        "id": { "enum": ["a", "b", "c", "d"] },
+        "label": { "$ref": "#/$defs/optionLabel" },
+        "tradeoffs": {
+          "$ref": "#/$defs/line",
+          "description": "The option's trade-offs, as one line of at most 200 code points (Q45)."
+        }
+      }
+    },
+    "rulingBody": {
+      "title": "Ruling",
+      "description": "What the harness decided, why, the cost if wrong and the version of the rubric that routed the call (03 Delegated authority, Q53).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["what", "why", "costIfWrong", "rubricVersion"],
+      "properties": {
+        "what": {
+          "$ref": "#/$defs/line",
+          "description": "What the harness decided, as one line of at most 200 code points."
+        },
+        "why": {
+          "$ref": "#/$defs/text",
+          "description": "Why the harness decided it, not blank, at most 8192 code points."
+        },
+        "costIfWrong": {
+          "$ref": "#/$defs/line",
+          "description": "The cost if the call is wrong, as one line of at most 200 code points."
+        },
+        "rubricVersion": { "$ref": "#/$defs/rubricVersion" }
+      }
+    },
+    "outcomeSignal": {
+      "title": "DecisionOutcome",
+      "description": "An automatic outcome signal (Q47) that the harness appends when a later run's diff matches the footprint; owner confirmations, dismissals and review outcomes arrive with their writers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "signal", "runId", "artifactIds", "at", "seq"],
+      "properties": {
+        "kind": { "const": "signal" },
+        "signal": {
+          "description": "`rework`: the diff changed a symbol of a footprint file; `dependencyChanged`: it added or removed a footprint dependency (Q47).",
+          "enum": ["rework", "dependencyChanged"]
+        },
+        "runId": {
+          "$ref": "#/$defs/runId",
+          "description": "The run whose diff matched."
+        },
+        "artifactIds": {
+          "description": "The footprint entries the diff matched.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/artifactId" }
+        },
+        "at": {
+          "$ref": "#/$defs/at",
+          "description": "The `at` of the event that appended the signal."
+        },
+        "seq": {
+          "$ref": "#/$defs/seq",
+          "description": "The `seq` of the event that appended the signal."
+        }
+      }
+    },
     "taskId": {
       "description": "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
       "type": "string",
@@ -430,6 +698,69 @@
           }
         }
       ]
+    },
+    "decisionClass": {
+      "title": "DecisionClass",
+      "description": "An owned decision class (03 Owned decision classes, X3): architecture, scope or technology.",
+      "enum": ["architecture", "scope", "technology"]
+    },
+    "signalId": {
+      "description": "The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.",
+      "$comment": "Copy of the item of intake-event.schema.json's `reclassified.signalIds`.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "signalIds": {
+      "description": "The signals that raised the decision, unique (checked by the writer); empty for a plan's `decisions[]`.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/signalId" }
+    },
+    "footprint": {
+      "description": "Footprint artifact IDs (04 Loop 1, Q47), unique (checked by the writer); empty until the harness records the footprint when the decision closes.",
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/artifactId" }
+    },
+    "outcomes": {
+      "description": "The automatic outcome signals in append order (Q46); empty until a later run's diff matches the footprint.",
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/outcomeSignal" }
+    },
+    "seed": {
+      "description": "A 128-bit seed as 32 lowercase hex characters.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "conceptSlug": {
+      "description": "A concept slug (X6): 1 to 64 lowercase letters, digits and hyphens, not starting with a hyphen.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+    },
+    "rubricVersion": {
+      "description": "The version of the rubric that routed the call, such as `intake-rubric-1` or `materiality-rubric-1`.",
+      "$comment": "The intake branch is intake-event.schema.json's `rubricVersion`.",
+      "type": "string",
+      "pattern": "^(?:intake|materiality)-rubric-[1-9][0-9]{0,5}$"
+    },
+    "question": {
+      "description": "One line of 1 to 160 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,160}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "optionLabel": {
+      "description": "One line of 1 to 80 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,80}$",
+      "not": { "pattern": "^\\s*$" }
+    },
+    "line": {
+      "description": "One line of 1 to 200 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,200}$",
+      "not": { "pattern": "^\\s*$" }
     }
   }
 }

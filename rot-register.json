@@ -395,13 +395,18 @@
   {
     "component": "packages/schema/schemas/objects.schema.json",
     "ring": 0,
-    "assumption": "Five of the seven kinds (Task, Run, Artifact, Rule, Skill; Event is the envelope, Decision follows in B5-1b) are one JSON Schema whose kind-prefixed IDs are also valid envelope IDs, whose links are typed by ID pattern, whose ring is a per-kind constant, and whose every object carries the seq and time of its creating event; link existence, uniqueness inside arrays, sorted scope, the footprint content address and the once-only status transitions are checked by the harness, not the schema.",
+    "assumption": "Six kinds (Task, Run, Artifact, Rule, Skill, Decision; Event is the envelope) are one JSON Schema whose kind-prefixed IDs are also valid envelope IDs, whose links are typed by ID pattern, whose ring is a per-kind constant, and whose every object carries the seq and time of its creating event. A Ruling is the Decision variant with authority harness and no brief or owner-written field; owner-written fields are absent until SIG, A3, A1 and A7 add them with their writers; the brief stores the recommendation only as a salted SHA-256 commitment until reveal. Link existence, uniqueness inside arrays, sorted scope, the footprint content address and the once-only status transitions are checked by the harness, not the schema.",
     "evidence": [
       "10 Ontology position",
       "05 Rings",
       "decisions Q61",
+      "decisions Q45",
+      "decisions Q46",
       "decisions Q47",
+      "decisions Q48",
+      "decisions Q53",
       "decisions B5 owner answers",
+      "decisions B5-1b owner answers",
       "packages/schema/test/objects.test.ts"
     ],
     "added": "2026-10-08",
