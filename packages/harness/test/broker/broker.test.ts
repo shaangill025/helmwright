@@ -107,6 +107,8 @@ function failing(type: string, n = 1): SessionLog {
     transaction: (fn) => log.transaction(fn),
     events: (query) => log.events(query),
     object: (id) => log.object(id),
+    verifyProjections: () => log.verifyProjections(),
+    rebuildProjections: () => log.rebuildProjections(),
     lastSeq: () => log.lastSeq(),
     close: () => {
       log.close();

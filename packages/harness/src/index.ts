@@ -63,11 +63,13 @@ export type {
   AppendInput,
   EventIssue,
   EventsQuery,
+  InspectedEvent,
   SessionLog,
 } from "./log/session-log.ts";
 export {
   EventValidationError,
   SESSION_LOG_SCHEMA_VERSION,
+  inspectEvents,
   openSessionLog,
 } from "./log/session-log.ts";
 export {
@@ -206,8 +208,16 @@ export {
   runRecorded,
   taskCreated,
 } from "./objects/events.ts";
-export type { ProjectionStore } from "./objects/projection.ts";
-export { applyEvent, createMapStore } from "./objects/projection.ts";
+export type {
+  MapStore,
+  ProjectionCheck,
+  ProjectionStore,
+} from "./objects/projection.ts";
+export {
+  applyEvent,
+  createMapStore,
+  projectionDigest,
+} from "./objects/projection.ts";
 export type { CandidateChanges, FloorLimits, FloorRepo } from "./floor/tree.ts";
 export {
   FLOOR_LIMITS,
