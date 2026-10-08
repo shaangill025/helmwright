@@ -1,6 +1,7 @@
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -8,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   validatePermissionPolicy,
   type PermissionPolicy,
@@ -89,6 +91,32 @@ const verdict = (action: string, input: unknown, policy: unknown = BASE) => {
   return { tier, ruleId };
 };
 const R0_PATH = "always-ask.ring0-path";
+/** helmwright's own committed config (B6-5, OQ2); it holds only `permissions.policy`. */
+const OWN_CONFIG = fileURLToPath(
+  new URL("../../../../helmwright.config.json", import.meta.url),
+);
+/** helmwright's own policy, resolved over the default as the config loader does. */
+const helmwrightPolicy = (): PermissionPolicy => {
+  const parsed = JSON.parse(readFileSync(OWN_CONFIG, "utf8")) as {
+    permissions: { policy: unknown };
+  };
+  return resolvePolicy(BASE, parsed.permissions.policy);
+};
+/** Ring 0 in helmwright's repository only, so its own config lists them, not the floor. */
+const HELMWRIGHT_GLOBS = [
+  "packages/harness/src/loop/**",
+  "packages/harness/src/log/**",
+  "packages/harness/src/permission/**",
+  "packages/harness/src/sandbox/**",
+  "packages/harness/src/ledger/**",
+  "packages/harness/src/scorer/**",
+  "packages/harness/src/broker/**",
+  "packages/harness/src/config/**",
+  "packages/harness/sandbox/**",
+  "packages/schema/schemas/**",
+  "packages/*/evals/**",
+  "rot-register.json",
+];
 const R0_SETTING = "always-ask.ring0-setting";
 const EGRESS = ["push", "pr.open", "pr.merge", "comment", "publish", "deploy"];
 
@@ -323,19 +351,24 @@ describe("evaluate with the default policy", () => {
   });
 });
 
+/** Paths that only helmwright's own Ring 0 paths match (B6-5, OQ2). */
+const HELMWRIGHT_ONLY = `packages/harness/src/permission/policy.ts
+  packages/harness/src/Loop/x.ts packages/harness/src/log/a.ts
+  packages/harness/src/sandbox/docker.ts packages/harness/src/ledger/a.ts
+  packages/harness/src/scorer/a.ts packages/harness/src/broker/broker.ts
+  packages/harness/src/config/config.ts packages/harness/sandbox/Dockerfile
+  packages/schema/schemas/a.schema.json packages/harness/evals/x.json
+  rot-register.json`.split(/\s+/);
+
 describe("isRing0Path with RING0_PATHS", () => {
   it.each(
     `.github/workflows/ci.yml .GitHub/workflows/ci.yml .github
-    packages/harness/src/permission/policy.ts packages/harness/src/Loop/x.ts
-    packages/harness/src/log/a.ts packages/harness/src/sandbox/docker.ts
-    packages/harness/src/ledger/a.ts packages/harness/src/scorer/a.ts
-    packages/harness/sandbox/Dockerfile packages/schema/schemas/a.schema.json
     eslint.config.js tsconfig.base.json TSCONFIG.json vitest.config.ts
     .prettierrc.json package.json pnpm-workspace.yaml .node-version
-    helmwright.config.json .npmrc .pnpmfile.cjs
-    evals/ac8.json packages/harness/evals/x.json`.split(/\s+/),
+    helmwright.config.json .npmrc .pnpmfile.cjs evals/ac8.json`.split(/\s+/),
   )("matches %j, case-folded", (path) => {
     expect(isRing0Path(path, RING0_PATHS)).toBe(true);
+    expect(isRing0Path(path, helmwrightPolicy().ring0Paths)).toBe(true);
   });
 
   it.each(
@@ -344,6 +377,92 @@ describe("isRing0Path with RING0_PATHS", () => {
     .githubx/a`.split(/\s+/),
   )("does not match %j", (path) => {
     expect(isRing0Path(path, RING0_PATHS)).toBe(false);
+    expect(isRing0Path(path, helmwrightPolicy().ring0Paths)).toBe(false);
+  });
+
+  it.each(HELMWRIGHT_ONLY)(
+    "matches %j in helmwright's own policy only (OQ2)",
+    (path) => {
+      expect(isRing0Path(path, RING0_PATHS)).toBe(false);
+      expect(isRing0Path(path, helmwrightPolicy().ring0Paths)).toBe(true);
+    },
+  );
+});
+
+describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "helmwright-own-"));
+    for (const sub of ["loop", "broker", "config", "run"]) {
+      mkdirSync(join(dir, "packages", "harness", "src", sub), {
+        recursive: true,
+      });
+    }
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const edit = (policy: PermissionPolicy, path: string) => {
+    const run = { worktree: dir, runId: "run_01" };
+    const extraRing0Paths = runRing0(dir, policy);
+    const request = { ...run, action: "fs.edit", input: p(path) };
+    const { tier, ruleId } = evaluate(policy, { ...request, extraRing0Paths });
+    return { tier, ruleId };
+  };
+
+  it("keeps only the generic paths in the floor", () => {
+    for (const glob of HELMWRIGHT_GLOBS) {
+      expect(RING0_PATHS).not.toContain(glob);
+      expect(BASE.ring0Paths).not.toContain(glob);
+    }
+    expect([...RING0_PATHS]).toEqual(BASE.ring0Paths);
+    expect(RING0_PATHS).toEqual(
+      expect.arrayContaining([
+        "evals/**",
+        ".github/**",
+        "helmwright.config.json",
+      ]),
+    );
+  });
+
+  it.each([
+    "packages/harness/src/loop/x.ts",
+    "packages/harness/src/broker/x.ts",
+  ])("follows the normal rules for %j in a repo with no config", (path) => {
+    expect(edit(BASE, path)).toEqual({
+      tier: "allow",
+      ruleId: "fs.edit.worktree",
+    });
+  });
+
+  it("lists every helmwright-source glob in helmwright's own policy", () => {
+    const own = helmwrightPolicy();
+    expect(own.version).toBe("helmwright-1");
+    expect(own.ring0Paths).toEqual([...BASE.ring0Paths, ...HELMWRIGHT_GLOBS]);
+    expect({
+      ...own,
+      version: BASE.version,
+      ring0Paths: BASE.ring0Paths,
+    }).toEqual(BASE);
+  });
+
+  it.each([
+    "packages/harness/src/loop/x.ts",
+    "packages/harness/src/broker/x.ts",
+    "packages/harness/src/config/x.ts",
+    "rot-register.json",
+  ])("always asks to edit %j under helmwright's own policy", (path) => {
+    expect(edit(helmwrightPolicy(), path)).toEqual({
+      tier: "alwaysAsk",
+      ruleId: R0_PATH,
+    });
+  });
+
+  it("allows an edit outside helmwright's Ring 0 paths under its policy", () => {
+    expect(edit(helmwrightPolicy(), "packages/harness/src/run/x.ts")).toEqual({
+      tier: "allow",
+      ruleId: "fs.edit.worktree",
+    });
   });
 });
 
@@ -728,10 +847,13 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
   });
 
   it("adds the target of a link at a leading part of a Ring 0 glob (SF1)", () => {
-    const extraRing0Paths = LINKED;
+    // packages/harness/src and packages/foo lead to helmwright's own Ring 0 globs.
+    const own = helmwrightPolicy();
+    const extraRing0Paths = runRing0(worktree, own);
     expect(extraRing0Paths).toEqual(
       expect.arrayContaining(["hsrc/**", "foo/**"]),
     );
+    expect(LINKED).not.toEqual(expect.arrayContaining(["hsrc/**"]));
     const run = { worktree, runId: "run_01", extraRing0Paths: NONE };
     for (const [action, input] of [
       ["fs.edit", p("hsrc/loop/x.ts")],
@@ -740,7 +862,7 @@ describe("pre-existing Ring 0 symlinks (#26)", () => {
     ] as const) {
       expect(evaluate(BASE, { ...run, action, input }).tier).toBe("allow");
       expect(
-        evaluate(BASE, { ...run, action, input, extraRing0Paths }),
+        evaluate(own, { ...run, action, input, extraRing0Paths }),
       ).toMatchObject({ tier: "alwaysAsk", ruleId: R0_PATH });
     }
   });
@@ -905,13 +1027,15 @@ describe("Ring 0 link chains (SF2)", () => {
     // In the sandbox this reaches /workspace/hsrc again; on the host it leaves the tree.
     const up = `${"../".repeat(12)}workspace/hsrc`;
     const wt = tree("up", [["packages/harness/src", up]]);
-    expect(() => ring0LinkTargets(wt, RING0_PATHS)).toThrow();
+    const own = helmwrightPolicy();
+    expect(() => runRing0(wt, own)).toThrow();
   });
 
   it("maps an absolute target under /workspace onto the worktree (SF-B)", () => {
     const wt = tree("f", [["packages/harness/src", "/workspace/hsrc"]]);
     mkdirSync(join(wt, "hsrc", "loop"), { recursive: true });
-    const extraRing0Paths = runRing0(wt, BASE);
+    const own = helmwrightPolicy();
+    const extraRing0Paths = runRing0(wt, own);
     expect(extraRing0Paths).toEqual(["hsrc/**"]);
     const input = p("hsrc/loop/x.ts");
     const run = {
@@ -922,7 +1046,7 @@ describe("Ring 0 link chains (SF2)", () => {
       extraRing0Paths: fresh(wt),
     };
     expect(evaluate(BASE, run).tier).toBe("allow");
-    expect(evaluate(BASE, { ...run, extraRing0Paths })).toMatchObject({
+    expect(evaluate(own, { ...run, extraRing0Paths })).toMatchObject({
       tier: "alwaysAsk",
       ruleId: R0_PATH,
     });
@@ -1002,7 +1126,7 @@ describe("verdicts carry what the event writer needs (B9b-2a)", () => {
       action: "deps.add",
       requested: "execute",
       guard: "policy",
-      policyVersion: "default-1",
+      policyVersion: "default-2",
     });
   });
 

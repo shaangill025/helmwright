@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { CONFIG_DEFAULTS, RING0_CONFIG_KEYS } from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,10 +18,13 @@ import {
   CONFIG_FILE,
   ConfigError,
   DEFAULT_PERMISSION_POLICY,
+  RING0_PATHS,
   RING0_SETTINGS,
   canonicalJson,
+  isRing0Path,
   loadRunConfig,
   openSessionLog,
+  resolvePolicy,
   runGit,
   type RunConfig,
   type SessionLog,
@@ -347,5 +351,53 @@ describe("ring0Status", () => {
       changed: [...RING0_CONFIG_KEYS],
       note: "the latest accepted baseline in this state dir is not valid",
     });
+  });
+});
+
+describe("helmwright's own config (B6-5, OQ2)", () => {
+  const root = (name: string) =>
+    fileURLToPath(new URL(`../../../../${name}`, import.meta.url));
+
+  it("passes the loader's parse, schema, admission and resolvePolicy", () => {
+    const bytes = readFileSync(root(CONFIG_FILE));
+    const parsed = JSON.parse(bytes.toString("utf8")) as {
+      permissions: { policy: unknown };
+    };
+    // Only `permissions.policy` (07 rule 1): every other setting takes its default.
+    expect(Object.keys(parsed)).toEqual(["permissions"]);
+    expect(Object.keys(parsed.permissions)).toEqual(["policy"]);
+    commit(file(bytes));
+    const config = loadRunConfig(repo);
+    expect(config.record).toMatchObject({
+      source: "file",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    expect(config.policy.version).toBe("helmwright-1");
+    expect(config.policy).toEqual(
+      resolvePolicy(DEFAULT_PERMISSION_POLICY, parsed.permissions.policy),
+    );
+  });
+
+  it("covers every Ring 0 component of the rot register under packages/", () => {
+    const parsed = JSON.parse(readFileSync(root(CONFIG_FILE), "utf8")) as {
+      permissions: { policy: unknown };
+    };
+    const own = resolvePolicy(
+      DEFAULT_PERMISSION_POLICY,
+      parsed.permissions.policy,
+    );
+    const globs = [...own.ring0Paths, ...RING0_PATHS];
+    const register = JSON.parse(
+      readFileSync(root("rot-register.json"), "utf8"),
+    ) as { component: string; ring: number }[];
+    const ring0 = register
+      .filter((entry) => entry.ring === 0)
+      .map((entry) => entry.component);
+    expect(
+      ring0.filter((c) => c.startsWith("packages/")).length,
+    ).toBeGreaterThan(0);
+    const uncovered = ring0.filter((c) => !isRing0Path(c, globs));
+    expect(uncovered).toEqual([]);
+    expect(isRing0Path("rot-register.json", globs)).toBe(true);
   });
 });

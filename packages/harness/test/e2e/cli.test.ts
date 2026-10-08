@@ -401,7 +401,7 @@ describe("helmwright CLI (e2e)", () => {
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
         ...["message.appended", "run.terminated"],
       ]);
-      expect(events[0]?.payload["policyVersion"]).toBe("default-1");
+      expect(events[0]?.payload["policyVersion"]).toBe("default-2");
       // Allowed in the worktree without asking: one ruling, then the effect.
       const evaluated = events.find((e) => e.type === "permission.evaluated");
       expect(evaluated?.payload).toMatchObject({
@@ -411,7 +411,7 @@ describe("helmwright CLI (e2e)", () => {
         tier: "allow",
         guard: "policy",
         ruleId: "execute.worktree",
-        policyVersion: "default-1",
+        policyVersion: "default-2",
       });
       const called = events.find((e) => e.type === "loop.tool.called");
       expect(called?.payload).toMatchObject({ name: "execute", status: "ok" });
@@ -1385,7 +1385,7 @@ describe("helmwright.config.json (e2e)", () => {
       const started = startedOf(first.out.runId);
       expect(started).toMatchObject({
         baseCommit: base,
-        policyVersion: "default-1",
+        policyVersion: "default-2",
         config: { source: "default" },
       });
       const config = started?.["config"] as Record<string, string>;
@@ -1411,7 +1411,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(second.status, second.stderr).toBe(0);
       expect(startedOf(second.out.runId)).toMatchObject({
         baseCommit: git("-C", repo, "rev-parse", "HEAD").trim(),
-        policyVersion: "default-1",
+        policyVersion: "default-2",
         config: {
           source: "file",
           sha256: sha256(text),
@@ -1676,6 +1676,43 @@ describe("helmwright.config.json (e2e)", () => {
       expect(JSON.parse(bare.stdout)).toMatchObject({
         terminal: { kind: "failed", error: NOT_APPROVED },
       });
+    },
+  );
+
+  it(
+    "asks at run start for a copy of helmwright's own config (B6-5, OQ2)",
+    { timeout: T },
+    () => {
+      const own = fileURLToPath(
+        new URL("../../../../helmwright.config.json", import.meta.url),
+      );
+      const bytes = readFileSync(own);
+      commitConfig((path) => {
+        writeFileSync(path, bytes);
+      });
+      // OQ1: helmwright's Ring 0 paths differ from the defaults, so the run asks first.
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = expectWellFormedLog(out.runId);
+      expect(events[0]?.payload).toMatchObject({
+        policyVersion: "helmwright-1",
+        config: { source: "file", sha256: sha256(bytes) },
+      });
+      expect(
+        events
+          .filter((e) => e.type.startsWith("permission."))
+          .map((e) => e.payload),
+      ).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, action: "config.set", tier: "alwaysAsk" },
+          ...{ ruleId: "always-ask.ring0-setting" },
+          policyVersion: "helmwright-1",
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
+      expect(events.some((e) => e.type === "config.accepted")).toBe(false);
     },
   );
 

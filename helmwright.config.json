@@ -1,0 +1,103 @@
+{
+  "permissions": {
+    "policy": {
+      "version": "helmwright-1",
+      "governance": "tiered",
+      "rules": [
+        {
+          "id": "execute.worktree",
+          "action": "execute",
+          "scope": "worktree",
+          "tier": "allow"
+        },
+        {
+          "id": "fs.read.worktree",
+          "action": "fs.read",
+          "scope": "worktree",
+          "tier": "allow"
+        },
+        {
+          "id": "fs.edit.worktree",
+          "action": "fs.edit",
+          "scope": "worktree",
+          "tier": "allow"
+        },
+        {
+          "id": "fs.delete.worktree",
+          "action": "fs.delete",
+          "scope": "worktree",
+          "tier": "allow"
+        },
+        {
+          "id": "fs.read.outside",
+          "action": "fs.read",
+          "scope": "any",
+          "tier": "ask"
+        },
+        {
+          "id": "fs.edit.outside",
+          "action": "fs.edit",
+          "scope": "any",
+          "tier": "ask"
+        },
+        {
+          "id": "commit.run-branch",
+          "action": "commit",
+          "scope": "runBranch",
+          "tier": "allow"
+        },
+        {
+          "id": "deps.add",
+          "action": "deps.add",
+          "scope": "any",
+          "tier": "ask"
+        }
+      ],
+      "alwaysAsk": [
+        "push",
+        "pr.open",
+        "pr.merge",
+        "comment",
+        "publish",
+        "deploy",
+        "spend.raiseCap"
+      ],
+      "ring0Paths": [
+        "evals/**",
+        ".github/**",
+        "eslint.config.*",
+        "tsconfig*.json",
+        "vitest.config.*",
+        ".prettierrc*",
+        "package.json",
+        "pnpm-workspace.yaml",
+        ".node-version",
+        "helmwright.config.json",
+        ".npmrc",
+        ".pnpmfile.cjs",
+        "packages/harness/src/loop/**",
+        "packages/harness/src/log/**",
+        "packages/harness/src/permission/**",
+        "packages/harness/src/sandbox/**",
+        "packages/harness/src/ledger/**",
+        "packages/harness/src/scorer/**",
+        "packages/harness/src/broker/**",
+        "packages/harness/src/config/**",
+        "packages/harness/sandbox/**",
+        "packages/schema/schemas/**",
+        "packages/*/evals/**",
+        "rot-register.json"
+      ],
+      "ring0Settings": [
+        "intake.classification",
+        "permissions",
+        "harnessLoop.selfImprovementModel",
+        "harnessLoop.codeEvolution",
+        "harnessLoop.evalMix",
+        "security.sensorSet",
+        "ontology.objectModel",
+        "spend.cap"
+      ]
+    }
+  }
+}

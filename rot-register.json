@@ -138,7 +138,7 @@
   {
     "component": "packages/harness/src/permission/policy.ts",
     "ring": 0,
-    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; the Ring 0 path set is always-ask in every repository until B6 makes it per-project.",
+    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json).",
     "evidence": [
       "06 Ring 0 contents",
       "decisions Q51",
