@@ -494,7 +494,7 @@ const schema31 = {
         recommendationSha256: {
           $ref: "#/$defs/sha256",
           description:
-            "The recommendation as a salted commitment: SHA-256 of the canonical JSON `[decisionId, optionId, nonce]` with a 256-bit nonce, where the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
+            "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 256 random bits as 64 lowercase hex digits, and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
         },
         optionOrderSeed: {
           $ref: "#/$defs/seed",
@@ -580,7 +580,7 @@ const schema31 = {
         costIfWrong: {
           $ref: "#/$defs/line",
           description:
-            "The cost if the call is wrong, as one line of at most 200 code points.",
+            "The cost if the call is wrong, as one line of at most 200 code points; B5-5 maps the intake event's longer, multi-line `costIfWrong` into this form, or the Ruling write fails.",
         },
         rubricVersion: { $ref: "#/$defs/rubricVersion" },
       },
@@ -5689,7 +5689,7 @@ const schema90 = {
     recommendationSha256: {
       $ref: "#/$defs/sha256",
       description:
-        "The recommendation as a salted commitment: SHA-256 of the canonical JSON `[decisionId, optionId, nonce]` with a 256-bit nonce, where the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
+        "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 256 random bits as 64 lowercase hex digits, and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
     },
     optionOrderSeed: {
       $ref: "#/$defs/seed",
@@ -7691,7 +7691,7 @@ const schema109 = {
     costIfWrong: {
       $ref: "#/$defs/line",
       description:
-        "The cost if the call is wrong, as one line of at most 200 code points.",
+        "The cost if the call is wrong, as one line of at most 200 code points; B5-5 maps the intake event's longer, multi-line `costIfWrong` into this form, or the Ruling write fails.",
     },
     rubricVersion: { $ref: "#/$defs/rubricVersion" },
   },
