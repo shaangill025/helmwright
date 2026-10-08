@@ -97,7 +97,10 @@
         "packages/harness/src/floor/**",
         "packages/harness/test/floor/**",
         "packages/harness/test/permission/**",
-        "packages/harness/test/config/config.test.ts"
+        "packages/harness/test/config/config.test.ts",
+        "packages/harness/src/objects/**",
+        "packages/harness/test/objects/**",
+        "packages/harness/test/ledger/**"
       ],
       "ring0Settings": [
         "intake.classification",

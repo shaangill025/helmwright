@@ -130,6 +130,10 @@ const HELMWRIGHT_GLOBS = [
   "packages/harness/test/floor/**",
   "packages/harness/test/permission/**",
   "packages/harness/test/config/config.test.ts",
+  // B5-2b (OD-7): the object model code and tests, and the ledger tests (src/ledger is above).
+  "packages/harness/src/objects/**",
+  "packages/harness/test/objects/**",
+  "packages/harness/test/ledger/**",
 ];
 const R0_SETTING = "always-ask.ring0-setting";
 const EGRESS = ["push", "pr.open", "pr.merge", "comment", "publish", "deploy"];

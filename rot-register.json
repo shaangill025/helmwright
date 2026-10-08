@@ -30,14 +30,16 @@
   {
     "component": "packages/harness/src/log/session-log.ts",
     "ring": 0,
-    "assumption": "The session log is node:sqlite with one writer process per log (a second writer can fail with SQLITE_BUSY after the 5 s busy timeout); its events table is append-only and gap-free even for a raw connection.",
+    "assumption": "The session log is node:sqlite with one writer process per log (a second writer can fail with SQLITE_BUSY after the 5 s busy timeout); its events table is append-only and gap-free even for a raw connection. Every append and every read also passes checkObjectEvent (B5-2): a refused event is not stored and takes no seq (a transaction rolls back whole), and a refused row that a raw writer inserted makes every read that includes it fail as a corrupt event, while reads filtered to other types still work.",
     "evidence": [
       "decisions Q26",
       "06 Spine",
-      "packages/harness/test/log/session-log.test.ts"
+      "decisions B5-2 owner answers",
+      "packages/harness/test/log/session-log.test.ts",
+      "packages/harness/test/objects/events.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["milestone"]
   },
   {
@@ -316,6 +318,22 @@
     "added": "2026-10-07",
     "lastReviewed": "2026-10-08",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/objects/events.ts",
+    "ring": 0,
+    "assumption": "One check, checkObjectEvent, decides which object events the log stores, on append and on every read (so also on the B5-3 rebuild): every decision.owner.* type is refused until SIG replaces the refusal with a signature check, decision.recommendation.revealed until A3, and any other task., artifact. or decision. type without a payload schema; the run. namespace stays open. An object event payload must be valid for its type, keep the relations the schema cannot express (sorted unique scope, unique IDs, the footprint content address SHA-256 of JSON.stringify([type, repoId, ref]), an intake Ruling's null class) and create a record that objects.schema.json accepts, with createdAt and createdSeq from the envelope's at and seq and a Run's id, graphId and nodeId from the envelope.",
+    "evidence": [
+      "10 Ontology position",
+      "decisions Q46",
+      "decisions Q47",
+      "decisions B5 owner answers",
+      "decisions B5-2 owner answers",
+      "packages/harness/test/objects/events.test.ts"
+    ],
+    "added": "2026-10-08",
+    "lastReviewed": "2026-10-08",
+    "reviewTrigger": ["milestone"]
   },
   {
     "component": "packages/harness/src/index.ts",
