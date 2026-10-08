@@ -154,11 +154,17 @@ describe("config.changed", () => {
     lefthook.yml .pre-commit-config.yaml .node-version a/.yarnrc.yml package.yaml
     zizmor.yml .github/actionlint.yaml .gitleaksignore .gitmodules Dockerfile
     a/Dockerfile.dev .c8rc.json .nycrc jest.config.js babel.config.cjs a/.babelrc
-    biome.json biome.jsonc Makefile a/justfile`.split(/\s+/),
+    biome.json biome.jsonc Makefile a/justfile pyproject.toml a/setup.cfg tox.ini
+    pytest.ini a/conftest.py .mocharc.yml ava.config.js playwright.config.ts .swcrc
+    turbo.json nx.json deno.json deno.jsonc bunfig.toml .tool-versions mise.toml
+    GNUmakefile a/rules.mk Containerfile .dockerignore`.split(/\s+/),
   )("finds %j added, changed or deleted", (path) => {
-    expect(rules(change(path, undefined, "x"))).toEqual(["config.changed"]);
-    expect(rules(change(path, "x", "y"))).toEqual(["config.changed"]);
-    expect(rules(change(path, "x", undefined))).toEqual(["config.changed"]);
+    // A root-level name may also be a floor Ring 0 path (protected.changed, below).
+    const config = (c: FloorChange) =>
+      rules(c).filter((rule) => rule !== "protected.changed");
+    expect(config(change(path, undefined, "x"))).toEqual(["config.changed"]);
+    expect(config(change(path, "x", "y"))).toEqual(["config.changed"]);
+    expect(config(change(path, "x", undefined))).toEqual(["config.changed"]);
   });
 
   it.each(
@@ -186,7 +192,9 @@ describe("package.changed", () => {
   it.each(
     `pnpm overrides resolutions devEngines packageManager eslintConfig prettier vitest
     imports exports main types typings typesVersions type workspaces engines c8 nyc
-    jest mocha ava lint-staged simple-git-hooks husky`.split(/\s+/),
+    jest mocha ava lint-staged simple-git-hooks husky module browser config bin`.split(
+      /\s+/,
+    ),
   )("finds a change to %j", (key) => {
     expect(check(base, pkg({ ...base, [key]: { a: "1" } }))).toEqual([
       ["package.changed", key + " changed"],
@@ -243,6 +251,47 @@ describe("protected.changed (OQ-B3-3)", () => {
   });
 });
 
+describe("multi-line block directives (R3)", () => {
+  const OPEN = "/" + "*";
+  it.each([
+    [OPEN, " es" + "lint no-console: off */"],
+    [OPEN + " glo" + "bal x */"],
+    [OPEN + "glo" + "bals a, b */"],
+    [OPEN + " exp" + "orted y */"],
+  ])("finds an added %j", (...directive) => {
+    expect(
+      floorFindings(
+        [change("src/a.ts", lines("a"), lines("a", ...directive, "b"))],
+        PROTECTED,
+      ).map((f) => [f.rule, f.line]),
+    ).toEqual([["suppression.added", 2]]);
+  });
+
+  it("ignores a moved one", () => {
+    const directive = [OPEN, " es" + "lint no-console: off */"];
+    const moved = change(
+      "src/a.ts",
+      lines(...directive, "a"),
+      lines("a", ...directive),
+    );
+    expect(rules(moved)).toEqual([]);
+  });
+});
+
+describe("the floor's own Ring 0 paths (R2)", () => {
+  it("finds a protected change even with no protected globs given", () => {
+    const changes = [
+      change("helmwright.config.json", "{}", "{ }"),
+      change(".github/x", "a", "b"),
+    ];
+    expect(floorFindings(changes, []).map((f) => [f.rule, f.path])).toEqual([
+      ["config.changed", ".github/x"],
+      ["protected.changed", ".github/x"],
+      ["protected.changed", "helmwright.config.json"],
+    ]);
+  });
+});
+
 describe("symlink.added, gitlink.added and encoding.unreadable", () => {
   it("finds a symlink in the candidate, not a removed one", () => {
     const link = { candidateMode: "120000", candidate: undefined };
@@ -286,12 +335,12 @@ describe("findings", () => {
       [
         change("b.ts", "", lines(m)),
         change("a\u001b.ts", "", lines("x", m, m)),
-        change(".npmrc", "", "x"),
+        change("a/.npmrc", "", "x"),
       ],
       PROTECTED,
     );
     expect(findings.map((f) => [f.path, f.line])).toEqual([
-      [".npmrc", undefined],
+      ["a/.npmrc", undefined],
       ["a\\u{1b}.ts", 2],
       ["a\\u{1b}.ts", 3],
       ["b.ts", 1],

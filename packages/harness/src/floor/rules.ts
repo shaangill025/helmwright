@@ -1,6 +1,11 @@
 import type { FloorFinding, FloorRule } from "@helmwright/schema";
 import { caseFold, isRing0Path } from "../permission/normalize.ts";
-import { canonical, deepFreeze, displayText } from "../permission/policy.ts";
+import {
+  RING0_PATHS,
+  canonical,
+  deepFreeze,
+  displayText,
+} from "../permission/policy.ts";
 
 /**
  * The sensor floor's rule table (06 Ring 0 contents; B3 owner answers OQ-B3-1..4, 2026-10-07).
@@ -84,6 +89,16 @@ const CONFIG_NAMES = deepFreeze([
     "jest.config.*",
   ],
   ...["babel.config.*", ".babelrc*", "biome.json*", "makefile", "justfile"],
+  ...["pyproject.toml", "setup.cfg", "tox.ini", "pytest.ini", "conftest.py"],
+  ...[
+    ".mocharc*",
+    "ava.config.*",
+    "playwright.config.*",
+    ".swcrc",
+    "turbo.json",
+  ],
+  ...["nx.json", "deno.json*", "bunfig.toml", ".tool-versions", "mise.toml"],
+  ...["gnumakefile", "*.mk", "containerfile", ".dockerignore"],
 ]);
 /** Directories whose every file is config: CI, git hook managers and Semgrep rules. */
 const CONFIG_DIRS = new Set([".github", ".husky", ".githooks", ".semgrep"]);
@@ -102,6 +117,7 @@ const PACKAGE_KEYS = deepFreeze([
     "simple-git-hooks",
     "husky",
   ],
+  ...["module", "browser", "config", "bin"],
 ]);
 const TEST_DIRS = new Set(["test", "tests", "__tests__"]);
 const TEST_MARKS = [".test.", ".spec.", ".test-d.", ".e2e-spec."];
@@ -162,6 +178,23 @@ function addedLines(base: string, candidate: string): [number, string][] {
   return added;
 }
 
+/**
+ * R3: a block-comment directive, which can span lines, matched over the whole case-folded
+ * file. Built by concatenation, so this file holds none.
+ */
+const BLOCK_DIRECTIVE = new RegExp(
+  "/\\*\\s*(?:es" + "lint|glo" + "bals?|exp" + "orted)\\b",
+  "g",
+);
+
+/** The 1-based lines where BLOCK_DIRECTIVE matches in `text`. */
+function blockDirectiveLines(text: string): number[] {
+  const folded = caseFold(text);
+  return Array.from(folded.matchAll(BLOCK_DIRECTIVE), (match) => {
+    return folded.slice(0, match.index).split("\n").length;
+  });
+}
+
 function suppressions(path: string, base: string, candidate: string) {
   const test = isTestFile(path);
   const marked = (line: string) => {
@@ -172,9 +205,18 @@ function suppressions(path: string, base: string, candidate: string) {
       (test && TEST_FORMS.some((form) => form.test(key)))
     );
   };
-  return addedLines(base, candidate)
+  const findings = addedLines(base, candidate)
     .filter(([, line]) => marked(line))
     .map(([at, line]) => found("suppression.added", path, line.trim(), at));
+  // More block directives than the base: one finding at the first match past the
+  // base's count, unless a line finding already reports that line.
+  const before = blockDirectiveLines(base).length;
+  const at = blockDirectiveLines(candidate)[before];
+  if (at !== undefined && !findings.some((f) => f.line === at)) {
+    const detail = "block-comment directive added";
+    findings.push(found("suppression.added", path, detail, at));
+  }
+  return findings;
 }
 
 function isConfig(path: string): boolean {
@@ -305,7 +347,7 @@ export function floorFindings(
   changes: readonly FloorChange[],
   protectedGlobs: readonly string[],
 ): FloorFinding[] {
-  return sortFindings(
-    changes.flatMap((change) => check(change, protectedGlobs)),
-  );
+  // R2: the floor's own Ring 0 paths always count, whatever the caller passes.
+  const protect = [...protectedGlobs, ...RING0_PATHS];
+  return sortFindings(changes.flatMap((change) => check(change, protect)));
 }
