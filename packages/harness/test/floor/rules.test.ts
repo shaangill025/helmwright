@@ -516,8 +516,19 @@ describe("floor-3 second review fixes", () => {
     ["const o = { a: '/*', /* c */ only: true };"],
     ["it('x' + /\"/.source, { /* c */ " + SKIP + ": true }, () => {});"],
     ['it("a \\" /*", { /* c */ ' + SKIP + ": true }, () => {});"],
+    // A comment after the key, and in a member access, whatever the quote scan sees.
+    ["const r = /a\\/*b/; it('x', { " + SKIP + " /* c */ : true }, f);"],
+    ["const r = /a\\/*b/; it('x', { '" + SKIP + "' /* c */ : true }, f);"],
+    ["test./* c */" + SKIP + "('x', () => {});"],
   ])("finds the test form in %j", (...text) => {
     expect(file(...text)).toEqual(["suppression.added"]);
+  });
+
+  it.each([
+    ["import x from '@" + SKIP + "/core';"],
+    ['const tag = "@' + SKIP + '";'],
+  ])("ignores %j", (text) => {
+    expect(file(text)).toEqual([]);
   });
 
   it.each([

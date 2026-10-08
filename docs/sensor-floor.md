@@ -23,8 +23,9 @@ missed there; the B15 test totals are the backstop. A base config blob over 64 K
 byte limit, gives `floor.limits` on every run until the base changes.
 Any tracked add, change or delete of a `.claude/` path, `CLAUDE.md`, `AGENTS.md` or `.mcp.json` is
 `config.changed`, even an owner-approved one (owner, 2026-10-08). Known misses of the per-line rules, with
-the B15 test totals as the backstop: a skip name built from strings or Unicode escapes, a quote in a regex
-literal before a commented options key, a truthy number as a skip value, retries, and runner forms not listed.
+the B15 test totals as the backstop: a skip name built from strings or Unicode escapes, a comment in a member
+access on a line whose strings the one-line scan misreads (a multi-line or nested template, JSX text, a `/*` in
+a regex), a truthy number as a skip value, retries, and runner forms not listed.
 
 History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
 `pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.

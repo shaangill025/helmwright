@@ -81,19 +81,25 @@ const TEST_FORMS = deepFreeze([
       "it|f" +
       "describe) ?\\(",
   ),
-  // A bare imported decorator, such as unittest's `@skip("r")`.
-  /(?<![\w$.])@ ?(?:skip|skipif|skipunless|expectedfailure)\b/,
+  // A bare imported decorator, such as unittest's `@skip("r")`, not a scoped package name.
+  /(?<![\w$.'"`/])@ ?(?:skip|skipif|skipunless|expectedfailure)\b/,
   // S1: an options-object key at a line start or after `{`, `,` or a block comment's end,
-  // such as `{ skip: true }` or a shorthand `{ skip }`, unless KEEPS keeps its value. A
-  // quoted or computed key, such as `["skip"]: x`, needs a value.
+  // such as `{ skip: true }` or a shorthand `{ skip }`, unless KEEPS keeps its value; a
+  // block comment after the key counts as its value. A quoted or computed key, such as
+  // `["skip"]: x`, needs a value.
   new RegExp(
-    "(?:^|[{,]|\\*/) ?(?:" + NAMES.join("|") + ") ?(?:[,}]|$|:" + KEEPS + ")",
+    "(?:^|[{,]|\\*/) ?(?:" +
+      NAMES.join("|") +
+      ") ?(?:[,}]|$|/\\*|:" +
+      KEEPS +
+      ")",
   ),
   new RegExp(
     "(?:^|[{,]|\\*/) ?(?:\\[ ?)?[\"'`](?:" +
       NAMES.join("|") +
-      ")[\"'`](?: ?\\])? ?:" +
-      KEEPS,
+      ")[\"'`](?: ?\\])? ?(?:/\\*|:" +
+      KEEPS +
+      ")",
   ),
 ]);
 /**
@@ -277,7 +283,7 @@ function uncomment(key: string): string {
     } else if (c === '"' || c === "'" || c === "`") {
       quote = c;
     } else if (c === "/" && key.charAt(i + 1) === "*") {
-      kept.push(key.slice(from, i), " ");
+      kept.push(key.slice(from, i));
       const close = key.indexOf("*/", i + 2);
       i = close === -1 ? key.length : close + 1;
       from = i + 1;
