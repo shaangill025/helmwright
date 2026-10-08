@@ -212,9 +212,10 @@ describe("classify", () => {
 
   it.each(
     words(`/etc/passwd a//b docs/ ./docs/a.md docs/../src/x.ts .. docs\\a.md
-      docs/a**.md !src/*.md !**/*.test.ts {docs,src}/** src/[a].md src/?.md
+      docs/a**.md !src/*.md !**/*.test.ts src/[a].md src/?.md
       -rf.md ~/x.md src/$x.md a/(b).md @x/a.md a+b.md .git/tests/x
       .GIT/hooks/a.md`).concat([
+      "{" + "docs,src}/**",
       "cafe\u0301.md",
       "",
       "docs/a\nb.md",
