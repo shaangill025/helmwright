@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/floor-event.schema.json",
+  "title": "FloorEvent",
+  "description": "Payload of a sensor floor event in the session log (B3), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. The floor is Ring 0 (06 Ring 0 contents): a deterministic rule table on the host compares the candidate tree with the run's base commit, and a candidate cannot pass by adding a suppression, changing config discovery, replacing a test command or deleting a protected assertion.",
+  "type": "object",
+  "oneOf": [{ "$ref": "#/$defs/checked" }],
+  "$defs": {
+    "checked": {
+      "title": "FloorChecked",
+      "description": "The floor checked the candidate tree. `verdict` is `reject` if and only if there is at least one finding; `truncated` is true when more findings were found than are listed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "rules",
+        "baseCommit",
+        "candidateTree",
+        "verdict",
+        "findings",
+        "truncated"
+      ],
+      "properties": {
+        "kind": { "const": "floor.checked" },
+        "rules": {
+          "description": "The rule table version, such as `floor-1`.",
+          "type": "string",
+          "pattern": "^floor-[1-9][0-9]{0,5}$"
+        },
+        "baseCommit": {
+          "$ref": "#/$defs/oid",
+          "description": "The run's base commit (`run.started.baseCommit`)."
+        },
+        "candidateTree": {
+          "$ref": "#/$defs/oid",
+          "description": "The candidate tree: the worktree's HEAD plus its working tree, without ignored files. Its objects need not be kept; the same content gives the same ID."
+        },
+        "verdict": { "enum": ["pass", "reject"] },
+        "findings": {
+          "description": "The findings, sorted by path, line, rule and detail.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "finding": {
+      "title": "FloorFinding",
+      "description": "One rule that fired. `path` is absent only for a `floor.limits` finding about the whole change list; `line` is the 1-based line in the candidate file.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "detail"],
+      "properties": {
+        "rule": { "$ref": "#/$defs/rule" },
+        "path": { "$ref": "#/$defs/path" },
+        "line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "detail": { "$ref": "#/$defs/text" }
+      },
+      "if": {
+        "properties": { "rule": { "not": { "const": "floor.limits" } } }
+      },
+      "then": {
+        "properties": { "path": { "$ref": "#/$defs/path" } },
+        "required": ["path"]
+      }
+    },
+    "rule": {
+      "title": "FloorRule",
+      "description": "Rules of `floor-1`. `floor.limits`: the change was too large to check, so the floor fails closed.",
+      "enum": [
+        "suppression.added",
+        "config.changed",
+        "package.changed",
+        "assertion.removed",
+        "symlink.added",
+        "floor.limits"
+      ]
+    },
+    "oid": {
+      "description": "A full lowercase hex git object ID (SHA-1 or SHA-256).",
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "path": {
+      "description": "A repo-relative path escaped for display: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates, not absolute and without empty, `.` or `..` segments.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+      "not": { "pattern": "(^|/)\\.{0,2}(/|$)" }
+    },
+    "text": {
+      "description": "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$"
+    }
+  }
+}
