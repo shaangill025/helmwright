@@ -378,7 +378,7 @@ describe("helmwright's own config (B6-5, OQ2)", () => {
     );
   });
 
-  it("covers every Ring 0 component of the rot register under packages/", () => {
+  it("covers every Ring 0 component of the rot register", () => {
     const parsed = JSON.parse(readFileSync(root(CONFIG_FILE), "utf8")) as {
       permissions: { policy: unknown };
     };

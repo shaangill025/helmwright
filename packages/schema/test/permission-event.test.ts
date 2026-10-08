@@ -23,7 +23,7 @@ const evaluated: PermissionEvaluated = {
   tier: "ask",
   guard: "policy",
   ruleId: "deps.add.ask",
-  policyVersion: "default-1",
+  policyVersion: "sample-1",
   reason: "rule deps.add.ask",
 };
 const rejected: PermissionRejected = {

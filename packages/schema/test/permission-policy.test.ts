@@ -5,7 +5,7 @@ import {
 } from "../src/index.ts";
 
 const policy: PermissionPolicy = {
-  version: "default-1",
+  version: "sample-1",
   governance: "tiered",
   rules: [
     { id: "execute.any", action: "execute", scope: "any", tier: "allow" },

@@ -301,7 +301,8 @@ const FLOOR_ACTIONS: NonEmpty<PermissionAction> = deepFreeze([
  * globs are there (B6-5).
  */
 const FLOOR_PATHS: NonEmpty<string> = deepFreeze([
-  // Q56 eval files; their location is fixed when the behavioral evals land.
+  // Q56 eval files; their location is fixed when the behavioral evals land. A root
+  // evals/ is generic; packages/*/evals/** is helmwright's layout, so it is in its config.
   "evals/**",
   ".github/**",
   "eslint.config.*",
