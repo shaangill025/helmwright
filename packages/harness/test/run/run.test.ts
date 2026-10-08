@@ -581,6 +581,35 @@ describe("executeRun's sensor floor (B3-2)", () => {
     }
   });
 
+  it("faults any event but run.terminated after floor.checked (F5)", async () => {
+    await run(mutatingEngine(0).engine, true, log, undefined, { floor: pass });
+    const events = log.events({ runId: "run-1" });
+    const at = events.findIndex((e) => e.type === "floor.checked");
+    const floor = events[at];
+    if (floor === undefined) throw new Error("no event");
+    const type = "intake.overridden";
+    const late = { ...floor, type, seq: floor.seq + 1, payload: {} };
+    expect(floorFaults([...events.slice(0, at + 1), late])).toEqual([
+      "seq " + String(late.seq) + ": " + type + " after floor.checked",
+    ]);
+  });
+
+  it("replays a floor-1 log and needs run.started's base commit (F6d)", async () => {
+    await run(mutatingEngine(0).engine, true, log, undefined, { floor: pass });
+    const events = log.events({ runId: "run-1" });
+    const floor = events.find((e) => e.type === "floor.checked");
+    if (floor === undefined) throw new Error("no event");
+    const old = { ...floor, payload: { ...floor.payload, rules: "floor-1" } };
+    expect(floorFaults(events.map((e) => (e === floor ? old : e)))).toEqual([]);
+    expect(floorFaults(events.filter((e) => e.type !== "run.started"))).toEqual(
+      [
+        "seq " +
+          String(floor.seq) +
+          ": floor.checked base commit is not run.started's",
+      ],
+    );
+  });
+
   it("faults a completed run with no passing floor.checked", async () => {
     const outcome = await run(mutatingEngine(0).engine, true);
     expect(outcome.terminal).toEqual({ kind: "completed" });

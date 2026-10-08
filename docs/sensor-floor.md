@@ -17,7 +17,12 @@ rebuilds the candidate tree and commits only if its OID equals the logged `floor
 B3-4 (`floor-3`) notes: the floor trusts the host user's global git config. B15 runs the tools on a clean
 export of `candidateTree` and compares the collected, passed and skipped test totals of base and candidate.
 Ignored build caches (`node_modules/.bin`, `*.tsbuildinfo`, `.eslintcache`) are not floor findings for that
-reason; ignored agent files (`.claude/`, `CLAUDE.md`, `AGENTS.md`) and ignored config files are.
+reason; ignored agent files (`.claude/`, `CLAUDE.md`, `AGENTS.md`) and ignored config files are. Test forms
+count outside a test path only in a code file that imports a test framework directly, so a local re-export is
+missed there; the B15 test totals are the backstop. A base config blob over 64 KiB, or a base ls-tree over the
+byte limit, gives `floor.limits` on every run until the base changes.
+Any tracked add, change or delete of a `.claude/` path, `CLAUDE.md`, `AGENTS.md` or `.mcp.json` is
+`config.changed`, even an owner-approved one (owner, 2026-10-08).
 
 History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
 `pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.

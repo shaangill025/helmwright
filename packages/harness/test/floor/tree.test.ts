@@ -245,6 +245,63 @@ describe("config chains from the base commit (S3)", { timeout: 30_000 }, () => {
   });
 });
 
+describe("config chain review fixes", { timeout: 30_000 }, () => {
+  it("finds a change to an extensionless module a base config imports (F3)", () => {
+    const more = ["a", "b", "c", "d", "e"];
+    rebase({
+      "vitest.config.ts":
+        'import shared from "./vitest.shared";\nexport default shared;\n',
+      "vitest.shared.ts": "export default {};\n",
+      "eslint.config.js": [
+        'export { default } from "./eslint/base";',
+        ...more.map((m) => `import "./lint/${m}";`),
+      ].join("\n"),
+      "eslint/base/index.js": "export default [];\n",
+      ...Object.fromEntries(more.map((m) => [`lint/${m}.ts`, "export {};\n"])),
+    });
+    write("vitest.shared.ts", "export default { x: 1 };\n");
+    write("eslint/base/index.js", "export default [1];\n");
+    // A file Vite would resolve before the base's own is in the chain too.
+    write("vitest.shared.mjs", "export default {};\n");
+    expect(details()).toEqual([
+      ["config.changed", "eslint/base/index.js", "config chain"],
+      ["config.changed", "vitest.shared.mjs", "config chain"],
+      ["config.changed", "vitest.shared.ts", "config chain"],
+    ]);
+  });
+
+  it("follows no link from a tsconfig that extends a directory (F6c)", () => {
+    rebase({
+      "tsconfig.json": '{ "extends": "./" }',
+      "pkg/tsconfig.json": '{ "extends": "../" }',
+    });
+    write("src/a.ts", "export const a = 2;\n");
+    expect(details()).toEqual([]);
+  });
+
+  it("fails closed past the chain's path and read bounds (F6d)", () => {
+    const many = Array.from({ length: 65 }, (_, i) => `"./c/${String(i)}.js"`);
+    rebase({
+      "eslint.config.js": "export default [" + many.join(",") + "];\n",
+    });
+    expect(details()).toEqual([
+      ["floor.limits", undefined, "config chain over 64 paths"],
+    ]);
+    rebase({
+      "eslint.config.js": "export default [];\n",
+      ...Object.fromEntries(
+        Array.from({ length: 129 }, (_, i) => [
+          `p${String(i)}/tsconfig.json`,
+          "{}",
+        ]),
+      ),
+    });
+    expect(details()).toEqual([
+      ["floor.limits", undefined, "config chain over 128 files read"],
+    ]);
+  });
+});
+
 describe("ignored agent and config files (S4)", { timeout: 30_000 }, () => {
   it("finds ignored agent files and config-named files, not build caches", () => {
     writeFileSync(

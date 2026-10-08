@@ -433,3 +433,87 @@ describe("findings", () => {
     );
   });
 });
+
+describe("floor-3 review fixes", () => {
+  const SKIP = "skip";
+
+  it.each(["from", "require", "import", "require ("])(
+    "matches a framework import in linear time after %j (F1)",
+    (word) => {
+      const text = word + " ".repeat(2_000_000) + "x\n";
+      const start = Date.now();
+      expect(rules(change("src/a.ts", "", text))).toEqual([]);
+      expect(Date.now() - start).toBeLessThan(2000);
+    },
+  );
+
+  it.each([
+    "  " + SKIP + ": true,",
+    "  " + SKIP,
+    "it('x', { " + SKIP + ": false || isCI }, () => {});",
+    "it('x', { " + SKIP + ": 10 || isCI }, () => {});",
+    'it("x", { ["' + SKIP + '"]: true }, () => {});',
+    "it('x', { ['" + SKIP + "']: true }, () => {});",
+    "it('x', { " + "todo" + ": true }, () => {});",
+    "const { " + SKIP + " } = options;",
+    "it('x', { " + SKIP + ", timeout: 5 }, () => {});",
+  ])("finds the options-object key in %j (F2)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([
+      "suppression.added",
+    ]);
+  });
+
+  it.each([
+    "prisma.user.findMany({ " + SKIP + ": 10, take: 20 });",
+    "it('x', { " + SKIP + ": false }, () => {});",
+    "  " + SKIP + ": false,",
+    "  " + SKIP + ": 0",
+  ])("ignores the options-object key in %j (F2)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([]);
+  });
+
+  it.each([
+    "@pytest.mark" + D + "xfail",
+    "pytest" + D + "xfail" + '("x")',
+    "@unittest" + D + "expectedFailure",
+    "test" + D + "if" + '(ci)("x", () => {});',
+    "test" + D + "todoIf" + '(ci)("x");',
+  ])("finds the test form %j (F6a)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([
+      "suppression.added",
+    ]);
+  });
+
+  it("counts a framework import only in a code file (F6b)", () => {
+    const text = lines(
+      'import { it } from "vit' + 'est";',
+      "it" + D + SKIP + '("x");',
+    );
+    expect(rules(change("docs/testing.md", "", text))).toEqual([]);
+    expect(rules(change("src/testkit.mts", "", text))).toEqual([
+      "suppression.added",
+    ]);
+  });
+});
+
+describe("tracked agent files (F4)", () => {
+  const config = (c: FloorChange) =>
+    rules(c).filter((rule) => rule !== "protected.changed");
+
+  it.each([
+    [".claude/settings.json", undefined, "{}"],
+    ["a/.Claude/hooks/x.sh", "a", undefined],
+    ["pkg/CLAUDE.md", "a", "b"],
+    ["AGENTS.md", undefined, "x"],
+    ["deep/x/agents.md", "a", "b"],
+    [".mcp.json", undefined, "{}"],
+    ["pkg/.MCP.json", "{}", "{ }"],
+  ])("finds %j as config.changed", (path, before, after) => {
+    expect(config(change(path, before, after))).toEqual(["config.changed"]);
+  });
+
+  it("ignores names that only contain an agent file name", () => {
+    expect(rules(change("docs/claude.md.txt", "a", "b"))).toEqual([]);
+    expect(rules(change("src/claude/x.ts", "a", "b"))).toEqual([]);
+  });
+});

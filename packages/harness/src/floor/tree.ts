@@ -245,13 +245,10 @@ const ignoredFile = (path: string, detail: string): FloorFinding => ({
 });
 const isGitignore = (path: string) =>
   caseFold(path.split("/").at(-1) ?? "") === ".gitignore";
-/** S4: agent instruction, settings and hook files a hosted engine could load. */
-const AGENT_NAMES = new Set(["claude.md", "agents.md"]);
-const AGENT_DIRS = new Set([".claude"]);
 
 /**
  * S4: the finding for one ignored path (a collapsed directory ends in `/`), or undefined.
- * An ignored .gitignore, agent file or config file is reported; a file inside a
+ * An ignored .gitignore or config file (agent files included, F4) is reported; a file inside a
  * collapsed ignored directory, such as node_modules/.bin or a build cache, is not: B15
  * runs the tools on a clean export of the candidate tree, never in the worktree.
  */
@@ -259,13 +256,10 @@ function ignoredFinding(listed: string): FloorFinding | undefined {
   if (isGitignore(listed)) return ignoredFile(listed, "ignored .gitignore");
   const dir = listed.endsWith("/");
   const path = dir ? listed.slice(0, -1) : listed;
-  const parts = caseFold(path).split("/");
-  const agent =
-    parts.some((part) => AGENT_DIRS.has(part)) ||
-    (!dir && AGENT_NAMES.has(parts.at(-1) ?? ""));
   // A directory counts as config when it is, or is in, a config directory.
-  const config = isConfig(dir ? path + "/-" : path);
-  return agent || config ? ignoredFile(path, "ignored") : undefined;
+  return isConfig(dir ? path + "/-" : path)
+    ? ignoredFile(path, "ignored")
+    : undefined;
 }
 /** `path` as a literal inside a `:(glob)` pathspec. */
 const globLiteral = (path: string) =>
@@ -391,10 +385,22 @@ const RELATIVE = /["'`](\.\.?\/[^"'`\s*?{}[\]]{1,200})["'`]/g;
 const MODULE = /\.(?:[cm]?[jt]sx?|json5?|jsonc|ya?ml|toml)$/;
 const LITERAL_DATA = /\.(?:json5?|jsonc|ya?ml|toml)$/;
 
-/** `rel` (relative to `dir`) as a repo path, or undefined if it leaves the repo. */
+/** The extensions Node, TypeScript and Vite try for an extensionless import. */
+const EXTENSIONS = deepFreeze(
+  ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"].map((e) => "." + e),
+);
+
+/**
+ * `rel` (relative to `dir`) as a repo file path, or undefined if it leaves the repo or
+ * names a directory (such as `./`).
+ */
 function resolvePath(dir: string, rel: string): string | undefined {
   const path = posix.normalize(posix.join(dir, rel));
-  return path === ".." || path.startsWith("../") || posix.isAbsolute(path)
+  return path === ".." ||
+    path.startsWith("../") ||
+    posix.isAbsolute(path) ||
+    path === "." ||
+    path.endsWith("/")
     ? undefined
     : path;
 }
@@ -464,18 +470,36 @@ function tsLinks(dir: string, text: string): string[] {
   return links.flatMap((rel) => resolvePath(dir, rel) ?? []);
 }
 
-/** The repo paths of relative module-like string literals in a module config. */
-function jsLinks(dir: string, text: string): string[] {
-  return Array.from(text.matchAll(RELATIVE), (match) => match[1] ?? "")
-    .filter((rel) => MODULE.test(rel))
-    .flatMap((rel) => resolvePath(dir, rel) ?? []);
+/**
+ * The repo paths of relative module-like string literals in a module config. An
+ * extensionless literal, such as `./vitest.shared`, gives each file it could resolve to
+ * (`rel` or `rel/index` with each of EXTENSIONS) once one of them is in the base, so a
+ * file that shadows the base's own is in the chain too; those not in the base are guesses.
+ */
+function jsLinks(dir: string, text: string, inBase: (path: string) => boolean) {
+  const links: { path: string; guess: boolean }[] = [];
+  for (const [, rel = ""] of text.matchAll(RELATIVE)) {
+    if (MODULE.test(rel)) {
+      const path = resolvePath(dir, rel);
+      if (path !== undefined) links.push({ path, guess: false });
+      continue;
+    }
+    const files = EXTENSIONS.flatMap((ext) => [
+      rel + ext,
+      rel + "/index" + ext,
+    ]).flatMap((file) => resolvePath(dir, file) ?? []);
+    if (files.some(inBase)) {
+      links.push(...files.map((path) => ({ path, guess: !inBase(path) })));
+    }
+  }
+  return links;
 }
 
 /**
  * S3: the paths the base commit's configs extend, reference or import, up to
  * CHAIN_DEPTH links from a root config. The base is trusted, so its files are read
  * through git; an unparseable base tsconfig has no chain. Past a bound the floor fails
- * closed with a `floor.limits` finding.
+ * closed with a `floor.limits` finding; the path bound does not count a guess (jsLinks).
  */
 function configChain(git: Git, base: string, max: number) {
   const chain = new Set<string>();
@@ -499,6 +523,8 @@ function configChain(git: Git, base: string, max: number) {
       return k === undefined ? [] : [{ path, ts: k === "ts", depth: 0 }];
     });
     let reads = 0;
+    let paths = 0;
+    const inBase = (path: string) => blobs.has(path);
     for (let item = queue.shift(); item; item = queue.shift()) {
       const oid = blobs.get(item.path);
       if (oid === undefined || item.depth >= CHAIN_DEPTH) continue;
@@ -508,16 +534,19 @@ function configChain(git: Git, base: string, max: number) {
       }
       const text = git(["cat-file", "blob", oid], MAX_META).toString("utf8");
       const dir = posix.dirname(item.path);
-      const links = item.ts ? tsLinks(dir, text) : jsLinks(dir, text);
-      for (const path of links) {
+      const links = item.ts
+        ? tsLinks(dir, text).map((path) => ({ path, guess: false }))
+        : jsLinks(dir, text, inBase);
+      for (const { path, guess } of links) {
         if (chain.has(caseFold(path))) continue;
         chain.add(caseFold(path));
+        if (!guess) paths += 1;
         const ts = item.ts || kind(path) === "ts";
         if (!LITERAL_DATA.test(path) || ts) {
           queue.push({ path, ts, depth: item.depth + 1 });
         }
       }
-      if (chain.size > MAX_CHAIN) {
+      if (paths > MAX_CHAIN) {
         const detail = `config chain over ${String(MAX_CHAIN)} paths`;
         return { chain, findings: [limit(detail)] };
       }

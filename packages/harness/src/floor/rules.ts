@@ -54,14 +54,21 @@ const WORD_MARKERS = deepFreeze([
 ]);
 /** Test-skipping and focusing names, matched in test files only. */
 const NAMES = ["skip", "only", "todo", "fails"];
-const CALLS = [...NAMES, "skipif", "runif", "failing", "skipnow", "skipf"].join(
-  "|",
-);
+const CALLS = [
+  ...NAMES,
+  ...["skipif", "runif", "failing", "skipnow", "skipf", "todoif"],
+  // pytest.mark.xfail and unittest.expectedFailure.
+  ...["xfail", "expectedfailure"],
+].join("|");
+/** S1: the values a key may have, alone: a number (such as Prisma's `skip: 10`) or `false`. */
+const KEEPS = "(?! ?(?:false|-?\\d[\\w.]*) ?(?:[,}]|$))";
 const TEST_FORMS = deepFreeze([
   // A member access of a skip or focus name: a call, a chained call or a bare reference.
   new RegExp("\\.(?:" + CALLS + ")(?![\\w$])"),
   // A bracket access, such as `it["skip"]`.
   new RegExp("\\[ ?[\"'`](?:" + CALLS + ")[\"'`] ?\\]"),
+  // Bun's conditional calls, such as `test.if(ci)`.
+  new RegExp("\\.if ?\\("),
   // A focus or exclude call: an x- or f-prefixed it, describe or test.
   new RegExp(
     "(?<![\\w$.])(?:x" +
@@ -71,21 +78,32 @@ const TEST_FORMS = deepFreeze([
       "it|f" +
       "describe) ?\\(",
   ),
-  // S1: an options-object key, such as `{ skip: true }`, unless its value is `false`.
+  // S1: an options-object key at a line start or after `{` or `,`, such as `{ skip: true }`
+  // or a shorthand `{ skip }`, unless its value is a number or `false` alone. A quoted or
+  // computed key, such as `["skip"]: x`, needs a value.
   new RegExp(
-    "[{,] ?[\"'`]?(?:" + NAMES.join("|") + ")[\"'`]? ?(?::(?! ?false\\b)|[,}])",
+    "(?:^|[{,]) ?(?:" + NAMES.join("|") + ") ?(?:[,}]|$|:" + KEEPS + ")",
+  ),
+  new RegExp(
+    "(?:^|[{,]) ?(?:\\[ ?)?[\"'`](?:" +
+      NAMES.join("|") +
+      ")[\"'`](?: ?\\])? ?:" +
+      KEEPS,
   ),
 ]);
 /**
- * S2: an import or require of a test framework, so its test forms count in any file,
- * not only a test path. Matched over the case-folded text.
+ * S2: an import or require of a test framework, so its test forms count in any code file,
+ * not only a test path. Matched over the case-folded text in linear time: no two
+ * adjacent `\s*` can split one whitespace run.
  */
 const FRAMEWORK = new RegExp(
-  /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'`]/.source +
+  /(?:\bfrom|\bimport|\brequire)\s*(?:\(\s*)?["'`]/.source +
     "(?:vit" +
     "est|node:test|@jest/globals|mocha|bun:test|@playwright/test|ava)" +
     /(?:\/[^"'`\s]{0,200})?["'`]/.source,
 );
+/** The code files whose framework imports count (S2). */
+const CODE = /\.(?:[cm]?[jt]sx?|py|go)$/;
 /** Tool config, ignore, hook and build file names, matched at any depth (`*` within the name). */
 const CONFIG_NAMES = deepFreeze([
   ...["eslint.config.*", ".eslintrc", ".eslintrc.*", ".eslintignore"],
@@ -134,11 +152,13 @@ const CONFIG_NAMES = deepFreeze([
     ".gitlab-ci.yml",
   ],
   "jenkinsfile",
+  // F4 (owner, 2026-10-08): agent instruction and MCP files a hosted engine could load.
+  ...["claude.md", "agents.md", ".mcp.json"],
 ]);
-/** Directories whose every file is config: CI, git hook managers, Semgrep rules, tool and dev environments. */
+/** Directories whose every file is config: CI, git hook managers, Semgrep rules, tool, dev and agent environments. */
 const CONFIG_DIRS = new Set([
   ...[".github", ".husky", ".githooks", ".semgrep"],
-  ...[".devcontainer", ".circleci", ".mise"],
+  ...[".devcontainer", ".circleci", ".mise", ".claude"],
 ]);
 /** package.json keys that change how the checkers, the build or the install run (dependencies are A2's). */
 const PACKAGE_KEYS = deepFreeze([
@@ -236,7 +256,9 @@ function blockDirectiveLines(text: string): number[] {
 }
 
 function suppressions(path: string, base: string, candidate: string) {
-  const test = isTestFile(path) || FRAMEWORK.test(caseFold(candidate));
+  const test =
+    isTestFile(path) ||
+    (CODE.test(nameOf(path)) && FRAMEWORK.test(caseFold(candidate)));
   const marked = (line: string) => {
     const key = norm(line);
     return (

@@ -17,8 +17,6 @@ export const FLOOR_RULES_VERSIONS: readonly string[] = Object.freeze([
   "floor-2",
   FLOOR_RULES_VERSION,
 ]);
-/** S5: event types that only the loop, the broker or a sandbox write, never after the floor. */
-const BEFORE_FLOOR = ["loop.", "message.", "permission.", "sandbox.", "tool."];
 
 /** The most findings one floor.checked lists; past it, `truncated` is set. */
 const MAX_FINDINGS = 256;
@@ -54,8 +52,8 @@ export function floorChecked(
  * event or not the run's only one, and a `run.terminated` that is completed without a
  * passing `floor.checked` before it (rejected, or the floor skipped). S5: also a
  * `floor.checked` whose base commit is not `run.started`'s or whose rules version this
- * build does not know, and a loop, message, permission, sandbox or tool event after it
- * (the floor runs only once no writer is left). Each fault is fixed text and the
+ * build does not know, and any event after it but `run.terminated` (the floor runs only
+ * once no writer is left). Each fault is fixed text and the
  * event's `seq`, like `permissionFaults`.
  */
 export function floorFaults(events: readonly Event[]): string[] {
@@ -66,7 +64,7 @@ export function floorFaults(events: readonly Event[]): string[] {
   for (const { seq, type, payload } of events) {
     const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
     if (type === "run.started") started ??= payload["baseCommit"];
-    if (checked && BEFORE_FLOOR.some((p) => type.startsWith(p))) {
+    if (checked && type !== "run.terminated" && type !== "floor.checked") {
       fault(type + " after floor.checked");
     }
     if (type === "floor.checked") {
