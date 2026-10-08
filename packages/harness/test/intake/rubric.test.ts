@@ -9,8 +9,8 @@ import {
   RING0_PATHS,
   classify,
   overrideDirection,
+  reclassifyUp,
   resolvePolicy,
-  upgradeOnly,
 } from "../../src/index.ts";
 import { hasControl } from "../../src/permission/normalize.ts";
 
@@ -49,17 +49,25 @@ const words = (text = "") => text.split(" ").filter((w) => w !== "");
 const TABLE = `
 - | architectural | noDeclaredScope
 [] | architectural | noDeclaredScope
-docs/** | chore | docsOnly:docs/**
-docs/guide/intro.ts | chore | docsOnly:docs/guide/intro.ts
+docs/** | bounded | notDocsOrTests:docs/**
+docs/guide/intro.ts | bounded | notDocsOrTests:docs/guide/intro.ts
+docs/a.md docs/img/a.png | chore | docsOnly:docs/a.md,docs/img/a.png
 README.md | chore | docsOnly:README.md
-src/**/*.md | chore | docsOnly:src/**/*.md
-docs/*.mdx a/b.md | chore | docsOnly:a/b.md,docs/*.mdx
-packages/x/test/** | chore | testsOnly:packages/x/test/**
+src/**/*.md | bounded | notDocsOrTests:src/**/*.md
+docs/x.mdx a/b.md | bounded | notDocsOrTests:docs/x.mdx
+packages/x/test/** | bounded | notDocsOrTests:packages/x/test/**
+src/a.test.py | chore | testsOnly:src/a.test.py
 tests/fixtures/package.json | chore | testsOnly:tests/fixtures/package.json
 src/__tests__/a.ts | chore | testsOnly:src/__tests__/a.ts
 src/a.test.ts src/*.spec.tsx | chore | testsOnly:src/*.spec.tsx,src/a.test.ts
 docs/a.md src/a.test.ts | chore | docsOnly:docs/a.md testsOnly:src/a.test.ts
 src/a.ts | bounded | notDocsOrTests:src/a.ts
+docs/conf.py docs/package.json docs/Makefile | bounded | notDocsOrTests:docs/Makefile,docs/conf.py,docs/package.json
+docs/*.md docs/x.mdx | bounded | notDocsOrTests:docs/*.md,docs/x.mdx
+AGENTS.md src/claude.md | bounded | notDocsOrTests:AGENTS.md,src/claude.md
+.claude/commands/x.md .changeset/a.md | bounded | notDocsOrTests:.changeset/a.md,.claude/commands/x.md
+openapi.spec.yaml .env.test.local | bounded | notDocsOrTests:.env.test.local,openapi.spec.yaml
+tests/conftest.py tests/setup.ts | bounded | notDocsOrTests:tests/conftest.py,tests/setup.ts
 src/** | bounded | notDocsOrTests:src/**
 docs | bounded | notDocsOrTests:docs
 packages/x/test | bounded | notDocsOrTests:packages/x/test
@@ -75,13 +83,13 @@ docs/a.md src/a.ts | bounded | notDocsOrTests:src/a.ts
 ** | bounded | ring0Path:** notDocsOrTests:**
 .github/README.md | bounded | ring0Path:.github/README.md
 .GitHub/README.md | bounded | ring0Path:.GitHub/README.md
-**/*.md | bounded | ring0Path:**/*.md
-**/__tests__/** | bounded | ring0Path:**/__tests__/**
+**/*.md | bounded | ring0Path:**/*.md notDocsOrTests:**/*.md
+**/__tests__/** | bounded | ring0Path:**/__tests__/** notDocsOrTests:**/__tests__/**
 evals/a.test.ts | bounded | ring0Path:evals/a.test.ts
 packages/h/evals/** | bounded | ring0Path:packages/h/evals/** notDocsOrTests:packages/h/evals/**
 *.json | bounded | ring0Path:*.json notDocsOrTests:*.json
 packages/harness/src | bounded | ring0Path:packages/harness/src notDocsOrTests:packages/harness/src
-docs/** package.json | bounded | ring0Path:package.json notDocsOrTests:package.json`
+docs/** package.json | bounded | ring0Path:package.json notDocsOrTests:docs/**,package.json`
   .split("\n")
   .filter((line) => line !== "")
   .map((line) => {
@@ -106,13 +114,26 @@ describe("classify", () => {
     expect(result.sparring).toBe("optIn");
   });
 
-  it.each(["**/*.md", "**/*.mdx", "**/*.test.ts", "**/test/**"])(
-    "puts %j in a category when no Ring 0 path can overlap it",
+  // S2: a directory entry covers everything below it, and a name may be AGENTS.md.
+  it.each(["**/*.md", "**/*.test.ts", "**/test/**", "*.md"])(
+    "keeps %j out of the categories with no Ring 0 overlap",
     (entry) => {
       const ring0Paths = ["package.json"];
-      expect(classify(input([entry], { ring0Paths })).class).toBe("chore");
+      expect(classify(input([entry], { ring0Paths })).reasons).toEqual([
+        { rule: "notDocsOrTests", entries: [entry] },
+      ]);
     },
   );
+
+  it("binds the result to the sorted unique Ring 0 paths", () => {
+    const paths = ["b/**", "a.json", "b/**"];
+    const { ring0Sha256 } = classify(input(["x"], { ring0Paths: paths }));
+    expect(ring0Sha256).toBe(sha256(JSON.stringify(["a.json", "b/**"])));
+    const reordered = { ring0Paths: ["a.json", "b/**"] };
+    expect(classify(input(["y"], reordered)).ring0Sha256).toBe(ring0Sha256);
+    const twice = classify(input(["a.md", "b.md", "a.md"])).scopeSha256;
+    expect(twice).toBe(sha256(JSON.stringify(["a.md", "b.md"])));
+  });
 
   it.each<[object, string, string[]]>([
     [{ newDependencies: ["left-pad"] }, "newDependencies", ["left-pad"]],
@@ -191,7 +212,10 @@ describe("classify", () => {
 
   it.each(
     words(`/etc/passwd a//b docs/ ./docs/a.md docs/../src/x.ts .. docs\\a.md
-      docs/a**.md`).concat([
+      docs/a**.md !src/*.md !**/*.test.ts {docs,src}/** src/[a].md src/?.md
+      -rf.md ~/x.md src/$x.md a/(b).md @x/a.md a+b.md .git/tests/x
+      .GIT/hooks/a.md`).concat([
+      "cafe\u0301.md",
       "",
       "docs/a\nb.md",
       `docs/a${RLO}b.md`,
@@ -228,6 +252,10 @@ describe("classify", () => {
       friction: { defaultIntensity: "low", choreDowngrade: "x" },
     }),
     input(["a"], { friction: { ...CONFIG_DEFAULTS.friction, extra: 1 } }),
+    // N1: holes in an array are not entries.
+    input(undefined, { scope: Array<string>(2).fill("a", 1) }),
+    input(["a"], declared({ newModules: Array<string>(1) })),
+    input(["a"], { ring0Paths: Array<string>(2).fill("a", 0, 1) }),
   ])("rejects the input %j", (value) => {
     expect(() => classify(value)).toThrow(IntakeError);
   });
@@ -247,7 +275,7 @@ describe("classify", () => {
   );
 });
 
-describe("upgradeOnly and overrideDirection", () => {
+describe("reclassifyUp and overrideDirection", () => {
   it.each<[IntakeClass, IntakeClass, string]>([
     ["chore", "chore", "same"],
     ["chore", "bounded", "up"],
@@ -258,20 +286,24 @@ describe("upgradeOnly and overrideDirection", () => {
     ["bounded", "chore", "down"],
     ["architectural", "chore", "down"],
     ["architectural", "bounded", "down"],
-  ])("rates %s to %s as %s and allows it unless down", (from, to, way) => {
+  ])("rates %s to %s as %s and reclassifies only up", (from, to, way) => {
     expect(overrideDirection(from, to)).toBe(way);
-    if (way === "down") {
-      expect(() => upgradeOnly(from, to)).toThrow(IntakeError);
+    if (way === "up") {
+      expect(reclassifyUp(from, to)).toBe(to);
     } else {
-      expect(upgradeOnly(from, to)).toBe(to);
+      expect(() => reclassifyUp(from, to)).toThrow(IntakeError);
     }
   });
 
-  it.each<[IntakeClass, IntakeClass]>([
-    ["trivial" as IntakeClass, "chore"],
-    ["chore", "trivial" as IntakeClass],
-  ])("rejects the unknown class in %s to %s", (from, to) => {
-    expect(() => overrideDirection(from, to)).toThrow(IntakeError);
-    expect(() => upgradeOnly(from, to)).toThrow(IntakeError);
+  it.each<[unknown, unknown]>([
+    ["trivial", "chore"],
+    ["chore", "trivial"],
+    [undefined, "chore"],
+    ["chore", 1],
+    [{}, null],
+  ])("rejects the unknown class in %j to %j", (from, to) => {
+    const [a, b] = [from as IntakeClass, to as IntakeClass];
+    expect(() => overrideDirection(a, b)).toThrow(IntakeError);
+    expect(() => reclassifyUp(a, b)).toThrow(IntakeError);
   });
 });

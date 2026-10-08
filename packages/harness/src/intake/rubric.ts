@@ -43,11 +43,13 @@ export interface IntakeResult {
   readonly reasons: readonly Readonly<IntakeReason>[];
   readonly friction: Readonly<IntakeFriction>;
   readonly sparring: "optIn";
-  /** SHA-256 of the canonical JSON of the sorted scope, or of `[]` when none was declared. */
+  /** SHA-256 of the canonical JSON of the sorted unique scope, or of `[]` when none was declared. */
   readonly scopeSha256: string;
+  /** SHA-256 of the canonical JSON of the sorted unique Ring 0 paths the class was computed with. */
+  readonly ring0Sha256: string;
 }
 
-/** Invalid intake input or a downward reclassification. The message is escaped for display. */
+/** Invalid intake input or a reclassification that is not upward. The message is escaped for display. */
 export class IntakeError extends Error {
   override name = "IntakeError";
 }
@@ -59,17 +61,60 @@ const MAX_SCOPE = 256;
 const MAX_ENTRY = 1024;
 
 /**
- * The chore categories of intake-rubric-1 (OQ-B10-3). Names compare exactly, so `README.MD`
- * and `Docs/` are in none: missing a chore is the safe direction.
- * Docs: below a top-level `docs/` directory; Markdown (`.md`, `.mdx`) anywhere. Not `.txt`,
- * since requirements.txt and CMakeLists.txt are build inputs.
- * Tests: below a `test`, `tests` or `__tests__` directory at any depth; a name with `.test.`
- * or `.spec.`. A bare `docs` or `test` entry may be a file, so it is in neither.
+ * Scope dialect (S1): `*` matches within one segment and a whole `**` segment matches any
+ * number of segments; nothing else is special. An entry with another glob metacharacter
+ * (`! ? [ ] { } ( ) @ +`) or a segment that starts with `-`, `~` or `$` is rejected, so no
+ * other glob dialect or shell can read it more widely. Any future scope enforcer (the M2
+ * out-of-scope detector) must match with this module, not another glob library.
+ *
+ * Matching contract (S2): an entry whose last segment names files (`*.md`, `*.test.ts`,
+ * `x.md`) matches those names only, with nothing below them. An entry that ends in `**`
+ * (`docs/**`, `x/test/**`) matches everything below it, so it is in no category: something
+ * below it may always be a build file or an instruction file. The Ring 0 check treats every
+ * entry as covering everything below it.
+ */
+const META = /[!?[\]{}()@+]/;
+const LEADING = /^[-~$]/;
+
+/**
+ * The chore categories of intake-rubric-1 (OQ-B10-3; tightened fail-safe by the coordinator
+ * 2026-10-07). An entry is in a category only if every path it can match is. Category names
+ * compare exactly, so `README.MD` and `Docs/` are in none; exclusions compare case-folded.
+ * Excluded from both: names that may be AGENTS.md or CLAUDE.md, and paths that may be under
+ * a `.claude` or `.changeset` directory at any depth.
+ * Docs: Markdown (`.md`) anywhere; any file below a top-level `docs/` directory except build
+ * and config files (DOCS_BUILD). Not `.mdx` (executable at build) or `.txt` (requirements.txt
+ * and CMakeLists.txt are build inputs).
+ * Tests: any file below a `test`, `tests` or `__tests__` directory except setup and config
+ * files (TEST_SETUP); a name with `.test.` or `.spec.` that ends in a code extension.
  * Protected tests and eval paths are Ring 0 paths, so they are at least bounded (Q52).
  */
-const DOCS_SUFFIXES = [".md", ".mdx"];
+const INSTRUCTIONS = ["agents.md", "claude.md"];
+const TOOL_DIRS = [".claude", ".changeset"];
+const DOCS_BUILD = [
+  "py",
+  "js",
+  "ts",
+  "mjs",
+  "cjs",
+  "json",
+  "yml",
+  "yaml",
+  "toml",
+  "mdx",
+]
+  .map((ext) => `*.${ext}`)
+  .concat(["makefile", "cname"]);
 const TEST_DIRS = new Set(["test", "tests", "__tests__"]);
 const TEST_MARKS = [".test.", ".spec."];
+const CODE = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "py"];
+const TEST_SETUP = [
+  "conftest.py",
+  "setup.*",
+  "vitest.config.*",
+  "jest.config.*",
+  "playwright.config.*",
+];
 
 const show = (text: string) => `"${displayText(text)}"`;
 const fail = (message: string): never => {
@@ -86,12 +131,15 @@ function record(value: unknown, keys: string[], name: string) {
   return value as Record<string, unknown>;
 }
 
-/** An array of non-empty strings of at most MAX_ENTRY code units, without control or invisible characters. */
+/**
+ * An array of NFC strings of 1 to MAX_ENTRY code units without control or invisible
+ * characters. Holes read as undefined, so a sparse array is rejected (N1).
+ */
 function texts(value: unknown, name: string, max = 1024): string[] {
   if (!Array.isArray(value) || value.length > max) {
     return fail(`${name} must be an array of at most ${String(max)} entries`);
   }
-  return (value as unknown[]).map((item, i) => {
+  return Array.from(value as unknown[], (item, i) => {
     const at = `${name}[${String(i)}]`;
     if (typeof item !== "string" || item === "" || item.length > MAX_ENTRY) {
       return fail(`${at} must be a string of 1 to 1024 characters`);
@@ -99,6 +147,7 @@ function texts(value: unknown, name: string, max = 1024): string[] {
     if (hasControl(item) || INVISIBLE.test(item)) {
       fail(`${at} ${show(item)} has a control or invisible character`);
     }
+    if (item.normalize("NFC") !== item) fail(`${at} ${show(item)} must be NFC`);
     return item;
   });
 }
@@ -112,7 +161,7 @@ function oneOf<T extends string>(
   return found ?? fail(`${name} must be one of ${allowed.join(", ")}`);
 }
 
-/** A scope entry: canonical and repo-relative, no backslash, `**` only as a whole segment. */
+/** A scope entry: canonical and repo-relative, in the scope dialect, without a `.git` segment. */
 function checkEntry(entry: string, i: number): string {
   const at = `intake.scope[${String(i)}] ${show(entry)}`;
   const segments = entry.split("/");
@@ -122,6 +171,12 @@ function checkEntry(entry: string, i: number): string {
   if (entry.includes("\\")) fail(`${at} must not have a backslash`);
   if (segments.some((s) => s !== "**" && s.includes("**"))) {
     fail(`${at} may use ** only as a whole segment`);
+  }
+  if (META.test(entry) || segments.some((s) => LEADING.test(s))) {
+    fail(`${at} may use only * and ** as glob syntax`);
+  }
+  if (segments.some((s) => caseFold(s) === ".git")) {
+    fail(`${at} must not have a .git segment`);
   }
   return entry;
 }
@@ -252,20 +307,43 @@ function touchesRing0(entry: string, globs: readonly string[]): boolean {
   return globs.some((glob) => globsOverlap(below, caseFold(glob).split("/")));
 }
 
+/** Whether a segment pattern may match one of `names` (lowercase patterns), case-folded. */
+const mayBe = (segment: string, names: readonly string[]) =>
+  names.some((name) => segmentsOverlap(caseFold(segment), name));
+
+/** Whether an entry may match a path outside every category, whatever its category. */
+function excluded(segments: readonly string[]): boolean {
+  const last = segments.at(-1) ?? "**";
+  const folded = segments.map(caseFold);
+  return (
+    last === "**" ||
+    mayBe(last, INSTRUCTIONS) ||
+    TOOL_DIRS.some((dir) => globsOverlap(folded, ["**", dir, "**"]))
+  );
+}
+
 function isDocs(entry: string): boolean {
   const segments = entry.split("/");
   const last = segments.at(-1) ?? "**";
-  if (segments.length > 1 && segments[0] === "docs") return true;
-  return last !== "**" && DOCS_SUFFIXES.some((s) => tail(last).endsWith(s));
+  if (excluded(segments)) return false;
+  if (segments.length > 1 && segments[0] === "docs") {
+    return !mayBe(last, DOCS_BUILD);
+  }
+  return tail(last).endsWith(".md");
 }
 
 function isTests(entry: string): boolean {
   const segments = entry.split("/");
-  const last = segments.pop() ?? "**";
-  if (segments.some((s) => TEST_DIRS.has(s))) return true;
+  const last = segments.at(-1) ?? "**";
+  if (excluded(segments)) return false;
+  if (segments.slice(0, -1).some((s) => TEST_DIRS.has(s))) {
+    if (!mayBe(last, TEST_SETUP)) return true;
+  }
   // A literal chunk between stars is in every name the pattern matches.
-  const chunks = last === "**" ? [] : last.split("*");
-  return chunks.some((chunk) => TEST_MARKS.some((m) => chunk.includes(m)));
+  const marked = last
+    .split("*")
+    .some((chunk) => TEST_MARKS.some((m) => chunk.includes(m)));
+  return marked && CODE.some((ext) => tail(last).endsWith(`.${ext}`));
 }
 
 /** A reason for each rule whose entries are given (`true` for a rule without entries). */
@@ -289,7 +367,9 @@ function reasons(
  */
 export function classify(value: unknown): IntakeResult {
   const input = parse(value);
-  const scope = [...(input.scope ?? [])].sort();
+  // N7: duplicates do not change the class or the hashes.
+  const scope = [...new Set(input.scope)].sort();
+  const ring0 = [...new Set(input.ring0Paths)].sort();
   const d = input.declared;
   let cls: IntakeClass = "architectural";
   let why = reasons([
@@ -300,11 +380,11 @@ export function classify(value: unknown): IntakeResult {
     ["newProcessBoundary", d.newProcessBoundary],
   ]);
   if (why.length === 0) {
-    const ring0 = scope.filter((e) => touchesRing0(e, input.ring0Paths));
+    const hits = scope.filter((e) => touchesRing0(e, ring0));
     const docs = scope.filter(isDocs);
     const tests = scope.filter((e) => !isDocs(e) && isTests(e));
     const other = scope.filter((e) => !isDocs(e) && !isTests(e));
-    cls = ring0.length > 0 || other.length > 0 ? "bounded" : "chore";
+    cls = hits.length > 0 || other.length > 0 ? "bounded" : "chore";
     why =
       cls === "chore"
         ? reasons([
@@ -312,7 +392,7 @@ export function classify(value: unknown): IntakeResult {
             ["testsOnly", tests],
           ])
         : reasons([
-            ["ring0Path", ring0],
+            ["ring0Path", hits],
             ["notDocsOrTests", other],
           ]);
   }
@@ -325,13 +405,23 @@ export function classify(value: unknown): IntakeResult {
       ? { intensity: "minimal", source: "choreDowngrade" }
       : { intensity: input.friction.defaultIntensity, source: "default" },
     sparring: "optIn",
-    scopeSha256: createHash("sha256").update(canonical(scope)).digest("hex"),
+    scopeSha256: sha256(canonical(scope)),
+    ring0Sha256: sha256(canonical(ring0)),
   });
 }
 
-function rank(cls: IntakeClass): number {
-  const found = RANK.indexOf(cls);
-  return found >= 0 ? found : fail(`unknown intake class ${show(cls)}`);
+const sha256 = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+/** @throws IntakeError, not TypeError, for a value that is not a class (N2). */
+function rank(cls: unknown): number {
+  const found = RANK.findIndex((known) => known === cls);
+  if (found >= 0) return found;
+  return fail(
+    typeof cls === "string"
+      ? `unknown intake class ${show(cls)}`
+      : "an intake class must be a string",
+  );
 }
 
 /** Whether moving from `from` to `to` lowers, raises or keeps the class. */
@@ -344,12 +434,16 @@ export function overrideDirection(
 }
 
 /**
- * The harness may only reclassify upward (Q52): returns `to` if it ranks at least `from`.
- * @throws IntakeError on a downward move or an unknown class.
+ * The harness may only reclassify upward (Q52), so a reclassification must raise the class
+ * strictly: returns `to` if it ranks above `from`. It replaces a `≥` guard, which had no
+ * caller; an owner override in either direction goes through overrideDirection instead.
+ * @throws IntakeError if `to` does not rank above `from`, or on an unknown class.
  */
-export function upgradeOnly(from: IntakeClass, to: IntakeClass): IntakeClass {
-  if (overrideDirection(from, to) === "down") {
-    fail(`the harness may not reclassify ${from} down to ${to}`);
+export function reclassifyUp(from: IntakeClass, to: IntakeClass): IntakeClass {
+  if (overrideDirection(from, to) !== "up") {
+    fail(
+      `the harness may only reclassify up, not ${show(from)} to ${show(to)}`,
+    );
   }
   return to;
 }

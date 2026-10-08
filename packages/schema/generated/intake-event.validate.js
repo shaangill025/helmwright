@@ -116,7 +116,7 @@ const schema31 = {
     reclassified: {
       title: "IntakeReclassified",
       description:
-        "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it in code before the event is written.",
+        "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's reclassifyUp guard enforces it in code before the event is written.",
       type: "object",
       additionalProperties: false,
       required: [
@@ -2432,7 +2432,7 @@ validate27.evaluated = {
 const schema56 = {
   title: "IntakeReclassified",
   description:
-    "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's upgradeOnly guard enforces it in code before the event is written.",
+    "The harness reclassified the task because of a floor signal or the plan-time pass. Strictly upward only (Q52): `from` ranks strictly below `to` (chore < bounded < architectural). The schema cannot express that order, so the harness's reclassifyUp guard enforces it in code before the event is written.",
   type: "object",
   additionalProperties: false,
   required: [
