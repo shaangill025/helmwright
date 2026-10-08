@@ -173,6 +173,37 @@ const types = () => log.events({ runId: "run-1" }).map((e) => e.type);
 
 describe("broker with the run's log", () => {
   it(
+    "denies a call halted between its ruling and its handler (N2)",
+    { timeout: T },
+    async () => {
+      const policy = DEFAULT_PERMISSION_POLICY;
+      let appends = 0;
+      const broker = createBroker({
+        ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+        halt: () => undefined,
+        permission: {
+          ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
+          ring0: runRing0(workspace, policy),
+          emitAll() {
+            if (++appends === 2) throw new Error("disk full");
+          },
+        },
+      });
+      const { signal } = new AbortController();
+      // The first is allowed; the second's ruling fails to log and halts the
+      // broker before the first resumes from its ruling.
+      const first = broker.executeTool(write("call-1", "a.txt"), signal);
+      const second = broker.executeTool(write("call-2", "b.txt"), signal);
+      expect(await second).toMatchObject({ status: "denied" });
+      expect(await first).toEqual({
+        status: "denied",
+        output: "denied: permission log failed",
+      });
+      expect(existsSync(join(workspace, "a.txt"))).toBe(false);
+    },
+  );
+
+  it(
     "rejects a tool call ID already used in the run before any ruling (S2)",
     { timeout: T },
     async () => {

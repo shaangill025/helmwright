@@ -81,6 +81,8 @@ export interface Ring0Change {
   readonly changed: readonly string[];
   /** The new Ring 0 object; `to` is the sha256 of its canonical JSON. */
   readonly ring0: Readonly<Record<string, unknown>>;
+  /** Fixed text shown first, such as why there is no baseline. */
+  readonly note?: string | undefined;
 }
 
 export interface Broker {
@@ -89,16 +91,23 @@ export interface Broker {
   /**
    * OQ1: rules on `change` as `config.set` of its first changed setting, with the
    * whole new Ring 0 object as the value, under RING0_CONFIG_CALL_ID, and asks it
-   * as `executeTool` asks. True only for an approved always-ask whose answer was
-   * logged; once per broker.
+   * as `executeTool` asks. "approved" only for an approved always-ask whose answer
+   * was logged; "cancelled" if the ask was; once per broker.
    */
-  acceptRing0(change: Ring0Change, signal: AbortSignal): Promise<boolean>;
+  acceptRing0(
+    change: Ring0Change,
+    signal: AbortSignal,
+  ): Promise<"approved" | "denied" | "cancelled">;
 }
 
 /** A ruling's outcome: run the action on the ruled snapshot, or this denial. */
 type Ruled =
   | { readonly kind: "run"; readonly verdict: EvaluatedVerdict }
-  | { readonly kind: "denied"; readonly result: ToolResult };
+  | {
+      readonly kind: "denied";
+      readonly result: ToolResult;
+      readonly cancelled?: boolean;
+    };
 
 /** Wall-clock bound on one `execute` (the loop's signal may end it sooner). */
 export const EXECUTE_TIMEOUT_MS = 120_000;
@@ -522,14 +531,13 @@ export function createBroker(context: BrokerContext): Broker {
         }
         // Logged before any handler runs; unlogged, the approval counts for nothing.
         if (!append([answered])) return no(LOG_DENIED);
-        const stop = haltedNow();
-        if (stop !== undefined) return no("denied: " + stop);
         if (answer.answer !== "approved") {
-          const why =
-            answer.by === "cancelled"
-              ? "the ask was cancelled"
-              : "the owner did not approve";
-          return no("denied: " + what + rule + "; " + why);
+          const cancelled = answer.by === "cancelled";
+          const why = cancelled
+            ? "the ask was cancelled"
+            : "the owner did not approve";
+          const result = denied("denied: " + what + rule + "; " + why);
+          return { kind: "denied", result, cancelled };
         }
         return { kind: "run", verdict };
       }
@@ -558,6 +566,9 @@ export function createBroker(context: BrokerContext): Broker {
           });
       const ruled = await ruleOn(id, verdict, signal);
       if (ruled.kind === "denied") return ruled.result;
+      // N2: a halt during the await (another call, a handler) still stops this one.
+      const stop = haltedNow();
+      if (stop !== undefined) return denied("denied: " + stop);
       const action = ACTIONS.get(ruled.verdict.requested);
       if (action === undefined) {
         return denied("denied: no M1 handler for " + ruled.verdict.requested);
@@ -565,9 +576,9 @@ export function createBroker(context: BrokerContext): Broker {
       return action.handle(ruled.verdict.input, own, signal);
     },
     async acceptRing0(change, signal) {
-      if (halted !== undefined || ring0Asked) return false;
+      if (halted !== undefined || ring0Asked) return "denied";
       ring0Asked = true;
-      const { from, to, changed, ring0 } = change;
+      const { from, to, changed, ring0, note } = change;
       const verdict = evaluate(permission.policy, {
         action: "config.set",
         input: { setting: changed[0], value: ring0 },
@@ -576,6 +587,7 @@ export function createBroker(context: BrokerContext): Broker {
         extraRing0Paths: permission.ring0,
       });
       const context = [
+        ...(note === undefined ? [] : ["  " + displayText(note)]),
         "  Ring 0 settings changed: " + displayText(changed.join(", ")),
         "  Ring 0 digest: " + displayText(from) + " -> " + displayText(to),
       ];
@@ -586,7 +598,12 @@ export function createBroker(context: BrokerContext): Broker {
         context,
       );
       // Fails closed: only an approved always-ask accepts the change.
-      return ruled.kind === "run" && ruled.verdict.tier === "alwaysAsk";
+      if (ruled.kind === "denied") {
+        return ruled.cancelled === true ? "cancelled" : "denied";
+      }
+      const ok =
+        ruled.verdict.tier === "alwaysAsk" && haltedNow() === undefined;
+      return ok ? "approved" : "denied";
     },
   };
 }

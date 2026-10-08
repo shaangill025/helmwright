@@ -182,6 +182,11 @@ export interface RunHooks {
    * reason is kept, except that SANDBOX_CLEANUP_FAILED always wins (S6).
    */
   readonly halt: (reason: string) => void;
+  /**
+   * S2: aborts on the run's signal, or once `limits.timeoutMs` has passed since
+   * `run.started`: one deadline for setup (such as an ask) and the loop.
+   */
+  readonly signal: AbortSignal;
 }
 
 /** A set-up run: everything from `run.started` to `run.terminated`. */
@@ -310,6 +315,11 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     limits: { ...setup.limits },
     tools,
   });
+  const startedAt = performance.now();
+  const deadline = new AbortController();
+  const timer = setTimeout(() => {
+    deadline.abort();
+  }, setup.limits.timeoutMs);
   let result: LoopResult | undefined;
   const outcome = (terminal: Terminal, summary: string): RunOutcome => ({
     terminal,
@@ -329,6 +339,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   let thrown: { error: unknown } | undefined;
   const pending = new Set<Promise<unknown>>();
   try {
+    const signal = setup.signal;
     const connected = await setup.connect({
       emit: (type, payload) => {
         append(type, payload);
@@ -349,7 +360,12 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
           halted = reason;
         }
       },
+      signal:
+        signal === undefined
+          ? deadline.signal
+          : AbortSignal.any([signal, deadline.signal]),
     });
+    clearTimeout(timer);
     // Tracked so run.terminated waits for a call the loop stopped waiting for (SF-4).
     const executeTool: ExecuteTool = (call, signal) => {
       const running = connected(call, signal);
@@ -367,7 +383,16 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
         agentId: nodeId,
         messages: [first],
         tools,
-        limits: setup.limits,
+        // S2: what is left of the run's deadline after setup.
+        limits: {
+          ...setup.limits,
+          timeoutMs: Math.max(
+            1,
+            Math.floor(
+              setup.limits.timeoutMs - (performance.now() - startedAt),
+            ),
+          ),
+        },
         ...(setup.signal === undefined ? {} : { signal: setup.signal }),
       },
       {
@@ -390,6 +415,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     );
     derive(result.transcript.messages);
   } catch (error) {
+    clearTimeout(timer);
     thrown = { error };
   }
   const unconfirmed = !(await settled(pending, settleMs));
@@ -408,10 +434,22 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const failure = unconfirmed
     ? CLEANUP_UNCONFIRMED
     : (halted ?? message(logFailure) ?? also ?? message(thrown));
+  // S2: setup stopped by a cancel or the deadline is incomplete, not failed.
+  const early = !result && halted === undefined && logFailure === undefined;
+  const cancelled =
+    setup.signal?.aborted === true || thrown?.error instanceof CancelledError;
+  const timedOut = deadline.signal.aborted && setup.signal?.aborted !== true;
+  const reason = timedOut ? "timeout" : cancelled ? "cancelled" : undefined;
+  const stopped =
+    early && reason !== undefined
+      ? ({ kind: "incomplete", reason } as const)
+      : undefined;
   const done =
-    failure === undefined && result !== undefined
-      ? outcome(result.terminal, result.summary)
-      : failed(failure ?? "the run ended without a result");
+    stopped !== undefined
+      ? outcome(stopped, summarize(stopped, ""))
+      : failure === undefined && result !== undefined
+        ? outcome(result.terminal, result.summary)
+        : failed(failure ?? "the run ended without a result");
   try {
     append("run.terminated", { agentId: nodeId, ...done });
     return done;
@@ -461,8 +499,8 @@ export const RING0_NOT_APPROVED =
  * step, a Ring 0 config that differs from the last one accepted for the repo
  * (`ring0Status`) is asked (always-ask); unless approved the run fails with
  * RING0_NOT_APPROVED. An approval, or a first run on the defaults, logs
- * `config.accepted`; an unchanged config logs nothing more. The ask is bounded by
- * `limits.timeoutMs` and the run's signal.
+ * `config.accepted`; an unchanged config logs nothing more. The ask shares the
+ * run's deadline (`limits.timeoutMs`); a cancel during it ends the run incomplete.
  * @throws UsageError for an invalid task, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
@@ -538,7 +576,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       },
       engine,
       tools: BROKER_TOOLS,
-      connect: async ({ emit, emitAll, halt }) => {
+      connect: async ({ emit, emitAll, halt, signal }) => {
         let ring0: RunRing0;
         try {
           ring0 = runRing0(workspace, policy);
@@ -561,8 +599,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           ...{ image, workspace, workspaceRoot, halt },
           permission: { ...permission, agentId: nodeId },
         });
-        const repo = realpathSync(task.repo);
-        const status = ring0Status(log.events(), repo, config);
+        const repo = config.repoId;
+        const status = ring0Status(log, config);
         const accepted = (how: string) => {
           const { ring0Sha256 } = config.record;
           const settings = ring0SettingDigests(config.ring0);
@@ -570,18 +608,14 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         };
         if (status.kind === "default") accepted("default");
         if (status.kind === "changed") {
-          const timeout = AbortSignal.timeout(task.limits.timeoutMs);
-          const signal =
-            options.signal === undefined
-              ? timeout
-              : AbortSignal.any([options.signal, timeout]);
           const change = {
             ...{ from: status.from, to: config.record.ring0Sha256 },
             ...{ changed: status.changed, ring0: config.ring0 },
+            note: status.note,
           };
-          if (!(await broker.acceptRing0(change, signal))) {
-            throw new Error(RING0_NOT_APPROVED);
-          }
+          const answer = await broker.acceptRing0(change, signal);
+          if (answer === "cancelled") throw new CancelledError("cancelled");
+          if (answer !== "approved") throw new Error(RING0_NOT_APPROVED);
           accepted("approved");
         }
         return broker.executeTool;

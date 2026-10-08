@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Event } from "@helmwright/schema";
@@ -1222,6 +1223,46 @@ const RING0_END =
   "Approve config.set (always-ask.ring0-setting, alwaysAsk)? [v=view, y/N] ";
 const NOT_APPROVED = "Ring 0 configuration changed and was not approved";
 
+/** S3, N1: appends a row with a raw connection, as a forger could. */
+function rawAppend(type: string, payload: object): void {
+  const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+  try {
+    const next = "SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events";
+    const seq = Number(db.prepare(next).get()?.["n"]);
+    const at = "2026-10-07T00:00:00.000Z";
+    const row = [
+      seq,
+      `forged-${String(seq)}`,
+      type,
+      at,
+      JSON.stringify(payload),
+    ];
+    const insert =
+      "INSERT INTO events VALUES (?, 1, ?, 'g', 'run-forged', 'n', ?, ?, ?)";
+    db.prepare(insert).run(...row);
+  } finally {
+    db.close();
+  }
+}
+
+/** A turn whose execute call uses the reserved Ring 0 call ID. */
+function reservedTurns(): string {
+  const turns = join(tmp, "reserved.turns.json");
+  const argv = ["sh", "-c", "echo hi > a.txt"];
+  writeFileSync(
+    turns,
+    JSON.stringify([
+      {
+        text: "Writing a.txt with the reserved ID.",
+        toolCalls: [{ id: RING0_ID, name: "execute", input: { argv } }],
+        claimsDone: false,
+      },
+      { text: "It was refused.", toolCalls: [], claimsDone: true },
+    ]),
+  );
+  return turns;
+}
+
 /** Commits a config whose policy adds `paths` to the default Ring 0 paths. */
 function commitStrict(version: string, paths: readonly string[]): void {
   const base = DEFAULT_PERMISSION_POLICY;
@@ -1385,6 +1426,24 @@ describe("helmwright.config.json (e2e)", () => {
     { timeout: T },
     () => {
       const base = DEFAULT_PERMISSION_POLICY;
+      // N3: a Ring 0 change too large to show in full could never be approved.
+      const many = <T>(n: number, f: (s: string) => T) =>
+        Array.from({ length: n }, (_, i) =>
+          f("x" + String(i).padStart(4, "0").padEnd(120, "a")),
+        );
+      const id = (s: string) =>
+        [s.slice(0, 32), "b", "c", "d"].map((c) => c.padEnd(32, "a")).join(".");
+      const deny = { action: "deploy", scope: "any", tier: "deny" };
+      const big = {
+        ...{ ...base, version: "big-1" },
+        ring0Paths: [...base.ring0Paths, ...many(230, (s) => s + "/**")],
+        ring0Settings: [...base.ring0Settings, ...many(50, (s) => s)],
+        rules: [...base.rules, ...many(230, (s) => ({ ...deny, id: id(s) }))],
+      };
+      commitConfig((path) => {
+        writeFileSync(path, JSON.stringify({ permissions: { policy: big } }));
+      });
+      expectConfigRefused("Ring 0 configuration is too large to approve");
       const lax = {
         ...base,
         version: "lax-1",
@@ -1428,6 +1487,41 @@ describe("helmwright.config.json (e2e)", () => {
         terminated: true,
         permissionFaults: [],
       });
+
+      // S3: a corrupt row of another type is never read at run start.
+      rawAppend("bad", {});
+      const forged = runTask("write-file.turns.json");
+      expect(forged.out.terminal, forged.stderr).toEqual({
+        kind: "failed",
+        error: NOT_APPROVED,
+      });
+    },
+  );
+
+  it.skipIf(NO_PTY)(
+    "ends a run cancelled at the Ring 0 prompt as incomplete (S2)" +
+      (NO_PTY ? " [skipped: script(1) not found]" : ""),
+    { timeout: T },
+    async () => {
+      commitStrict("strict-1", ["docs/**"]);
+      const open = windowOpen(RING0_END, 1);
+      let sent = false;
+      const { status, shown, out } = await runAtTty(
+        "write-file.turns.json",
+        (text, type) => {
+          if (!sent && open(text)) {
+            sent = true;
+            type("\u0003");
+          }
+        },
+      );
+      expect(status, shown).toBe(2);
+      expect(out.terminal).toEqual({ kind: "incomplete", reason: "cancelled" });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      expect(
+        events.find((e) => e.type === "permission.answered")?.payload,
+      ).toMatchObject({ by: "cancelled" });
+      expect(events.some((e) => e.type === "config.accepted")).toBe(false);
     },
   );
 
@@ -1440,7 +1534,7 @@ describe("helmwright.config.json (e2e)", () => {
       writeFileSync(join(repo, "docs", "x.md"), "keep\n");
       commitStrict("strict-1", ["docs/**"]);
       const { drive, pages } = viewThenApprove(RING0_END);
-      const tty = await runAtTty("write-file.turns.json", drive);
+      const tty = await runAtTty(reservedTurns(), drive);
       expect(tty.status, tty.shown).toBe(0);
       expect(pages(), tty.shown).toBeGreaterThan(0);
       const asked = logEvents().filter((e) => e.runId === tty.out.runId);
@@ -1458,7 +1552,7 @@ describe("helmwright.config.json (e2e)", () => {
       const [accepted, ...more] = of(asked, "config.accepted");
       expect(more).toEqual([]);
       expect(accepted).toMatchObject({
-        repo,
+        repo: join(repo, ".git"),
         ring0Sha256: to,
         how: "approved",
       });
@@ -1466,7 +1560,12 @@ describe("helmwright.config.json (e2e)", () => {
         "intake.classification",
         "permissions",
       ]);
-      expect(asked.find((e) => e.type === "loop.tool.called")).toBeDefined();
+      // The approval is not the engine's: its call with the reserved ID is refused.
+      expect(of(asked, "permission.rejected")).toMatchObject([
+        { toolCallId: RING0_ID, ruleId: "schema.duplicate-call-id" },
+      ]);
+      const ttyWorkspace = join(stateDir, "workspaces", tty.out.runId);
+      expect(existsSync(join(ttyWorkspace, "a.txt"))).toBe(false);
       expectReplayMatches(tty.out.runId, asked);
 
       // The same config is not asked again; the stricter policy applies (AC4).
@@ -1533,6 +1632,36 @@ describe("helmwright.config.json (e2e)", () => {
       expect(of(ruled, "permission.evaluated")).toMatchObject([
         { toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
       ]);
+
+      // S1: a linked worktree of the repo shares its baseline (strict-1 accepted).
+      const linked = join(tmp, "linked");
+      git(
+        "-C",
+        repo,
+        "worktree",
+        "add",
+        "--quiet",
+        "--detach",
+        linked,
+        "HEAD~1",
+      );
+      const task = writeTask("write-file.turns.json", LIMITS, linked);
+      const shared = cli("run", task, "--state-dir", stateDir);
+      expect(shared.status, shared.stderr).toBe(0);
+      // Removing the config is a change; a clone in a new state dir has no
+      // baseline, but the file has history, so the defaults are asked too.
+      commitConfig(() => undefined);
+      expect(runTask("write-file.turns.json").out.terminal).toEqual({
+        kind: "failed",
+        error: NOT_APPROVED,
+      });
+      const clone = join(tmp, "clone");
+      git("clone", "--quiet", repo, clone);
+      const cloned = writeTask("write-file.turns.json", LIMITS, clone);
+      const fresh = cli("run", cloned, "--state-dir", join(tmp, "state2"));
+      expect(JSON.parse(fresh.stdout)).toMatchObject({
+        terminal: { kind: "failed", error: NOT_APPROVED },
+      });
     },
   );
 
@@ -1546,7 +1675,10 @@ describe("helmwright.config.json (e2e)", () => {
       const config = events[0]?.payload["config"] as Record<string, string>;
       expect(events[1]).toMatchObject({
         type: "config.accepted",
-        payload: { repo, ring0Sha256: config["ring0Sha256"], how: "default" },
+        payload: {
+          ...{ repo: join(repo, ".git"), how: "default" },
+          ring0Sha256: config["ring0Sha256"],
+        },
       });
       expect(events.some((e) => e.payload["toolCallId"] === RING0_ID)).toBe(
         false,
@@ -1554,25 +1686,7 @@ describe("helmwright.config.json (e2e)", () => {
       expectReplayMatches(first.out.runId, events);
 
       // An engine call with the reserved ID never inherits a Ring 0 approval.
-      const turns = join(tmp, "reserved.turns.json");
-      writeFileSync(
-        turns,
-        JSON.stringify([
-          {
-            text: "Writing a.txt with the reserved ID.",
-            toolCalls: [
-              {
-                id: RING0_ID,
-                name: "execute",
-                input: { argv: ["sh", "-c", "echo hi > a.txt"] },
-              },
-            ],
-            claimsDone: false,
-          },
-          { text: "It was refused.", toolCalls: [], claimsDone: true },
-        ]),
-      );
-      const second = runTask(turns);
+      const second = runTask(reservedTurns());
       expect(second.status, second.stderr).toBe(0);
       const later = logEvents().filter((e) => e.runId === second.out.runId);
       expect(later.filter((e) => e.type === "config.accepted")).toEqual([]);

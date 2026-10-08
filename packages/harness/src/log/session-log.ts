@@ -47,6 +47,10 @@ export type AppendInput = Omit<Event, "seq" | "schemaVersion">;
 export interface EventsQuery {
   readonly runId?: string;
   readonly fromSeq?: number;
+  /** Only events of this type (not with `runId`); rows of other types are never read. */
+  readonly type?: string;
+  /** With `type`: only events whose `payload.repo` is this string. */
+  readonly repo?: string;
 }
 
 export type EventIssue = NonNullable<typeof validateEvent.errors>[number];
@@ -210,6 +214,9 @@ function createLog(db: DatabaseSync): SessionLog {
   const byRun = db.prepare(
     `SELECT ${COLUMNS} FROM events WHERE run_id = ? AND seq >= ? ORDER BY seq`,
   );
+  const byType = db.prepare(
+    `SELECT ${COLUMNS} FROM events WHERE type = ? AND (? IS NULL OR json_extract(payload, '$.repo') = ?) AND seq >= ? ORDER BY seq`,
+  );
   const lastSeq = (): number | undefined => {
     const seq = maxSeq.get()?.["seq"];
     return seq === null || seq === undefined ? undefined : Number(seq);
@@ -282,10 +289,16 @@ function createLog(db: DatabaseSync): SessionLog {
       if (!Number.isSafeInteger(fromSeq) || fromSeq < 0) {
         throw new RangeError(`fromSeq must be a non-negative safe integer`);
       }
+      const { runId, type, repo = null } = query;
+      if (type !== undefined && runId !== undefined) {
+        throw new RangeError("type and runId cannot be combined");
+      }
       const rows =
-        query.runId === undefined
-          ? all.all(fromSeq)
-          : byRun.all(query.runId, fromSeq);
+        type !== undefined
+          ? byType.all(type, repo, repo, fromSeq)
+          : runId === undefined
+            ? all.all(fromSeq)
+            : byRun.all(runId, fromSeq);
       return rows.map(toEvent);
     },
     lastSeq,
