@@ -87,7 +87,9 @@ function run(
 ) {
   return executeRun({
     ...{ log: runLog, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
-    ...{ title: "task", limits: LIMITS, started: {}, engine },
+    ...{ title: "task", limits: LIMITS, engine },
+    // S5: replay compares floor.checked's base commit with this one.
+    started: { baseCommit: "a".repeat(40) },
     tools: [{ name: "t", description: "test tool" }],
     connect,
     checkDesync,
@@ -544,6 +546,39 @@ describe("executeRun's sensor floor (B3-2)", () => {
     });
     expect(floor).not.toHaveBeenCalled();
     expect(types()).not.toContain("floor.checked");
+  });
+
+  it("faults a floor.checked for another base commit (S5)", async () => {
+    await run(mutatingEngine(0).engine, true, log, undefined, {
+      floor: () => floorChecked("b".repeat(40), oid, []),
+    });
+    const events = log.events({ runId: "run-1" });
+    const seq = String(events.find((e) => e.type === "floor.checked")?.seq);
+    expect(floorFaults(events)).toEqual([
+      "seq " + seq + ": floor.checked base commit is not run.started's",
+    ]);
+  });
+
+  it("faults an unknown rules version and a writer after floor.checked (S5)", async () => {
+    await run(mutatingEngine(0).engine, true, log, undefined, { floor: pass });
+    const events = log.events({ runId: "run-1" });
+    const at = events.findIndex((e) => e.type === "floor.checked");
+    const floor = events[at];
+    const tool = events.find((e) => e.type === "loop.tool.called");
+    if (floor === undefined || tool === undefined) throw new Error("no event");
+    const unknown = {
+      ...floor,
+      payload: { ...floor.payload, rules: "floor-99" },
+    };
+    expect(floorFaults([...events.slice(0, at), unknown])).toEqual([
+      "seq " + String(floor.seq) + ": floor.checked rules version is not known",
+    ]);
+    for (const type of ["loop.tool.called", "message.appended"]) {
+      const late = { ...tool, type, seq: floor.seq + 1 };
+      expect(floorFaults([...events.slice(0, at + 1), late])).toEqual([
+        "seq " + String(late.seq) + ": " + type + " after floor.checked",
+      ]);
+    }
   });
 
   it("faults a completed run with no passing floor.checked", async () => {

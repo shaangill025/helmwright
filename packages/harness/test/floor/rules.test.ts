@@ -34,6 +34,19 @@ const MARKERS = [
   "/* node:" + "coverage" + IGNORE + " next */",
   "/* node:" + "coverage disable */",
   "// prettier-" + IGNORE.trim(),
+  // N1: other tools' inline suppressions.
+  "// biome-" + "ignore lint/style: x",
+  "// oxlint-" + "disable-next-line",
+  "x = 1  # no" + "qa: E501",
+  "x = 1  #no" + "qa",
+  "x: int = y  # type" + ": ignore[assignment]",
+  "x()  # pylint" + ": disable=foo",
+  "x()  # pylint" + ":disable=foo",
+  "x() #no" + "sec",
+  "x() // #no" + "sec G104",
+  "x() //no" + "lint:errcheck",
+  "x(); // NO" + "SONAR",
+  "/* cspell" + ":disable */",
 ];
 const D = ".";
 const TEST_FORMS = [
@@ -55,6 +68,16 @@ const TEST_FORMS = [
     "f" + "it",
     "f" + "describe",
   ].map((call) => call + ' ("x", () => {});'),
+  // S1: the options-object form, Jest's failing and Go's skips.
+  ...["skip", "only", "todo", "fails"].map(
+    (key) => 'it("x", { ' + key + ": true }, () => {});",
+  ),
+  'test("x", {timeout: 5,' + "skip" + ":ci}, () => {});",
+  'describe("x", { "' + "only" + '": true }, () => {});',
+  "it" + D + "failing" + '("x", () => {});',
+  "t" + D + "SkipNow" + "()",
+  "t" + D + "Skipf" + '("x %d", 1)',
+  "t" + D + "Skip" + '("x")',
 ];
 const PROTECTED = [
   "packages/harness/test/permission/**",
@@ -107,6 +130,9 @@ describe("suppression.added", () => {
     "it" + D + "skipped" + "(1);",
     "pro" + "fit" + '("x");',
     "this" + D + "fit" + '("x");',
+    'it("x", { ' + "skip" + ": false }, () => {});",
+    "const o = { timeout: 5, retry: 2 };",
+    "skip" + "ped = 1; # no" + "qatar",
   ])("ignores %j", (line) => {
     expect(rules(change("test/a.ts", "", lines(line)))).toEqual([]);
   });
@@ -142,6 +168,28 @@ describe("suppression.added", () => {
       ]);
     }
   });
+
+  it.each([
+    'import { it as base } from "vitest";',
+    "import { test } from 'vit" + "est/x';",
+    'import test from "node:test";',
+    'const { it } = require("vit' + 'est");',
+    'import { it } from "@jest/globals";',
+    'import { it } from "mocha";',
+    'const m = await import("node:test");',
+  ])("finds test forms in a file that imports a framework (S2): %j", (from) => {
+    const text = lines(from, "export const it = base" + D + "skip" + ";");
+    expect(
+      floorFindings([change("src/testkit.ts", "", text)], PROTECTED).map(
+        (f) => [f.rule, f.line],
+      ),
+    ).toEqual([["suppression.added", 2]]);
+  });
+
+  it("ignores test forms in a file that names a framework only in text", () => {
+    const text = lines('const s = "vitest";', "x" + D + "skip" + "(1);");
+    expect(rules(change("src/a.ts", "", text))).toEqual([]);
+  });
 });
 
 describe("config.changed", () => {
@@ -157,7 +205,13 @@ describe("config.changed", () => {
     biome.json biome.jsonc Makefile a/justfile pyproject.toml a/setup.cfg tox.ini
     pytest.ini a/conftest.py .mocharc.yml ava.config.js playwright.config.ts .swcrc
     turbo.json nx.json deno.json deno.jsonc bunfig.toml .tool-versions mise.toml
-    GNUmakefile a/rules.mk Containerfile .dockerignore`.split(/\s+/),
+    GNUmakefile a/rules.mk Containerfile .dockerignore .lintstagedrc
+    .lintstagedrc.json lint-staged.config.js .simple-git-hooks.cjs simple-git-hooks.json
+    commitlint.config.ts .mise.toml .trivyignore compose.yaml compose.dev.yml
+    docker-compose.yml docker-compose.override.yaml .gitlab-ci.yml Jenkinsfile
+    .devcontainer/devcontainer.json .circleci/config.yml .mise/tasks/x`.split(
+      /\s+/,
+    ),
   )("finds %j added, changed or deleted", (path) => {
     // A root-level name may also be a floor Ring 0 path (protected.changed, below).
     const config = (c: FloorChange) =>
@@ -192,9 +246,8 @@ describe("package.changed", () => {
   it.each(
     `pnpm overrides resolutions devEngines packageManager eslintConfig prettier vitest
     imports exports main types typings typesVersions type workspaces engines c8 nyc
-    jest mocha ava lint-staged simple-git-hooks husky module browser config bin`.split(
-      /\s+/,
-    ),
+    jest mocha ava lint-staged simple-git-hooks husky module browser config bin
+    babel volta eslintIgnore browserslist tsup ts-node tap xo`.split(/\s+/),
   )("finds a change to %j", (key) => {
     expect(check(base, pkg({ ...base, [key]: { a: "1" } }))).toEqual([
       ["package.changed", key + " changed"],
@@ -349,7 +402,7 @@ describe("findings", () => {
 
   it("builds a valid floor.checked, truncated past 256 findings", () => {
     const tree = "c".repeat(40);
-    expect(FLOOR_RULES_VERSION).toBe("floor-2");
+    expect(FLOOR_RULES_VERSION).toBe("floor-3");
     expect(floorChecked("a".repeat(40), tree, [])).toEqual({
       kind: "floor.checked",
       rules: FLOOR_RULES_VERSION,

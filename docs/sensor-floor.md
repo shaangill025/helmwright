@@ -14,6 +14,10 @@ runs vitest directly with an explicit config. Base-pinned tool runs on candidate
 trees move to the B15 evaluator (OQ-B3-1, 2026-10-07). Replay faults a completed run without a passing
 `floor.checked`, so logs from before B3-2 fail replay; this is intended. B15 contract: the commit step
 rebuilds the candidate tree and commits only if its OID equals the logged `floor.checked.candidateTree`.
+B3-4 (`floor-3`) notes: the floor trusts the host user's global git config. B15 runs the tools on a clean
+export of `candidateTree` and compares the collected, passed and skipped test totals of base and candidate.
+Ignored build caches (`node_modules/.bin`, `*.tsbuildinfo`, `.eslintcache`) are not floor findings for that
+reason; ignored agent files (`.claude/`, `CLAUDE.md`, `AGENTS.md`) and ignored config files are.
 
 History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
 `pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.
