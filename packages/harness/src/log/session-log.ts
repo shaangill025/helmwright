@@ -2,6 +2,7 @@ import { chmodSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { validateEvent, type Event } from "@helmwright/schema";
+import { checkObjectEvent } from "../objects/events.ts";
 import { MESSAGE_APPENDED, isStorableMessagePayload } from "./messages.ts";
 
 /** `PRAGMA user_version` of a session log this code can read and write. */
@@ -76,8 +77,20 @@ const LOSSY_MESSAGE: EventIssue = {
   message: "must be a message that survives a JSON round trip unchanged",
 };
 
+/** B5-2 (OD-3): an event that checkObjectEvent refuses, on append and on every read. */
+const objectIssue = (reason: string): EventIssue => ({
+  instancePath: "",
+  schemaPath: "#",
+  keyword: "objectEvent",
+  params: {},
+  message: reason,
+});
+
 export interface SessionLog {
-  /** Validates, assigns the next gap-free seq and stores the event atomically. */
+  /**
+   * Validates (also with checkObjectEvent), assigns the next gap-free seq and stores
+   * the event atomically.
+   */
   append(input: AppendInput): Event;
   /**
    * Runs `fn` in one write transaction: all its appends commit or none do.
@@ -252,6 +265,10 @@ function createLog(db: DatabaseSync): SessionLog {
         ) {
           throw new EventValidationError([LOSSY_MESSAGE]);
         }
+        const refused = checkObjectEvent(e);
+        if (refused !== undefined) {
+          throw new EventValidationError([objectIssue(refused)]);
+        }
         const payload = JSON.stringify(e.payload);
         insert.run(
           seq,
@@ -308,7 +325,10 @@ function createLog(db: DatabaseSync): SessionLog {
   };
 }
 
-/** Rebuilds and re-validates a stored row, so a raw writer cannot smuggle in a bad event. */
+/**
+ * Rebuilds and re-validates a stored row, with checkObjectEvent, so a raw writer cannot
+ * smuggle in a bad event.
+ */
 function toEvent(row: Record<string, SQLOutputValue>): Event {
   const text = row["payload"];
   const payload: unknown = typeof text === "string" ? JSON.parse(text) : text;
@@ -323,10 +343,13 @@ function toEvent(row: Record<string, SQLOutputValue>): Event {
     at: row["at"],
     payload,
   };
-  if (!validateEvent(candidate)) {
-    throw new Error(
-      `session log: corrupt event at seq ${String(row["seq"])}: ${new EventValidationError(validateEvent.errors ?? []).message}`,
+  const corrupt = (issues: readonly EventIssue[]) =>
+    new Error(
+      `session log: corrupt event at seq ${String(row["seq"])}: ${new EventValidationError(issues).message}`,
     );
-  }
+  if (!validateEvent(candidate)) throw corrupt(validateEvent.errors ?? []);
+  // B5-2 (OD-3): a raw-inserted refused event fails every read that includes it.
+  const refused = checkObjectEvent(candidate);
+  if (refused !== undefined) throw corrupt([objectIssue(refused)]);
   return candidate;
 }

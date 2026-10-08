@@ -193,6 +193,19 @@ export {
   sortFindings,
 } from "./floor/rules.ts";
 export { FloorError, floorChecked, floorFaults } from "./floor/events.ts";
+export {
+  OBJECT_EVENT_TYPES,
+  ObjectEventError,
+  artifactRecorded,
+  checkObjectEvent,
+  createdRecord,
+  decisionFootprintRecorded,
+  decisionOpened,
+  decisionOutcomeSignalled,
+  footprintAddress,
+  runRecorded,
+  taskCreated,
+} from "./objects/events.ts";
 export type { CandidateChanges, FloorLimits, FloorRepo } from "./floor/tree.ts";
 export {
   FLOOR_LIMITS,
