@@ -1,6 +1,7 @@
 import type { Event } from "@helmwright/schema";
 import { describe, expect, it } from "vitest";
-import { permissionFaults } from "../../src/index.ts";
+import { createHash } from "node:crypto";
+import { canonicalJson, permissionFaults } from "../../src/index.ts";
 
 const SHA = "a".repeat(64);
 type Payload = Record<string, unknown>;
@@ -334,6 +335,7 @@ describe("permissionFaults (SF3)", () => {
       {
         ...evaluated("alwaysAsk", id),
         ...{ requested: "config.set", ruleId: "always-ask.ring0-setting" },
+        target: { kind: "setting", value: "permissions" },
       },
       { ...asked("tty", true), toolCallId: id },
     ];
@@ -372,6 +374,11 @@ describe("permissionFaults (SF3)", () => {
     expect(
       permissionFaults(run(accepted("default"), accepted("default"))),
     ).toEqual(["seq 1: more than one config.accepted in one run"]);
+    // B10-2 S3: the ruling is on a Ring 0 setting.
+    const other = { ...ask[0], target: { kind: "setting", value: "spend" } };
+    expect(permissionFaults(run(other, ask[1] ?? {}, ok, accepted()))).toEqual([
+      `seq 3: ${forged}`,
+    ]);
     const ran = { ...called("ok", id), name: "config.set" };
     expect(permissionFaults(run(...ask, ok, ran))).toEqual([
       "seq 3: tool call ran with the reserved Ring 0 config ID",
@@ -424,11 +431,24 @@ describe("permissionFaults (SF3)", () => {
       kind: "intake.overridden",
       from,
       to,
+      reason: "why",
+      scopeSha256,
     });
+    const scopeSha256 = SHA;
+    const inputSha256 = (from: string, to: string, reason = "why") =>
+      createHash("sha256")
+        .update(
+          canonicalJson({
+            setting: "intake.classification",
+            value: { from, to, reason, scopeSha256 },
+          }),
+        )
+        .digest("hex");
     const ruling = {
       ...evaluated("alwaysAsk", ID),
       requested: "config.set",
       ruleId: "always-ask.ring0-setting",
+      inputSha256: inputSha256("bounded", "chore"),
     };
     const ask = [ruling, { ...asked(), toolCallId: ID }];
     const approve = answered({ toolCallId: ID });
@@ -477,5 +497,22 @@ describe("permissionFaults (SF3)", () => {
         run(classified("bounded"), ...other, overridden("bounded", "chore")),
       ),
     ).toEqual([`seq 4: ${NO_APPROVAL}`]);
+    // S3: the approval binds the value asked: architectural -> bounded is not -> chore.
+    const bounded = {
+      ...ruling,
+      inputSha256: inputSha256("architectural", "bounded"),
+    };
+    expect(
+      permissionFaults(
+        run(
+          ...[classified("architectural"), bounded, ask[1] ?? {}, approve],
+          overridden("architectural", "chore"),
+        ),
+      ),
+    ).toEqual([`seq 4: ${NO_APPROVAL}`]);
+    // N1: one classification per run.
+    expect(
+      permissionFaults(run(classified("chore"), classified("chore"))),
+    ).toEqual(["seq 1: more than one intake.classified in one run"]);
   });
 });

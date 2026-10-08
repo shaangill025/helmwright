@@ -1,4 +1,6 @@
-import type { Event } from "@helmwright/schema";
+import { createHash } from "node:crypto";
+import { RING0_CONFIG_KEYS, type Event } from "@helmwright/schema";
+import { canonical } from "./policy.ts";
 import { INTAKE_OVERRIDE_CALL_ID, RING0_CONFIG_CALL_ID } from "./events.ts";
 
 /** Tiers whose ruling is followed by an ask. */
@@ -24,6 +26,21 @@ const isRunStartRuling = (payload: Event["payload"]): boolean =>
   payload["requested"] === "config.set" &&
   payload["tier"] === "alwaysAsk" &&
   payload["ruleId"] === "always-ask.ring0-setting";
+
+/** S3: whether a Ring 0 ask's ruling is on a Ring 0 setting (the shown target). */
+function onRing0Setting(target: unknown): boolean {
+  if (typeof target !== "object" || target === null) return false;
+  const { kind, value } = target as Record<string, unknown>;
+  return kind === "setting" && RING0_CONFIG_KEYS.some((key) => key === value);
+}
+
+/** S3: the inputSha256 of the ask that may approve `override`, as the broker rules it. */
+function overrideInputSha256(override: Event["payload"]): string {
+  const { from, to, reason, scopeSha256 } = override;
+  const value = { from, to, reason, scopeSha256 };
+  const input = { setting: "intake.classification", value };
+  return createHash("sha256").update(canonical(input), "utf8").digest("hex");
+}
 
 /** What, if anything, lets a tool call's handler run now. */
 type Grant = "allow" | "approved" | "none";
@@ -54,8 +71,8 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  *   and uses it up (N1); no `loop.tool.called` with that ID ran;
  * - B10-2: each `intake.overridden` is `from` the run's `intake.classified` class
  *   (S3); one that is not upward follows a fault-free approval of the same ruling on
- *   the INTAKE_OVERRIDE_CALL_ID ask and uses it up; no `loop.tool.called` with that
- *   ID ran.
+ *   the INTAKE_OVERRIDE_CALL_ID ask, whose input is this override (S3), and uses it
+ *   up; no `loop.tool.called` with that ID ran; N1: one `intake.classified` per run.
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -75,7 +92,9 @@ export function permissionFaults(events: readonly Event[]): string[] {
   let ring0Ruled = false;
   /** B10-2: the run's intake class and its ruling on the reserved override ID. */
   let intakeClass: unknown;
+  let classifiedSeen = false;
   let overrideRuled = false;
+  let overrideInput: unknown;
   let acceptedSeen = false;
   for (const [i, { seq, type, payload }] of events.entries()) {
     const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
@@ -90,9 +109,11 @@ export function permissionFaults(events: readonly Event[]): string[] {
     ) {
       if (type === "permission.evaluated") {
         if (key === RING0_CONFIG_CALL_ID)
-          ring0Ruled = isRunStartRuling(payload);
+          ring0Ruled =
+            isRunStartRuling(payload) && onRing0Setting(payload["target"]);
         if (key === INTAKE_OVERRIDE_CALL_ID) {
           overrideRuled = isRunStartRuling(payload);
+          overrideInput = payload["inputSha256"];
         }
         if (key !== undefined && evaluatedIds.has(key)) {
           fault("more than one permission.evaluated for one tool call");
@@ -163,6 +184,8 @@ export function permissionFaults(events: readonly Event[]): string[] {
       }
       grants.set(RING0_CONFIG_CALL_ID, "none");
     } else if (type === "intake.classified") {
+      if (classifiedSeen) fault("more than one intake.classified in one run");
+      classifiedSeen = true;
       intakeClass = payload["class"];
     } else if (type === "intake.overridden") {
       const { from, to } = payload;
@@ -175,7 +198,8 @@ export function permissionFaults(events: readonly Event[]): string[] {
         continue;
       if (
         grants.get(INTAKE_OVERRIDE_CALL_ID) !== "approved" ||
-        !overrideRuled
+        !overrideRuled ||
+        overrideInput !== overrideInputSha256(payload)
       ) {
         fault("downward intake.overridden without an approval of its ask");
       }

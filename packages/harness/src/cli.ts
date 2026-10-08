@@ -126,14 +126,16 @@ async function main(args: readonly string[]): Promise<number> {
       stateDir,
       signal: controller.signal,
       ...override,
-      onClassified: ({ class: cls, reasons, friction }) => {
-        const why = reasons.map(({ rule, entries }) =>
-          entries.length === 0 ? rule : rule + ": " + entries.join(", "),
-        );
-        const line = cls + " (" + why.join("; ") + ") friction ";
-        console.error(
-          "helmwright: intake " + displayText(line + friction.intensity),
-        );
+      onIntake: (shown) => {
+        let line = "override: " + shown.class;
+        if (shown.kind === "classified") {
+          const why = shown.reasons.map(({ rule, entries }) =>
+            entries.length === 0 ? rule : rule + ": " + entries.join(", "),
+          );
+          line = shown.class + " (" + why.join("; ") + ")";
+        }
+        line += " friction " + shown.friction.intensity;
+        console.error("helmwright: intake " + displayText(line));
       },
       ...(present
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
