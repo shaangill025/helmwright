@@ -117,7 +117,11 @@ function checkedRow(
   return record;
 }
 
-/** The valid record of `row` that agrees with its columns, or undefined. */
+/**
+ * The valid record of `row` that agrees with its columns and is stored as its canonical
+ * JSON (so key order, spacing, number form, escapes or a repeated key cannot hide an
+ * edit from a reader of the text), or undefined.
+ */
 function rowRecord(
   row: Record<string, SQLOutputValue>,
 ): ObjectRecord | undefined {
@@ -129,6 +133,7 @@ function rowRecord(
     return undefined;
   }
   return validateObjectRecord(record) &&
+    text === canonicalJson(record) &&
     record.id === row["id"] &&
     record.kind === row["kind"] &&
     record.ring === row["ring"] &&

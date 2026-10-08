@@ -159,13 +159,17 @@ function rebuild(stateDir: string): string {
       log.close();
     }
   } catch (error) {
+    // Only a log that fails closed gets the hint; a lock or a missing file keeps its text.
+    const message = errorMessage(error);
+    if (!BAD_EVENT.test(message)) throw error;
     throw new Error(
       "rebuild refused (see inspect; until SIG a bad event needs a new state dir): " +
-        errorMessage(error),
+        message,
       { cause: error },
     );
   }
 }
+const BAD_EVENT = /(?:corrupt|cannot apply) event at seq /;
 
 async function main(args: readonly string[]): Promise<number> {
   try {

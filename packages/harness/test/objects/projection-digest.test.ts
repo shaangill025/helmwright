@@ -197,6 +197,30 @@ describe("projection digest and verifyProjections (B5-3b)", () => {
     expect(check.storedDigest).not.toBe(digest);
   });
 
+  it("finds a row that keeps its value but not its canonical text", () => {
+    seed();
+    const digest = log.verifyProjections().rebuiltDigest;
+    const record = log.object("task-1");
+    const text = JSON.stringify(record);
+    for (const edited of [
+      JSON.stringify(record, null, 2),
+      text.replace('"text":', '"text":"EVIL","text":'),
+      text.replace('"createdSeq":0', '"createdSeq":0.0'),
+    ]) {
+      raw((db) => {
+        db.prepare("UPDATE objects SET record = ? WHERE id = 'task-1'").run(
+          edited,
+        );
+      }, true);
+      expect(log.verifyProjections()).toMatchObject({
+        match: false,
+        differingIds: ["task-1"],
+      });
+      expect(() => log.object("task-1")).toThrow("corrupt object row task-1");
+      expect(log.rebuildProjections()).toBe(digest);
+    }
+  });
+
   it("finds a stale projection: a valid event inserted raw", () => {
     seed();
     expect(log.verifyProjections().match).toBe(true);
@@ -437,5 +461,12 @@ describe("inspect and rebuild through the real CLI (B5-3b)", () => {
     const missing = cli("inspect", "--state-dir", join(dir, "none"));
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain("no session log at");
+    // Not a bad event: no "new state dir" hint.
+    const gone = cli("rebuild", "--state-dir", join(dir, "none"));
+    expect([gone.status, gone.stderr.includes("rebuild refused")]).toEqual([
+      1,
+      false,
+    ]);
+    expect(gone.stderr).toContain("no session log at");
   });
 });
