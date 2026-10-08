@@ -14,8 +14,8 @@ runs vitest directly with an explicit config. Base-pinned tool runs on candidate
 trees move to the B15 evaluator (OQ-B3-1, 2026-10-07). Replay faults a completed run without a passing
 `floor.checked`, so logs from before B3-2 fail replay; this is intended. B15 contract: the commit step
 rebuilds the candidate tree and commits only if its OID equals the logged `floor.checked.candidateTree`.
-B3-4 (`floor-3`) notes: the floor trusts the host user's global git config. B15 runs the tools on a clean
-export of `candidateTree` and compares the collected, passed and skipped test totals of base and candidate.
+B3-4 and B3-5 (`floor-3`, `floor-4`) notes: the floor trusts the host user's global git config.
+B15 runs the tools on a clean export of `candidateTree` and compares the collected, passed and skipped test totals of base and candidate.
 Ignored build caches (`node_modules/.bin`, `*.tsbuildinfo`, `.eslintcache`) are not floor findings for that
 reason; ignored agent files (`.claude/`, `CLAUDE.md`, `AGENTS.md`) and ignored config files are. Test forms
 count outside a test path only in a code file that imports a test framework directly, so a local re-export is
@@ -25,7 +25,11 @@ Any tracked add, change or delete of a `.claude/` path, `CLAUDE.md`, `AGENTS.md`
 `config.changed`, even an owner-approved one (owner, 2026-10-08). Known misses of the per-line rules, with
 the B15 test totals as the backstop: a skip name built from strings or Unicode escapes, a comment in a member
 access on a line whose strings the one-line scan misreads (a multi-line or nested template, JSX text, a `/*` in
-a regex), a truthy number as a skip value, retries, and runner forms not listed.
+a regex), a truthy number as a skip value, retries, and runner forms not listed. `floor-4` (B3-5) adds Python's
+in-body skips, Mocha's `context` forms, Jasmine's `pending`, Playwright's `test.fail`, a member access with one
+space after the dot, PEP 614 decorators, CR, U+2028 and U+2029 as line ends, the jest, tap, uvu, jasmine, qunit
+and chai imports and `.vue`, `.svelte` and `.astro` files. A closed block comment without a `*` inside counts as a
+space around a kept options value; any other comment there is a finding (fail closed).
 
 History: the change shipped in two PRs. CI1a (#20) added `pull_request_target`; CI1b removed
 `pull_request` from `sensors.yml`, so a PR no longer gets same-name scanning runs from its own copy.

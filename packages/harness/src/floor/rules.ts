@@ -15,7 +15,7 @@ import {
  * protected path is a finding, even an owner-approved one (OQ-B3-3). A change to a rule or
  * list needs a new version.
  */
-export const FLOOR_RULES_VERSION = "floor-3";
+export const FLOOR_RULES_VERSION = "floor-4";
 
 /** One path that differs between the base commit and the candidate tree. */
 export interface FloorChange {
@@ -59,46 +59,71 @@ const CALLS = [
   ...["skipif", "runif", "failing", "skipnow", "skipf", "todoif"],
   // pytest.mark.xfail, unittest's expectedFailure and skipUnless, Playwright's fixme.
   ...["xfail", "expectedfailure", "skipunless", "fixme"],
+  // unittest's skipTest and SkipTest, pytest's importorskip.
+  ...["skiptest", "importorskip"],
 ].join("|");
+/** A closed block comment with no `*` inside, matched in linear time. */
+const COMMENT = "/\\*[^*]*\\*/";
 /**
  * S1: the values a key may have before `,` or `}` on its line: a number (such as Prisma's
- * `skip: 10`) or `false`.
+ * `skip: 10`) or `false`. A closed block comment around the value counts as a space.
  */
-const KEEPS = "(?! ?(?:false|-?\\d[\\w.]*) ?[,}])";
+const KEEPS =
+  "(?! ?(?:" +
+  COMMENT +
+  " ?)?(?:false|-?\\d[\\w.]*) ?(?:" +
+  COMMENT +
+  " ?)?[,}])";
+/**
+ * S1: what may follow a key: a value KEEPS does not keep, after a closed block comment or
+ * not, or a block comment that is not closed before `:`.
+ */
+const VALUE = "(?:" + COMMENT + " ?)?:" + KEEPS + "|/\\*(?![^*]*\\*/ ?:)";
 const TEST_FORMS = deepFreeze([
   // A member access of a skip or focus name: a call, a chained call or a bare reference.
   new RegExp("\\.(?:" + CALLS + ")(?![\\w$])"),
-  // A bracket access, such as `it["skip"]`.
-  new RegExp("\\[ ?[\"'`](?:" + CALLS + ")[\"'`] ?\\]"),
+  // One space after the dot needs a call, chain or bracket after the name, not prose.
+  new RegExp("\\. (?:" + CALLS + ") ?[(.\\[]"),
+  // A bracket access, such as `it["skip"]` or `it[("skip")]`.
+  new RegExp("\\[ ?(?:\\( ?)?[\"'`](?:" + CALLS + ")[\"'`](?: ?\\))? ?\\]"),
   // Bun's conditional calls, such as `test.if(ci)`.
   new RegExp("\\.if ?\\("),
-  // A focus or exclude call: an x- or f-prefixed it, describe or test.
+  // A focus or exclude call: an x- or f-prefixed it, describe, test or context.
   new RegExp(
     "(?<![\\w$.])(?:x" +
       "it|x" +
       "describe|x" +
-      "test|f" +
+      "test|x" +
+      "context|f" +
       "it|f" +
-      "describe) ?\\(",
+      "describe|f" +
+      "context) ?\\(",
   ),
-  // A bare imported decorator, such as unittest's `@skip("r")`, not a scoped package name.
-  /(?<![\w$.'"`/])@ ?(?:skip|skipif|skipunless|expectedfailure)\b/,
+  // Bare calls: unittest's SkipTest and Jasmine's pending; Playwright's test or it fail
+  // (not a bare fail, which would match assert's).
+  new RegExp("(?<![\\w$.])(?:skiptest|pending) ?\\("),
+  new RegExp("(?<![\\w$.])(?:test|it)\\.fail ?\\("),
+  // A bare imported decorator, such as unittest's `@skip("r")` or PEP 614's `@(skip)`, not
+  // a scoped package name, a string or a `//` comment or URL (`*/` before it counts).
+  new RegExp(
+    "(?<![\\w$.'\"`])(?<!(?<!\\*)/)@ ?(?:\\( ?)?(?:sk" +
+      "ip|sk" +
+      "ipif|sk" +
+      "ipunless|expected" +
+      "failure)\\b",
+  ),
   // S1: an options-object key at a line start or after `{`, `,` or a block comment's end,
   // such as `{ skip: true }` or a shorthand `{ skip }`, unless KEEPS keeps its value; a
-  // block comment after the key counts as its value. A quoted or computed key, such as
-  // `["skip"]: x`, needs a value.
+  // block comment not closed before `:`, or a line comment, after the key counts as its
+  // value. A quoted or computed key, such as `["skip"]: x`, needs a value.
   new RegExp(
-    "(?:^|[{,]|\\*/) ?(?:" +
-      NAMES.join("|") +
-      ") ?(?:[,}]|$|/\\*|:" +
-      KEEPS +
-      ")",
+    "(?:^|[{,]|\\*/) ?(?:" + NAMES.join("|") + ") ?(?:[,}]|$|//|" + VALUE + ")",
   ),
   new RegExp(
     "(?:^|[{,]|\\*/) ?(?:\\[ ?)?[\"'`](?:" +
       NAMES.join("|") +
-      ")[\"'`](?: ?\\])? ?(?:/\\*|:" +
-      KEEPS +
+      ")[\"'`](?: ?\\])? ?(?:" +
+      VALUE +
       ")",
   ),
 ]);
@@ -110,11 +135,12 @@ const TEST_FORMS = deepFreeze([
 const FRAMEWORK = new RegExp(
   /(?:\bfrom|\bimport|\brequire)\s*(?:\(\s*)?["'`]/.source +
     "(?:vit" +
-    "est|node:test|@jest/globals|mocha|bun:test|@playwright/test|ava)" +
+    "est|node:test|@jest/globals|mocha|bun:test|@playwright/test|ava|" +
+    "jest|tap|uvu|jasmine|qunit|chai)" +
     /(?:\/[^"'`\s]{0,200})?["'`]/.source,
 );
 /** The code files whose framework imports count (S2). */
-const CODE = /\.(?:[cm]?[jt]sx?|py|go)$/;
+const CODE = /\.(?:[cm]?[jt]sx?|py|go|vue|svelte|astro)$/;
 /** Tool config, ignore, hook and build file names, matched at any depth (`*` within the name). */
 const CONFIG_NAMES = deepFreeze([
   ...["eslint.config.*", ".eslintrc", ".eslintrc.*", ".eslintignore"],
@@ -197,6 +223,7 @@ const GITLINK = "160000";
 const ABSENT = "000000";
 const REGULAR = new Set(["100644", "100755"]);
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const LINE_ENDS = /[\r\u2028\u2029]/;
 
 type Finding = Omit<FloorFinding, "path"> & { path: string };
 const found = (rule: FloorRule, path: string, detail: string, line?: number) =>
@@ -258,12 +285,20 @@ const BLOCK_DIRECTIVE = new RegExp(
   "g",
 );
 
-/** The 1-based lines where BLOCK_DIRECTIVE matches in `text`. */
+/** The 1-based lines where BLOCK_DIRECTIVE matches in `text`, in one linear pass. */
 function blockDirectiveLines(text: string): number[] {
   const folded = caseFold(text);
-  return Array.from(folded.matchAll(BLOCK_DIRECTIVE), (match) => {
-    return folded.slice(0, match.index).split("\n").length;
-  });
+  const lines: number[] = [];
+  let line = 1;
+  let next = folded.indexOf("\n");
+  for (const match of folded.matchAll(BLOCK_DIRECTIVE)) {
+    while (next !== -1 && next < match.index) {
+      line += 1;
+      next = folded.indexOf("\n", next + 1);
+    }
+    lines.push(line);
+  }
+  return lines;
 }
 
 /**
@@ -306,8 +341,10 @@ function suppressions(path: string, base: string, candidate: string) {
       (test && TEST_FORMS.some((form) => keys.some((k) => form.test(k))))
     );
   };
+  // JavaScript also ends a line at CR, U+2028 and U+2029: the whole line and each piece
+  // are checked, with the line number of its `\n` line.
   const findings = addedLines(base, candidate)
-    .filter(([, line]) => marked(line))
+    .filter(([, line]) => marked(line) || line.split(LINE_ENDS).some(marked))
     .map(([at, line]) => found("suppression.added", path, line.trim(), at));
   // More block directives than the base: one finding at the first match past the
   // base's count, unless a line finding already reports that line.
@@ -447,7 +484,7 @@ const order = (a: FloorFinding, b: FloorFinding) =>
 export const sortFindings = (findings: FloorFinding[]) => findings.sort(order);
 
 /**
- * The findings of `floor-3` for `changes`, sorted; paths and details are escaped and
+ * The findings of `floor-4` for `changes`, sorted; paths and details are escaped and
  * bounded for display. `protectedGlobs` are the run's Ring 0 paths (the resolved policy's
  * and the floor's): any change to one of them is `protected.changed` (OQ-B3-3, OQ-B3-4).
  * `chain` holds the case-folded paths the base commit's configs extend or import (S3):

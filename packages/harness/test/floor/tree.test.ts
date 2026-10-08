@@ -327,6 +327,35 @@ describe("config chain second review fixes", { timeout: 30_000 }, () => {
   });
 });
 
+describe("floor-4 config chain fixes", { timeout: 30_000 }, () => {
+  it.each([
+    ["./shared.JS", "shared.ts"],
+    ["./Shared.Mjs", "Shared.mts"],
+  ])("finds a change chained by %j with base %j", (rel, inBase) => {
+    rebase({
+      "vitest.config.ts": `import s from "${rel}";\n`,
+      [inBase]: "export default {};\n",
+    });
+    write(inBase, "export default { x: 1 };\n");
+    expect(details()).toEqual([["config.changed", inBase, "config chain"]]);
+  });
+
+  it("counts a .js literal whose TS sibling is in the base as a guess", () => {
+    const names = Array.from({ length: 40 }, (_, i) => "n" + String(i));
+    rebase({
+      "eslint.config.js": names
+        .map((n) => `import "./lint/${n}.js";`)
+        .join("\n"),
+      ...Object.fromEntries(names.map((n) => [`lint/${n}.ts`, "export {};\n"])),
+    });
+    expect(details()).toEqual([]);
+    write("lint/n0.ts", "export const x = 1;\n");
+    expect(details()).toEqual([
+      ["config.changed", "lint/n0.ts", "config chain"],
+    ]);
+  });
+});
+
 describe("ignored agent and config files (S4)", { timeout: 30_000 }, () => {
   it("finds ignored agent files and config-named files, not build caches", () => {
     writeFileSync(

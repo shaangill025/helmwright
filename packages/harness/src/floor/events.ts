@@ -15,6 +15,7 @@ export class FloorError extends Error {
 export const FLOOR_RULES_VERSIONS: readonly string[] = Object.freeze([
   "floor-1",
   "floor-2",
+  "floor-3",
   FLOOR_RULES_VERSION,
 ]);
 
