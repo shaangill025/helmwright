@@ -77,6 +77,19 @@ export type {
   TaskStatus,
 } from "../generated/objects.ts";
 export { validate as validateObjectRecord } from "../generated/objects.validate.js";
+// Only the payload titles: the copied definitions' types are exported from objects.ts above.
+export type {
+  ArtifactRecorded,
+  DecisionFootprintRecorded,
+  DecisionOpened,
+  DecisionOpenedOwned,
+  DecisionOpenedRuling,
+  DecisionOutcomeSignalled,
+  ObjectEvent,
+  RunRecorded,
+  TaskCreated,
+} from "../generated/object-event.ts";
+export { validate as validateObjectEvent } from "../generated/object-event.validate.js";
 export type { HelmwrightConfig } from "../generated/helmwright-config.ts";
 export { validate as validateHelmwrightConfig } from "../generated/helmwright-config.validate.js";
 
