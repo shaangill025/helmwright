@@ -24,6 +24,7 @@ const classified: IntakeClassified = {
   reasons: [{ rule: "notDocsOrTests", entries: ["src/a.ts"] }],
   scope: ["src/a.ts"],
   scopeSha256: "a".repeat(64),
+  ring0Sha256: "b".repeat(64),
   declared,
   friction: { intensity: "moderate", source: "default" },
   sparring: "optIn",
@@ -31,14 +32,18 @@ const classified: IntakeClassified = {
 };
 const overridden: IntakeOverridden = {
   kind: "intake.overridden",
+  taskId: "task_01",
   from: "bounded",
   to: "chore",
   reason: "formatting only",
   by: "cli",
   attestation: { kind: "none" },
+  scopeSha256: "a".repeat(64),
+  rubricVersion: "intake-rubric-1",
 };
 const reclassified: IntakeReclassified = {
   kind: "intake.reclassified",
+  taskId: "task_01",
   from: "chore",
   to: "bounded",
   source: "floor",
@@ -46,6 +51,9 @@ const reclassified: IntakeReclassified = {
   rubricVersion: "intake-rubric-1",
 };
 const events: IntakeEvent[] = [classified, overridden, reclassified];
+/** Characters an entry may not have (S5), built so that the source holds none of them. */
+const hidden = [0x202e, 0x200b, 0x2028, 0x2029, 0xd800, 0x85, 0x7f, 0x1b];
+const hiddenEntries = hidden.map((c) => `src/a${String.fromCodePoint(c)}.ts`);
 const without = (event: object, key: string) =>
   Object.fromEntries(Object.entries(event).filter(([k]) => k !== key));
 const minimal = { intensity: "minimal", source: "choreDowngrade" };
@@ -99,6 +107,8 @@ describe("IntakeEvent", () => {
         { class: "chore", friction: minimal },
         { scope: [], reasons: [{ rule: "noDeclaredScope", entries: [] }] },
         { scope: ["docs/**", "**/*.md"], rubricVersion: "intake-rubric-12" },
+        { scope: ["a/.b", "a/..b/c", "...", "café/ü.md", "a b/c.md"] },
+        { scope: Array.from({ length: 256 }, (_, i) => `src/${String(i)}.ts`) },
         { declared: facts, costIfWrong: "" },
       ],
       [
@@ -111,6 +121,25 @@ describe("IntakeEvent", () => {
         { reasons: [{ rule: "guess", entries: [] }] },
         { reasons: [{ rule: "docsOnly" }] },
         { scope: [""] },
+        ...hiddenEntries.map((e) => ({ scope: [e] })),
+        ...hiddenEntries.map((e) => ({
+          declared: { ...declared, newModules: [e] },
+        })),
+        ...hiddenEntries.map((e) => ({
+          declared: { ...declared, newDependencies: [e] },
+        })),
+        ...[
+          "/src/a.ts",
+          "src\\a.ts",
+          "..",
+          "src/../a.ts",
+          "./a.ts",
+          "src/.",
+          "a//b",
+          "src/",
+        ].map((e) => ({ scope: [e] })),
+        { scope: Array.from({ length: 257 }, (_, i) => `src/${String(i)}.ts`) },
+        { ring0Sha256: "A".repeat(64) },
         { scope: ["a\nb"] },
         { scope: ["x".repeat(1025)] },
         { scope: "src/**" },
@@ -153,6 +182,7 @@ describe("IntakeEvent", () => {
         { signalIds: [] },
         { signalIds: [""] },
         { signalIds: ["a b"] },
+        { taskId: "a b" },
         { rubricVersion: "v1" },
       ],
     ],

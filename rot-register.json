@@ -305,7 +305,7 @@
   {
     "component": "packages/schema/schemas/intake-event.schema.json",
     "ring": 0,
-    "assumption": "Each classification is logged with its rubric version and the SHA-256 of its sorted scope, an owner override with a non-empty reason and attestation none until slice SIG, and a reclassification with its signals; upward only is enforced by the harness, not the schema.",
+    "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths; an owner override with the task ID, the scope hash, the rubric version, a non-empty reason and attestation none until slice SIG; and a reclassification with the task ID and its signals. Scope and declared entries exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
