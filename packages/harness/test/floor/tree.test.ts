@@ -187,6 +187,174 @@ describe("candidateChanges", { timeout: 30_000 }, () => {
   });
 });
 
+/** Commits `files` in the repo as the new base and moves the worktree to it. */
+function rebase(files: Record<string, string>) {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  commit(repo);
+  base = git(repo, "rev-parse", "HEAD");
+  git(wt, "checkout", "--quiet", "--detach", base);
+}
+const details = () => checked().findings.map((f) => [f.rule, f.path, f.detail]);
+
+describe("config chains from the base commit (S3)", { timeout: 30_000 }, () => {
+  it("finds a change to a file a base tsconfig extends or references", () => {
+    rebase({
+      "tsconfig.json": [
+        "{",
+        '  // a comment with "extends": "./not/this.json"',
+        '  "extends": ["./cfg/base.json"], /* and "./nor/this.json" */',
+        '  "include": ["./src"],',
+        '  "references": [{ "path": "./pkg" }, { "path": "../outside" },],',
+        "}",
+      ].join("\n"),
+      "cfg/base.json": '{ "extends": "../cfg2/root", "files": ["./x.ts"] }',
+      "cfg2/root.json": "{}",
+      "pkg/tsconfig.json": "{}",
+      "not/this.json": "{}",
+    });
+    write("src/a.ts", "export const a = 2;\n");
+    write("not/this.json", "{ }");
+    expect(details()).toEqual([]);
+    write("cfg/base.json", '{ "extends": "../cfg2/root" }');
+    write("cfg2/root.json", "{ }");
+    expect(details()).toEqual([
+      ["config.changed", "cfg/base.json", "config chain"],
+      ["config.changed", "cfg2/root.json", "config chain"],
+    ]);
+  });
+
+  it("finds a change to a module a base eslint or vitest config imports", () => {
+    rebase({
+      "eslint.config.js": 'import rules from "./lint/rules.js";\n',
+      "lint/rules.js": "export * from '../lint2/more.mjs';\n",
+      "lint2/more.mjs": "export const x = 1;\n",
+      "pkg/vitest.config.ts":
+        'export default { setupFiles: ["./setup.ts"] };\n',
+    });
+    write("lint/rules.js", "export const rules = {};\n");
+    write("lint2/more.mjs", "export const x = 2;\n");
+    write("pkg/setup.ts", "export {};\n");
+    expect(details()).toEqual([
+      ["config.changed", "lint/rules.js", "config chain"],
+      ["config.changed", "lint2/more.mjs", "config chain"],
+      ["config.changed", "pkg/setup.ts", "config chain"],
+    ]);
+  });
+});
+
+describe("config chain review fixes", { timeout: 30_000 }, () => {
+  it("finds a change to an extensionless module a base config imports (F3)", () => {
+    const more = ["a", "b", "c", "d", "e"];
+    rebase({
+      "vitest.config.ts":
+        'import shared from "./vitest.shared";\nexport default shared;\n',
+      "vitest.shared.ts": "export default {};\n",
+      "eslint.config.js": [
+        'export { default } from "./eslint/base";',
+        ...more.map((m) => `import "./lint/${m}";`),
+      ].join("\n"),
+      "eslint/base/index.js": "export default [];\n",
+      ...Object.fromEntries(more.map((m) => [`lint/${m}.ts`, "export {};\n"])),
+    });
+    write("vitest.shared.ts", "export default { x: 1 };\n");
+    write("eslint/base/index.js", "export default [1];\n");
+    // A file Vite would resolve before the base's own is in the chain too.
+    write("vitest.shared.mjs", "export default {};\n");
+    expect(details()).toEqual([
+      ["config.changed", "eslint/base/index.js", "config chain"],
+      ["config.changed", "vitest.shared.mjs", "config chain"],
+      ["config.changed", "vitest.shared.ts", "config chain"],
+    ]);
+  });
+
+  it("follows no link from a tsconfig that extends a directory (F6c)", () => {
+    rebase({
+      "tsconfig.json": '{ "extends": "./" }',
+      "pkg/tsconfig.json": '{ "extends": "../" }',
+    });
+    write("src/a.ts", "export const a = 2;\n");
+    expect(details()).toEqual([]);
+  });
+
+  it("fails closed past the chain's path and read bounds (F6d)", () => {
+    const many = Array.from({ length: 65 }, (_, i) => `"./c/${String(i)}.js"`);
+    rebase({
+      "eslint.config.js": "export default [" + many.join(",") + "];\n",
+    });
+    expect(details()).toEqual([
+      ["floor.limits", undefined, "config chain over 64 paths"],
+    ]);
+    rebase({
+      "eslint.config.js": "export default [];\n",
+      ...Object.fromEntries(
+        Array.from({ length: 129 }, (_, i) => [
+          `p${String(i)}/tsconfig.json`,
+          "{}",
+        ]),
+      ),
+    });
+    expect(details()).toEqual([
+      ["floor.limits", undefined, "config chain over 128 files read"],
+    ]);
+  });
+});
+
+describe("config chain second review fixes", { timeout: 30_000 }, () => {
+  it.each([
+    ["./shared.js", "shared.ts", "shared.ts"],
+    ["./shared.js", "shared.js", "shared.ts"],
+    ["./data", "data.json", "data.json"],
+  ])("finds a change chained by %j with base %j: %j", (rel, inBase, edit) => {
+    rebase({
+      "vitest.config.ts": `import s from "${rel}";\n`,
+      [inBase]: "export default {};\n",
+    });
+    write(edit, "export default { x: 1 };\n");
+    expect(details()).toEqual([["config.changed", edit, "config chain"]]);
+  });
+
+  it("counts no guess toward the path bound", () => {
+    const names = ["a", "b", "c", "d", "e"];
+    rebase({
+      "eslint.config.js": names.map((n) => `import "./lint/${n}";`).join("\n"),
+      ...Object.fromEntries(names.map((n) => [`lint/${n}.ts`, "export {};\n"])),
+    });
+    expect(changes().chain.size).toBe(90);
+    expect(details()).toEqual([]);
+  });
+});
+
+describe("ignored agent and config files (S4)", { timeout: 30_000 }, () => {
+  it("finds ignored agent files and config-named files, not build caches", () => {
+    writeFileSync(
+      join(common, "info", "exclude"),
+      [".claude/", "CLAUDE.md", "AGENTS.md", ".npmrc", "node_modules/"]
+        .concat(["*.tsbuildinfo", ".eslintcache", "local/"])
+        .join("\n") + "\n",
+    );
+    write("node_modules/.bin/tsc", "x");
+    write("node_modules/x/tsconfig.json", "{}");
+    write("pkg/a.tsbuildinfo", "x");
+    write(".eslintcache", "x");
+    expect(details()).toEqual([]);
+    write(".claude/settings.json", "{}");
+    write("CLAUDE.md", "x");
+    write("pkg/AGENTS.md", "x");
+    write(".npmrc", "x");
+    write("local/tsconfig.json", "{}");
+    expect(paths()).toEqual([]);
+    expect(details()).toEqual([
+      ["config.changed", ".claude", "ignored"],
+      ["config.changed", ".npmrc", "ignored"],
+      ["config.changed", "CLAUDE.md", "ignored"],
+      ["config.changed", "pkg/AGENTS.md", "ignored"],
+    ]);
+  });
+});
+
 describe("trusted git dirs (B1)", { timeout: 30_000 }, () => {
   it("refuses a gitfile that points elsewhere", () => {
     // A crafted git dir inside the worktree whose info/exclude hides a file.

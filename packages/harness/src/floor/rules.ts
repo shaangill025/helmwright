@@ -15,7 +15,7 @@ import {
  * protected path is a finding, even an owner-approved one (OQ-B3-3). A change to a rule or
  * list needs a new version.
  */
-export const FLOOR_RULES_VERSION = "floor-2";
+export const FLOOR_RULES_VERSION = "floor-3";
 
 /** One path that differs between the base commit and the candidate tree. */
 export interface FloorChange {
@@ -40,16 +40,38 @@ const MARKERS = deepFreeze([
   ...["@ts-" + "ignore", "@ts-" + "expect-error", "@ts-" + "nocheck"],
   ...["gitleaks" + ":allow", "prettier-" + "ignore", "node:" + "coverage"],
   ...["c8", "v8", "istanbul"].map((tool) => tool + " ignore"),
+  ...["biome-" + "ignore", "oxlint-" + "disable", "cspell" + ":disable"],
 ]);
-/** Semgrep's inline ignore in both spellings, as a whole word. */
-const NOSEM = new RegExp("\\bno" + "sem(?:grep)?(?![a-z0-9_])");
-/** Test-skipping and focusing forms, matched in test files only. */
-const CALLS = ["skip", "only", "todo", "fails", "skipif", "runif"].join("|");
+/**
+ * Whole-word inline ignores: Semgrep's in both spellings, and (N1) Python's, Bandit's and
+ * gosec's, golangci-lint's, Sonar's, mypy's and Pylint's.
+ */
+const WORD_MARKERS = deepFreeze([
+  new RegExp("\\bno" + "sem(?:grep)?(?![a-z0-9_])"),
+  new RegExp("(?<![a-z0-9_])no(?:" + "qa|" + "sec|" + "sonar)(?![a-z0-9_])"),
+  new RegExp("//no" + "lint\\b"),
+  new RegExp("# ?(?:type: ?" + "ignore|pylint: ?" + "disable)\\b"),
+]);
+/** Test-skipping and focusing names, matched in test files only. */
+const NAMES = ["skip", "only", "todo", "fails"];
+const CALLS = [
+  ...NAMES,
+  ...["skipif", "runif", "failing", "skipnow", "skipf", "todoif"],
+  // pytest.mark.xfail, unittest's expectedFailure and skipUnless, Playwright's fixme.
+  ...["xfail", "expectedfailure", "skipunless", "fixme"],
+].join("|");
+/**
+ * S1: the values a key may have before `,` or `}` on its line: a number (such as Prisma's
+ * `skip: 10`) or `false`.
+ */
+const KEEPS = "(?! ?(?:false|-?\\d[\\w.]*) ?[,}])";
 const TEST_FORMS = deepFreeze([
   // A member access of a skip or focus name: a call, a chained call or a bare reference.
   new RegExp("\\.(?:" + CALLS + ")(?![\\w$])"),
   // A bracket access, such as `it["skip"]`.
   new RegExp("\\[ ?[\"'`](?:" + CALLS + ")[\"'`] ?\\]"),
+  // Bun's conditional calls, such as `test.if(ci)`.
+  new RegExp("\\.if ?\\("),
   // A focus or exclude call: an x- or f-prefixed it, describe or test.
   new RegExp(
     "(?<![\\w$.])(?:x" +
@@ -59,7 +81,40 @@ const TEST_FORMS = deepFreeze([
       "it|f" +
       "describe) ?\\(",
   ),
+  // A bare imported decorator, such as unittest's `@skip("r")`, not a scoped package name.
+  /(?<![\w$.'"`/])@ ?(?:skip|skipif|skipunless|expectedfailure)\b/,
+  // S1: an options-object key at a line start or after `{`, `,` or a block comment's end,
+  // such as `{ skip: true }` or a shorthand `{ skip }`, unless KEEPS keeps its value; a
+  // block comment after the key counts as its value. A quoted or computed key, such as
+  // `["skip"]: x`, needs a value.
+  new RegExp(
+    "(?:^|[{,]|\\*/) ?(?:" +
+      NAMES.join("|") +
+      ") ?(?:[,}]|$|/\\*|:" +
+      KEEPS +
+      ")",
+  ),
+  new RegExp(
+    "(?:^|[{,]|\\*/) ?(?:\\[ ?)?[\"'`](?:" +
+      NAMES.join("|") +
+      ")[\"'`](?: ?\\])? ?(?:/\\*|:" +
+      KEEPS +
+      ")",
+  ),
 ]);
+/**
+ * S2: an import or require of a test framework, so its test forms count in any code file,
+ * not only a test path. Matched over the case-folded text in linear time: no two
+ * adjacent `\s*` can split one whitespace run.
+ */
+const FRAMEWORK = new RegExp(
+  /(?:\bfrom|\bimport|\brequire)\s*(?:\(\s*)?["'`]/.source +
+    "(?:vit" +
+    "est|node:test|@jest/globals|mocha|bun:test|@playwright/test|ava)" +
+    /(?:\/[^"'`\s]{0,200})?["'`]/.source,
+);
+/** The code files whose framework imports count (S2). */
+const CODE = /\.(?:[cm]?[jt]sx?|py|go)$/;
 /** Tool config, ignore, hook and build file names, matched at any depth (`*` within the name). */
 const CONFIG_NAMES = deepFreeze([
   ...["eslint.config.*", ".eslintrc", ".eslintrc.*", ".eslintignore"],
@@ -99,9 +154,23 @@ const CONFIG_NAMES = deepFreeze([
   ],
   ...["nx.json", "deno.json*", "bunfig.toml", ".tool-versions", "mise.toml"],
   ...["gnumakefile", "*.mk", "containerfile", ".dockerignore"],
+  ...[".lintstagedrc*", "lint-staged.config.*", ".simple-git-hooks*"],
+  ...["simple-git-hooks.json", "commitlint.config.*", ".mise.toml"],
+  ...[
+    ".trivyignore",
+    "compose*.y*ml",
+    "docker-compose*.y*ml",
+    ".gitlab-ci.yml",
+  ],
+  "jenkinsfile",
+  // F4 (owner, 2026-10-08): agent instruction and MCP files a hosted engine could load.
+  ...["claude.md", "agents.md", ".mcp.json"],
 ]);
-/** Directories whose every file is config: CI, git hook managers and Semgrep rules. */
-const CONFIG_DIRS = new Set([".github", ".husky", ".githooks", ".semgrep"]);
+/** Directories whose every file is config: CI, git hook managers, Semgrep rules, tool, dev and agent environments. */
+const CONFIG_DIRS = new Set([
+  ...[".github", ".husky", ".githooks", ".semgrep"],
+  ...[".devcontainer", ".circleci", ".mise", ".claude"],
+]);
 /** package.json keys that change how the checkers, the build or the install run (dependencies are A2's). */
 const PACKAGE_KEYS = deepFreeze([
   ...["pnpm", "overrides", "resolutions", "devEngines", "packageManager"],
@@ -118,6 +187,8 @@ const PACKAGE_KEYS = deepFreeze([
     "husky",
   ],
   ...["module", "browser", "config", "bin"],
+  ...["babel", "volta", "eslintIgnore", "browserslist", "tsup", "ts-node"],
+  ...["tap", "xo"],
 ]);
 const TEST_DIRS = new Set(["test", "tests", "__tests__"]);
 const TEST_MARKS = [".test.", ".spec.", ".test-d.", ".e2e-spec."];
@@ -195,14 +266,44 @@ function blockDirectiveLines(text: string): number[] {
   });
 }
 
+/**
+ * `key` without the block comments outside string literals, by one linear scan (an
+ * unterminated comment ends the line), so an options key after a comment shows. A quote in
+ * a regex literal can mislead the scan; test forms match `key` or this.
+ */
+function uncomment(key: string): string {
+  const kept: string[] = [];
+  let from = 0;
+  let quote = "";
+  for (let i = 0; i < key.length; i += 1) {
+    const c = key.charAt(i);
+    if (quote !== "") {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+    } else if (c === "/" && key.charAt(i + 1) === "*") {
+      kept.push(key.slice(from, i));
+      const close = key.indexOf("*/", i + 2);
+      i = close === -1 ? key.length : close + 1;
+      from = i + 1;
+    }
+  }
+  kept.push(key.slice(from));
+  return norm(kept.join(""));
+}
+
 function suppressions(path: string, base: string, candidate: string) {
-  const test = isTestFile(path);
+  const test =
+    isTestFile(path) ||
+    (CODE.test(nameOf(path)) && FRAMEWORK.test(caseFold(candidate)));
   const marked = (line: string) => {
     const key = norm(line);
+    const keys = key.includes("/*") ? [key, uncomment(key)] : [key];
     return (
       MARKERS.some((m) => key.includes(m)) ||
-      NOSEM.test(key) ||
-      (test && TEST_FORMS.some((form) => form.test(key)))
+      WORD_MARKERS.some((m) => m.test(key)) ||
+      (test && TEST_FORMS.some((form) => keys.some((k) => form.test(k))))
     );
   };
   const findings = addedLines(base, candidate)
@@ -219,7 +320,8 @@ function suppressions(path: string, base: string, candidate: string) {
   return findings;
 }
 
-function isConfig(path: string): boolean {
+/** A tool config, ignore, hook or build file, by name or directory (`config.changed`). */
+export function isConfig(path: string): boolean {
   const parts = segments(path);
   return (
     parts.slice(0, -1).some((part) => CONFIG_DIRS.has(part)) ||
@@ -283,7 +385,11 @@ function packageChanges(path: string, base?: string, candidate?: string) {
 }
 
 /** The findings of one change. */
-function check(change: FloorChange, protect: readonly string[]): Finding[] {
+function check(
+  change: FloorChange,
+  protect: readonly string[],
+  chain: ReadonlySet<string>,
+): Finding[] {
   const { path, baseMode, candidateMode } = change;
   const bytes = (mode: string, data: Uint8Array | undefined) =>
     REGULAR.has(mode) ? data : undefined;
@@ -304,6 +410,8 @@ function check(change: FloorChange, protect: readonly string[]): Finding[] {
   }
   if (isConfig(path)) {
     findings.push(found("config.changed", path, "config file changed"));
+  } else if (chain.has(caseFold(path))) {
+    findings.push(found("config.changed", path, "config chain"));
   }
   if (nameOf(path) === "package.json") {
     // An unreadable candidate is not a JSON object; an absent one is `{}`.
@@ -339,15 +447,20 @@ const order = (a: FloorFinding, b: FloorFinding) =>
 export const sortFindings = (findings: FloorFinding[]) => findings.sort(order);
 
 /**
- * The findings of `floor-2` for `changes`, sorted; paths and details are escaped and
+ * The findings of `floor-3` for `changes`, sorted; paths and details are escaped and
  * bounded for display. `protectedGlobs` are the run's Ring 0 paths (the resolved policy's
  * and the floor's): any change to one of them is `protected.changed` (OQ-B3-3, OQ-B3-4).
+ * `chain` holds the case-folded paths the base commit's configs extend or import (S3):
+ * a change to one of them is `config.changed`.
  */
 export function floorFindings(
   changes: readonly FloorChange[],
   protectedGlobs: readonly string[],
+  chain: ReadonlySet<string> = new Set(),
 ): FloorFinding[] {
   // R2: the floor's own Ring 0 paths always count, whatever the caller passes.
   const protect = [...protectedGlobs, ...RING0_PATHS];
-  return sortFindings(changes.flatMap((change) => check(change, protect)));
+  return sortFindings(
+    changes.flatMap((change) => check(change, protect, chain)),
+  );
 }

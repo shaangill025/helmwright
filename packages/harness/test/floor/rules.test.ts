@@ -34,6 +34,19 @@ const MARKERS = [
   "/* node:" + "coverage" + IGNORE + " next */",
   "/* node:" + "coverage disable */",
   "// prettier-" + IGNORE.trim(),
+  // N1: other tools' inline suppressions.
+  "// biome-" + "ignore lint/style: x",
+  "// oxlint-" + "disable-next-line",
+  "x = 1  # no" + "qa: E501",
+  "x = 1  #no" + "qa",
+  "x: int = y  # type" + ": ignore[assignment]",
+  "x()  # pylint" + ": disable=foo",
+  "x()  # pylint" + ":disable=foo",
+  "x() #no" + "sec",
+  "x() // #no" + "sec G104",
+  "x() //no" + "lint:errcheck",
+  "x(); // NO" + "SONAR",
+  "/* cspell" + ":disable */",
 ];
 const D = ".";
 const TEST_FORMS = [
@@ -55,6 +68,16 @@ const TEST_FORMS = [
     "f" + "it",
     "f" + "describe",
   ].map((call) => call + ' ("x", () => {});'),
+  // S1: the options-object form, Jest's failing and Go's skips.
+  ...["skip", "only", "todo", "fails"].map(
+    (key) => 'it("x", { ' + key + ": true }, () => {});",
+  ),
+  'test("x", {timeout: 5,' + "skip" + ":ci}, () => {});",
+  'describe("x", { "' + "only" + '": true }, () => {});',
+  "it" + D + "failing" + '("x", () => {});',
+  "t" + D + "SkipNow" + "()",
+  "t" + D + "Skipf" + '("x %d", 1)',
+  "t" + D + "Skip" + '("x")',
 ];
 const PROTECTED = [
   "packages/harness/test/permission/**",
@@ -107,6 +130,9 @@ describe("suppression.added", () => {
     "it" + D + "skipped" + "(1);",
     "pro" + "fit" + '("x");',
     "this" + D + "fit" + '("x");',
+    'it("x", { ' + "skip" + ": false }, () => {});",
+    "const o = { timeout: 5, retry: 2 };",
+    "skip" + "ped = 1; # no" + "qatar",
   ])("ignores %j", (line) => {
     expect(rules(change("test/a.ts", "", lines(line)))).toEqual([]);
   });
@@ -142,6 +168,28 @@ describe("suppression.added", () => {
       ]);
     }
   });
+
+  it.each([
+    'import { it as base } from "vitest";',
+    "import { test } from 'vit" + "est/x';",
+    'import test from "node:test";',
+    'const { it } = require("vit' + 'est");',
+    'import { it } from "@jest/globals";',
+    'import { it } from "mocha";',
+    'const m = await import("node:test");',
+  ])("finds test forms in a file that imports a framework (S2): %j", (from) => {
+    const text = lines(from, "export const it = base" + D + "skip" + ";");
+    expect(
+      floorFindings([change("src/testkit.ts", "", text)], PROTECTED).map(
+        (f) => [f.rule, f.line],
+      ),
+    ).toEqual([["suppression.added", 2]]);
+  });
+
+  it("ignores test forms in a file that names a framework only in text", () => {
+    const text = lines('const s = "vitest";', "x" + D + "skip" + "(1);");
+    expect(rules(change("src/a.ts", "", text))).toEqual([]);
+  });
 });
 
 describe("config.changed", () => {
@@ -157,7 +205,13 @@ describe("config.changed", () => {
     biome.json biome.jsonc Makefile a/justfile pyproject.toml a/setup.cfg tox.ini
     pytest.ini a/conftest.py .mocharc.yml ava.config.js playwright.config.ts .swcrc
     turbo.json nx.json deno.json deno.jsonc bunfig.toml .tool-versions mise.toml
-    GNUmakefile a/rules.mk Containerfile .dockerignore`.split(/\s+/),
+    GNUmakefile a/rules.mk Containerfile .dockerignore .lintstagedrc
+    .lintstagedrc.json lint-staged.config.js .simple-git-hooks.cjs simple-git-hooks.json
+    commitlint.config.ts .mise.toml .trivyignore compose.yaml compose.dev.yml
+    docker-compose.yml docker-compose.override.yaml .gitlab-ci.yml Jenkinsfile
+    .devcontainer/devcontainer.json .circleci/config.yml .mise/tasks/x`.split(
+      /\s+/,
+    ),
   )("finds %j added, changed or deleted", (path) => {
     // A root-level name may also be a floor Ring 0 path (protected.changed, below).
     const config = (c: FloorChange) =>
@@ -192,9 +246,8 @@ describe("package.changed", () => {
   it.each(
     `pnpm overrides resolutions devEngines packageManager eslintConfig prettier vitest
     imports exports main types typings typesVersions type workspaces engines c8 nyc
-    jest mocha ava lint-staged simple-git-hooks husky module browser config bin`.split(
-      /\s+/,
-    ),
+    jest mocha ava lint-staged simple-git-hooks husky module browser config bin
+    babel volta eslintIgnore browserslist tsup ts-node tap xo`.split(/\s+/),
   )("finds a change to %j", (key) => {
     expect(check(base, pkg({ ...base, [key]: { a: "1" } }))).toEqual([
       ["package.changed", key + " changed"],
@@ -349,7 +402,7 @@ describe("findings", () => {
 
   it("builds a valid floor.checked, truncated past 256 findings", () => {
     const tree = "c".repeat(40);
-    expect(FLOOR_RULES_VERSION).toBe("floor-2");
+    expect(FLOOR_RULES_VERSION).toBe("floor-3");
     expect(floorChecked("a".repeat(40), tree, [])).toEqual({
       kind: "floor.checked",
       rules: FLOOR_RULES_VERSION,
@@ -378,5 +431,136 @@ describe("findings", () => {
     expect(() => floorChecked("HEAD", tree, [])).toThrow(
       "floor.checked cannot be logged",
     );
+  });
+});
+
+describe("floor-3 review fixes", () => {
+  const SKIP = "skip";
+
+  it.each(["from", "require", "import", "require ("])(
+    "matches a framework import in linear time after %j (F1)",
+    (word) => {
+      const text = word + " ".repeat(2_000_000) + "x\n";
+      const start = Date.now();
+      expect(rules(change("src/a.ts", "", text))).toEqual([]);
+      expect(Date.now() - start).toBeLessThan(5000);
+    },
+  );
+
+  it.each([
+    "  " + SKIP + ": true,",
+    "  " + SKIP,
+    "it('x', { " + SKIP + ": false || isCI }, () => {});",
+    "it('x', { " + SKIP + ": 10 || isCI }, () => {});",
+    'it("x", { ["' + SKIP + '"]: true }, () => {});',
+    "it('x', { ['" + SKIP + "']: true }, () => {});",
+    "it('x', { " + "todo" + ": true }, () => {});",
+    "const { " + SKIP + " } = options;",
+    "it('x', { " + SKIP + ", timeout: 5 }, () => {});",
+  ])("finds the options-object key in %j (F2)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([
+      "suppression.added",
+    ]);
+  });
+
+  it.each([
+    "prisma.user.findMany({ " + SKIP + ": 10, take: 20 });",
+    "it('x', { " + SKIP + ": false }, () => {});",
+    "  " + SKIP + ": false,",
+  ])("ignores the options-object key in %j (F2)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([]);
+  });
+
+  it.each([
+    "@pytest.mark" + D + "xfail",
+    "pytest" + D + "xfail" + '("x")',
+    "@unittest" + D + "expectedFailure",
+    "test" + D + "if" + '(ci)("x", () => {});',
+    "test" + D + "todoIf" + '(ci)("x");',
+  ])("finds the test form %j (F6a)", (line) => {
+    expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([
+      "suppression.added",
+    ]);
+  });
+
+  it("counts a framework import only in a code file (F6b)", () => {
+    const text = lines(
+      'import { it } from "vit' + 'est";',
+      "it" + D + SKIP + '("x");',
+    );
+    expect(rules(change("docs/testing.md", "", text))).toEqual([]);
+    expect(rules(change("src/testkit.mts", "", text))).toEqual([
+      "suppression.added",
+    ]);
+  });
+});
+
+describe("floor-3 second review fixes", () => {
+  const SKIP = "skip";
+  const file = (...text: string[]) =>
+    rules(change("test/a.test.ts", "", lines(...text)));
+
+  it.each([
+    ["@unittest" + D + "skipUnless" + "(x, 'r')"],
+    ["test" + D + "fixme" + "('x', () => {});"],
+    ["@" + "skip" + "('r')"],
+    ["@" + "skipIf" + "(c, 'r')"],
+    ["{ a: 1, /* ci */ " + SKIP + ": true }"],
+    ["/* flaky */ " + SKIP + ": true,"],
+    ["  " + SKIP + ": false"],
+    ["  " + SKIP + ": 0"],
+    ["it('x', {", "  " + SKIP + ": false", "    || isCI,", "}, () => {});"],
+    // A `/*` in a string before the comment (B1), and a quote in a regex literal.
+    ["it('globs /*.ts', { /* flaky */ " + SKIP + ": true }, () => {});"],
+    ['it("x /*", { ' + SKIP + " /* c */ : true }, () => {});"],
+    ["const o = { a: '/*', /* c */ only: true };"],
+    ["it('x' + /\"/.source, { /* c */ " + SKIP + ": true }, () => {});"],
+    ['it("a \\" /*", { /* c */ ' + SKIP + ": true }, () => {});"],
+    // A comment after the key, and in a member access, whatever the quote scan sees.
+    ["const r = /a\\/*b/; it('x', { " + SKIP + " /* c */ : true }, f);"],
+    ["const r = /a\\/*b/; it('x', { '" + SKIP + "' /* c */ : true }, f);"],
+    ["test./* c */" + SKIP + "('x', () => {});"],
+  ])("finds the test form in %j", (...text) => {
+    expect(file(...text)).toEqual(["suppression.added"]);
+  });
+
+  it.each([
+    ["import x from '@" + SKIP + "/core';"],
+    ['const tag = "@' + SKIP + '";'],
+  ])("ignores %j", (text) => {
+    expect(file(text)).toEqual([]);
+  });
+
+  it.each([
+    ["a long value", "{" + SKIP + ":1" + "a".repeat(2_000_000), true],
+    ["open comments", "/*x".repeat(700_000), false],
+    ["closed comments", "/* */".repeat(400_000) + SKIP + ": true", true],
+    ["open strings", "'/*".repeat(700_000), false],
+  ])("matches S1 in linear time after %s", (_, text, found) => {
+    const start = Date.now();
+    expect(file(text)).toEqual(found ? ["suppression.added"] : []);
+    expect(Date.now() - start).toBeLessThan(5000);
+  });
+});
+
+describe("tracked agent files (F4)", () => {
+  const config = (c: FloorChange) =>
+    rules(c).filter((rule) => rule !== "protected.changed");
+
+  it.each([
+    [".claude/settings.json", undefined, "{}"],
+    ["a/.Claude/hooks/x.sh", "a", undefined],
+    ["pkg/CLAUDE.md", "a", "b"],
+    ["AGENTS.md", undefined, "x"],
+    ["deep/x/agents.md", "a", "b"],
+    [".mcp.json", undefined, "{}"],
+    ["pkg/.MCP.json", "{}", "{ }"],
+  ])("finds %j as config.changed", (path, before, after) => {
+    expect(config(change(path, before, after))).toEqual(["config.changed"]);
+  });
+
+  it("ignores names that only contain an agent file name", () => {
+    expect(rules(change("docs/claude.md.txt", "a", "b"))).toEqual([]);
+    expect(rules(change("src/claude/x.ts", "a", "b"))).toEqual([]);
   });
 });

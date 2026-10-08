@@ -282,39 +282,39 @@
   {
     "component": "packages/harness/src/floor/rules.ts",
     "ring": 0,
-    "assumption": "floor-2 is a fixed, pure rule table over the changes from the base commit to the candidate. Lines compare case-folded with whitespace runs collapsed, as a multiset, so a moved or respaced line is not added; markers and test forms match per line, so one split across lines is missed. Any change to a protected path (the run's Ring 0 paths) is a finding, even an approved one (OQ-B3-3). A candidate blob that is not UTF-8 without NUL is a finding, so any binary file rejects.",
+    "assumption": "floor-3 is a fixed, pure rule table over the base-to-candidate changes. Lines compare case-folded with whitespace collapsed, as a multiset (a moved or respaced line is not added); markers and test forms match per line, so a split one is missed. Any change to a protected path (the run's Ring 0 paths) is a finding, even an approved one (OQ-B3-3). Test forms count in test paths and in code files that import a test framework directly (a local re-export elsewhere is missed; B15's test totals are the backstop); bare fail is not one (assert.fail). An options key skip, only, todo or fails is a finding unless its value is a number or false before , or } on its line (skip: 1 is missed). Fail closed for M1: an honest fixture, and a bare skip, or { todo } in a parameter list or destructuring, are findings. Any tracked change to a .claude dir, CLAUDE.md, AGENTS.md or .mcp.json is config.changed (F4). A change to a path the base's configs extend or import is a finding, as is a candidate blob not UTF-8 without NUL.",
     "evidence": [
       "06 Ring 0 contents",
       "decisions CI sensor floor",
       "packages/harness/test/floor/rules.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/floor/events.ts",
     "ring": 0,
-    "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed).",
+    "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed). Replay faults a floor.checked whose base commit is not run.started's or whose rules version this build does not know, and any event but run.terminated after it.",
     "evidence": [
       "06 Ring 0 contents",
       "packages/harness/test/floor/rules.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["milestone"]
   },
   {
     "component": "packages/harness/src/floor/tree.ts",
     "ring": 0,
-    "assumption": "The floor never discovers git dirs from the worktree (B1): the host passes the realpath'd common dir; the private git dir is the one whose back-pointer names the worktree and that the worktree's .git gitfile names exactly, so a worktree made with relative paths fails closed. HEAD and info/exclude are read from those dirs without following a symlink or waiting on a FIFO. The candidate is written through a temporary git dir with the repo's objects as alternates and attributes from the base (git 2.40 or later), so no hook, fsmonitor or candidate-selected filter runs, and its objects are not kept. Past 2000 changed files or 8 MiB read it fails closed.",
+    "assumption": "The floor never discovers git dirs from the worktree (B1): the host passes the realpath'd common dir; the private git dir is the one whose back-pointer names the worktree and that its .git gitfile names exactly (relative paths fail closed). HEAD and info/exclude are read without following a symlink or waiting on a FIFO. The candidate is written through a temporary git dir with the repo's objects as alternates and attributes from the base (git 2.40+), so no hook, fsmonitor or candidate-selected filter runs. Over 2000 changed files or 8 MiB read fails closed. Config chains (tsconfig/jsconfig extends and references; relative literals in eslint/vitest/vite configs, a .js one with its TS siblings, an extensionless one as each file it resolves to; 2 links deep, at most 64 paths) come from the base; a base config over 64 KiB or ls-tree over 8 MiB gives floor.limits until the base changes. Ignored .gitignore, agent and config files are findings; files in a collapsed ignored dir are not (B15 tests a clean export).",
     "evidence": [
       "06 Ring 0 contents",
       "decisions CI sensor floor",
       "packages/harness/test/floor/tree.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["engine", "milestone"]
   },
   {

@@ -13,13 +13,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, posix } from "node:path";
 import type { FloorChecked, FloorFinding } from "@helmwright/schema";
 import { runGit } from "../config/config.ts";
-import { caseFold } from "../permission/normalize.ts";
+import { caseFold, isRing0Path } from "../permission/normalize.ts";
 import { deepFreeze, displayText } from "../permission/policy.ts";
 import { FloorError, floorChecked } from "./events.ts";
-import { floorFindings, type FloorChange } from "./rules.ts";
+import { floorFindings, isConfig, type FloorChange } from "./rules.ts";
 
 /** The run's repo as the host knows it, never discovered from inside the worktree. */
 export interface FloorRepo {
@@ -45,8 +45,10 @@ export interface CandidateChanges {
   readonly candidateTree: string;
   /** The changes checked: all of them, or those before a limit was reached. */
   readonly changes: readonly FloorChange[];
-  /** `floor.limits`, and `config.changed` for an ignored `.gitignore`. */
+  /** `floor.limits`, and `config.changed` for an ignored config or agent file. */
   readonly findings: readonly FloorFinding[];
+  /** S3: the case-folded paths the base commit's configs extend or import. */
+  readonly chain: ReadonlySet<string>;
 }
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -236,22 +238,39 @@ const limit = (detail: string, path?: string): FloorFinding => ({
   ...(path === undefined ? {} : { path: displayText(path) }),
   detail,
 });
-const ignoredGitignore = (path: string): FloorFinding => ({
+const ignoredFile = (path: string, detail: string): FloorFinding => ({
   rule: "config.changed",
   path: displayText(path),
-  detail: "ignored .gitignore",
+  detail,
 });
 const isGitignore = (path: string) =>
   caseFold(path.split("/").at(-1) ?? "") === ".gitignore";
+
+/**
+ * S4: the finding for one ignored path (a collapsed directory ends in `/`), or undefined.
+ * An ignored .gitignore or config file (agent files included, F4) is reported; a file inside a
+ * collapsed ignored directory, such as node_modules/.bin or a build cache, is not: B15
+ * runs the tools on a clean export of the candidate tree, never in the worktree.
+ */
+function ignoredFinding(listed: string): FloorFinding | undefined {
+  if (isGitignore(listed)) return ignoredFile(listed, "ignored .gitignore");
+  const dir = listed.endsWith("/");
+  const path = dir ? listed.slice(0, -1) : listed;
+  // A directory counts as config when it is, or is in, a config directory.
+  return isConfig(dir ? path + "/-" : path)
+    ? ignoredFile(path, "ignored")
+    : undefined;
+}
 /** `path` as a literal inside a `:(glob)` pathspec. */
 const globLiteral = (path: string) =>
   Array.from(path, (c) => (GLOB_META.has(c) ? "\\" + c : c)).join("");
 
 /**
- * S2: ignored `.gitignore` files. A collapsed ignored directory that no rule outside it
- * ignores is ignored only by rules inside it, so its `.gitignore` files are listed too.
+ * S2, S4: ignored `.gitignore`, agent and config files. A collapsed ignored directory
+ * that no rule outside it ignores is ignored only by rules inside it, so its files are
+ * listed too.
  */
-function ignoredGitignores(git: Git, max: number): FloorFinding[] {
+function ignoredFiles(git: Git, max: number): FloorFinding[] {
   const others = [
     "ls-files",
     "-z",
@@ -284,7 +303,7 @@ function ignoredGitignores(git: Git, max: number): FloorFinding[] {
     ? entries(git([...others, "--", ...inner], max))
     : [];
   const found = new Set([...listed, ...nested]);
-  return [...found].filter(isGitignore).map(ignoredGitignore);
+  return [...found].flatMap((path) => ignoredFinding(path) ?? []);
 }
 
 /** The candidate's changes with their blob bytes, bounded by `limits`. */
@@ -293,7 +312,7 @@ function read(git: Git, base: string, tree: string, limits: FloorLimits) {
   const changes: FloorChange[] = [];
   let raw: string[];
   try {
-    findings.push(...ignoredGitignores(git, limits.bytes));
+    findings.push(...ignoredFiles(git, limits.bytes));
     const diff = [
       "diff-tree",
       "-r",
@@ -307,8 +326,14 @@ function read(git: Git, base: string, tree: string, limits: FloorLimits) {
   } catch (error) {
     if (!isOverBuffer(error)) throw error;
     const detail = "change list over the byte limit";
-    return { changes, findings: [...findings, limit(detail)] };
+    return {
+      changes,
+      chain: new Set<string>(),
+      findings: [...findings, limit(detail)],
+    };
   }
+  const { chain, findings: chainLimits } = configChain(git, base, limits.bytes);
+  findings.push(...chainLimits);
   let budget = limits.bytes;
   for (let i = 0; i + 1 < raw.length; i += 2) {
     const path = raw[i + 1] ?? "";
@@ -335,7 +360,218 @@ function read(git: Git, base: string, tree: string, limits: FloorLimits) {
       break;
     }
   }
-  return { changes, findings };
+  return { changes, chain, findings };
+}
+
+/** S3: base configs whose chains are followed, as TypeScript (`ts`) or module (`js`) configs. */
+const CHAIN_ROOTS = deepFreeze({
+  ts: ["tsconfig*.json", "jsconfig*.json"],
+  js: [
+    "eslint.config.*",
+    "vitest.config.*",
+    "vitest.workspace.*",
+    "vite.config.*",
+  ],
+});
+/** The most chain paths, and the most base files read to find them. */
+const MAX_CHAIN = 64;
+const MAX_CHAIN_READS = 128;
+/** How many links are followed from a root config. */
+const CHAIN_DEPTH = 2;
+const TREE_ENTRY = /^([0-7]{6}) blob ([0-9a-f]+)$/;
+/** A relative string literal with no glob character, of at most 200 characters. */
+const RELATIVE = /["'`](\.\.?\/[^"'`\s*?{}[\]]{1,200})["'`]/g;
+/** A module or data file a config can import or read. */
+const MODULE = /\.(?:[cm]?[jt]sx?|json5?|jsonc|ya?ml|toml)$/;
+const LITERAL_DATA = /\.(?:json5?|jsonc|ya?ml|toml)$/;
+
+/** The extensions Node, TypeScript and Vite try for an extensionless import. */
+const EXTENSIONS = deepFreeze(
+  ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json"].map(
+    (e) => "." + e,
+  ),
+);
+/** The TypeScript files Vite, Vitest and jiti also resolve a `.js`-style import to. */
+const TS_SIBLINGS = new Map([
+  [".js", [".ts", ".tsx"]],
+  [".jsx", [".tsx"]],
+  [".mjs", [".mts"]],
+  [".cjs", [".cts"]],
+]);
+
+/**
+ * `rel` (relative to `dir`) as a repo file path, or undefined if it leaves the repo or
+ * names a directory (such as `./`).
+ */
+function resolvePath(dir: string, rel: string): string | undefined {
+  const path = posix.normalize(posix.join(dir, rel));
+  return path === ".." ||
+    path.startsWith("../") ||
+    posix.isAbsolute(path) ||
+    path === "." ||
+    path.endsWith("/")
+    ? undefined
+    : path;
+}
+
+/**
+ * JSON with comments and trailing commas (as tsconfig allows) as a value, or undefined:
+ * one linear pass drops comments outside strings and a comma before `}` or `]`.
+ */
+function parseJsonc(text: string): unknown {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text.charAt(i);
+    const next = text.charAt(i + 1);
+    if (c === '"') {
+      let j = i + 1;
+      while (j < text.length && text.charAt(j) !== '"') {
+        j += text.charAt(j) === "\\" ? 2 : 1;
+      }
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (c === "/" && next === "/") {
+      const end = text.indexOf("\n", i);
+      i = end === -1 ? text.length : end;
+    } else if (c === "/" && next === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end === -1 ? text.length : end + 2;
+    } else if (c === ",") {
+      let j = i + 1;
+      while (/\s/.test(text.charAt(j))) j += 1;
+      if (text.charAt(j) !== "}" && text.charAt(j) !== "]") out += c;
+      i += 1;
+    } else {
+      out += c;
+      i += 1;
+    }
+  }
+  try {
+    return JSON.parse(out);
+  } catch {
+    return undefined;
+  }
+}
+
+const field = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null && Object.hasOwn(value, key)
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+const isRelative = (path: unknown): path is string =>
+  typeof path === "string" && (path.startsWith("./") || path.startsWith("../"));
+
+/** The repo paths a TypeScript config names: relative `extends` and `references[].path`. */
+function tsLinks(dir: string, text: string): string[] {
+  const value = parseJsonc(text);
+  const extended = field(value, "extends");
+  const references = field(value, "references");
+  const links: string[] = [];
+  for (const rel of [extended].flat().filter(isRelative)) {
+    links.push(rel, ...(rel.endsWith(".json") ? [] : [rel + ".json"]));
+  }
+  for (const ref of Array.isArray(references) ? references : []) {
+    const rel = field(ref, "path");
+    if (isRelative(rel)) {
+      links.push(rel.endsWith(".json") ? rel : rel + "/tsconfig.json");
+    }
+  }
+  return links.flatMap((rel) => resolvePath(dir, rel) ?? []);
+}
+
+/**
+ * The repo paths of relative module-like string literals in a module config. A `.js`-style
+ * literal also gives its TS_SIBLINGS. An extensionless literal, such as `./vitest.shared`,
+ * gives each file it could resolve to (`rel` or `rel/index` with each of EXTENSIONS) once
+ * one of them is in the base, so a file that shadows the base's own is in the chain too.
+ * A sibling or resolution not in the base is a guess.
+ */
+function jsLinks(dir: string, text: string, inBase: (path: string) => boolean) {
+  const links: { path: string; guess: boolean }[] = [];
+  for (const [, rel = ""] of text.matchAll(RELATIVE)) {
+    if (MODULE.test(rel)) {
+      const path = resolvePath(dir, rel);
+      if (path !== undefined) links.push({ path, guess: false });
+      const ext = posix.extname(rel);
+      for (const sibling of TS_SIBLINGS.get(ext) ?? []) {
+        const file = resolvePath(dir, rel.slice(0, -ext.length) + sibling);
+        if (file !== undefined)
+          links.push({ path: file, guess: !inBase(file) });
+      }
+      continue;
+    }
+    const files = EXTENSIONS.flatMap((ext) => [
+      rel + ext,
+      rel + "/index" + ext,
+    ]).flatMap((file) => resolvePath(dir, file) ?? []);
+    if (files.some(inBase)) {
+      links.push(...files.map((path) => ({ path, guess: !inBase(path) })));
+    }
+  }
+  return links;
+}
+
+/**
+ * S3: the paths the base commit's configs extend, reference or import, up to
+ * CHAIN_DEPTH links from a root config. The base is trusted, so its files are read
+ * through git; an unparseable base tsconfig has no chain. Past a bound the floor fails
+ * closed with a `floor.limits` finding; the path bound does not count a guess (jsLinks).
+ */
+function configChain(git: Git, base: string, max: number) {
+  const chain = new Set<string>();
+  const findings: FloorFinding[] = [];
+  const blobs = new Map<string, string>();
+  try {
+    const list = ["ls-tree", "-r", "-z", "--full-tree", base];
+    for (const entry of entries(git(list, max))) {
+      const tab = entry.indexOf("\t");
+      const oid = TREE_ENTRY.exec(entry.slice(0, tab))?.[2];
+      if (oid !== undefined) blobs.set(entry.slice(tab + 1), oid);
+    }
+    type Item = { path: string; ts: boolean; depth: number };
+    const kind = (path: string) => {
+      const name = caseFold(path.split("/").at(-1) ?? "");
+      if (isRing0Path(name, CHAIN_ROOTS.ts)) return "ts";
+      return isRing0Path(name, CHAIN_ROOTS.js) ? "js" : undefined;
+    };
+    const queue: Item[] = [...blobs.keys()].flatMap((path) => {
+      const k = kind(path);
+      return k === undefined ? [] : [{ path, ts: k === "ts", depth: 0 }];
+    });
+    let reads = 0;
+    let paths = 0;
+    const inBase = (path: string) => blobs.has(path);
+    for (let item = queue.shift(); item; item = queue.shift()) {
+      const oid = blobs.get(item.path);
+      if (oid === undefined || item.depth >= CHAIN_DEPTH) continue;
+      if (++reads > MAX_CHAIN_READS) {
+        const detail = `config chain over ${String(MAX_CHAIN_READS)} files read`;
+        return { chain, findings: [limit(detail)] };
+      }
+      const text = git(["cat-file", "blob", oid], MAX_META).toString("utf8");
+      const dir = posix.dirname(item.path);
+      const links = item.ts
+        ? tsLinks(dir, text).map((path) => ({ path, guess: false }))
+        : jsLinks(dir, text, inBase);
+      for (const { path, guess } of links) {
+        if (chain.has(caseFold(path))) continue;
+        chain.add(caseFold(path));
+        if (!guess) paths += 1;
+        const ts = item.ts || kind(path) === "ts";
+        if (!LITERAL_DATA.test(path) || ts) {
+          queue.push({ path, ts, depth: item.depth + 1 });
+        }
+      }
+      if (paths > MAX_CHAIN) {
+        const detail = `config chain over ${String(MAX_CHAIN)} paths`;
+        return { chain, findings: [limit(detail)] };
+      }
+    }
+  } catch (error) {
+    if (!isOverBuffer(error)) throw error;
+    findings.push(limit("config chain over the byte limit"));
+  }
+  return { chain, findings };
 }
 
 /** The NUL-separated entries of git's `-z` output. */
@@ -356,13 +592,13 @@ export function checkCandidate(
   protectedGlobs: readonly string[],
   limits: FloorLimits = FLOOR_LIMITS,
 ): FloorChecked {
-  const { candidateTree, changes, findings } = candidateChanges(
+  const { candidateTree, changes, findings, chain } = candidateChanges(
     repo,
     baseCommit,
     limits,
   );
   return floorChecked(baseCommit, candidateTree, [
     ...findings,
-    ...floorFindings(changes, protectedGlobs),
+    ...floorFindings(changes, protectedGlobs, chain),
   ]);
 }
