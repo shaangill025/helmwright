@@ -88,6 +88,7 @@
         "packages/*/evals/**",
         "rot-register.json",
         "packages/harness/src/run/**",
+        "packages/harness/src/intake/**",
         "packages/harness/src/cli.ts",
         "packages/schema/src/index.ts",
         "packages/schema/generated/**",

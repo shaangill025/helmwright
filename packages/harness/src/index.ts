@@ -177,3 +177,11 @@ export {
   normalizeHost,
   normalizePath,
 } from "./permission/normalize.ts";
+export type { IntakeInput, IntakeResult } from "./intake/rubric.ts";
+export {
+  INTAKE_RUBRIC_VERSION,
+  IntakeError,
+  classify,
+  overrideDirection,
+  upgradeOnly,
+} from "./intake/rubric.ts";

@@ -253,6 +253,19 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/harness/src/intake/rubric.ts",
+    "ring": 0,
+    "assumption": "Intake can be classified from the task's declared scope and facts alone, with no tree inspection until the M2 detectors (Q44): Markdown anywhere, docs/ and test directories or *.test.*/*.spec.* files are the only chore categories, any entry that is or may cover a Ring 0 path is at least bounded, and the harness only reclassifies upward.",
+    "evidence": [
+      "03 Intake",
+      "decisions Q52",
+      "packages/harness/test/intake/rubric.test.ts"
+    ],
+    "added": "2026-10-07",
+    "lastReviewed": "2026-10-07",
+    "reviewTrigger": ["model", "milestone"]
+  },
+  {
     "component": "packages/harness/src/index.ts",
     "ring": 2,
     "assumption": "The harness is a private workspace package used in process: its index re-exports the module APIs, and no authenticated state/action API exists until B13.",
