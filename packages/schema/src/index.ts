@@ -53,6 +53,21 @@ export type {
   RotReviewTrigger,
 } from "../generated/rot-register.ts";
 export { validate as validateRotRegister } from "../generated/rot-register.validate.js";
+export type {
+  ArtifactRecord,
+  ArtifactType,
+  ObjectRecord,
+  RuleRecord,
+  RuleStatus,
+  RunRecord,
+  RunTerminal,
+  SkillRecord,
+  SkillStatus,
+  TaskClass,
+  TaskRecord,
+  TaskStatus,
+} from "../generated/objects.ts";
+export { validate as validateObjectRecord } from "../generated/objects.validate.js";
 export type { HelmwrightConfig } from "../generated/helmwright-config.ts";
 export { validate as validateHelmwrightConfig } from "../generated/helmwright-config.validate.js";
 
