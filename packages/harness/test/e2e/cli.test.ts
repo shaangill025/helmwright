@@ -1971,6 +1971,8 @@ describe("intake (e2e, B10-2)", () => {
         attestation: { kind: "none" },
         scopeSha256: sha256Of(["docs/a.md"]),
         rubricVersion: "intake-rubric-1",
+        // B10-3 S2: the effective friction of `to`, not the chore's minimal.
+        friction: { intensity: "moderate", source: "default" },
       });
       const ids = events.map((e) => e.payload["toolCallId"]);
       expect(ids).not.toContain(OVERRIDE_ID);
@@ -2057,6 +2059,7 @@ describe("intake (e2e, B10-2)", () => {
         from: "bounded",
         to: "chore",
         reason: "formatting-only",
+        friction: { intensity: "minimal", source: "choreDowngrade" },
       });
       expectReplayMatches(out.runId, events);
     },
@@ -2116,6 +2119,44 @@ describe("intake (e2e, B10-2)", () => {
         },
       ]);
       expectReplayMatches(out.runId, events);
+    },
+  );
+
+  it(
+    "fails a run whose Ring 0 link targets exceed the rubric's limit (B10-3)",
+    { timeout: T },
+    () => {
+      // With the floor's paths these 1020 link targets exceed the rubric's 1024.
+      mkdirSync(join(repo, "t"));
+      mkdirSync(join(repo, ".github"));
+      for (let i = 0; i < 1020; i++) {
+        const name = String(i) + ".md";
+        writeFileSync(join(repo, "t", name), "x\n");
+        symlinkSync("../t/" + name, join(repo, ".github", name));
+      }
+      git("-C", repo, "add", "-A");
+      git(
+        ...["-C", repo, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "links"],
+      );
+      const { status, stderr, out } = runIntake("write-file.turns.json", {
+        scope: ["docs/a.md"],
+      });
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({
+        kind: "failed",
+        error:
+          "run refused: the worktree's Ring 0 link targets exceed the intake rubric's limits",
+      });
+      const events = expectWellFormedLog(out.runId);
+      expect(events.map((e) => e.type)).toEqual([
+        ...["run.started", "config.accepted", "run.terminated"],
+      ]);
+      const replay = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        terminated: true,
+        permissionFaults: [],
+      });
     },
   );
 

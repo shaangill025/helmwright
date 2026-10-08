@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { RING0_CONFIG_KEYS, type Event } from "@helmwright/schema";
+import {
+  CONFIG_DEFAULTS,
+  RING0_CONFIG_KEYS,
+  type Event,
+  type IntakeClass,
+} from "@helmwright/schema";
+import { frictionFor } from "../intake/rubric.ts";
 import { canonical } from "./policy.ts";
 import { INTAKE_OVERRIDE_CALL_ID, RING0_CONFIG_CALL_ID } from "./events.ts";
 
@@ -42,6 +48,27 @@ function overrideInputSha256(override: Event["payload"]): string {
   return createHash("sha256").update(canonical(input), "utf8").digest("hex");
 }
 
+/**
+ * B10-3 S2: whether an override's friction is the rule's for its `to` under the config
+ * defaults, the only friction a run admits (N3 of B10-2).
+ */
+function frictionMatches(override: Event["payload"]): boolean {
+  const { to, friction } = override;
+  if (!RANK.includes(to) || typeof friction !== "object" || friction === null) {
+    return false;
+  }
+  const want = frictionFor(to as IntakeClass, CONFIG_DEFAULTS.friction);
+  const got = friction as Record<string, unknown>;
+  return (
+    Object.keys(got).length === 2 &&
+    got["intensity"] === want.intensity &&
+    got["source"] === want.source
+  );
+}
+
+/** B10-3 N2: an intake event after the engine's first step. */
+const LATE_INTAKE = "intake event after the run's first engine step";
+
 /** What, if anything, lets a tool call's handler run now. */
 type Grant = "allow" | "approved" | "none";
 
@@ -73,6 +100,10 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  *   (S3); one that is not upward follows a fault-free approval of the same ruling on
  *   the INTAKE_OVERRIDE_CALL_ID ask, whose input is this override (S3), and uses it
  *   up; no `loop.tool.called` with that ID ran; N1: one `intake.classified` per run.
+ * - B10-3: an `intake.overridden` has the friction the rubric's rule gives its `to`
+ *   under the config defaults (S2); no intake event follows the run's first assistant
+ *   `message.appended` or `loop.tool.called` (N2); an approval of the override ask is
+ *   used up by an `intake.overridden` in the run (N2).
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -95,6 +126,9 @@ export function permissionFaults(events: readonly Event[]): string[] {
   let classifiedSeen = false;
   let overrideRuled = false;
   let overrideInput: unknown;
+  /** B10-3 N2: the seq of the override ask's granted approval; an engine step was seen. */
+  let overrideApproved: number | undefined;
+  let engineStepped = false;
   let acceptedSeen = false;
   for (const [i, { seq, type, payload }] of events.entries()) {
     const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
@@ -172,6 +206,7 @@ export function permissionFaults(events: readonly Event[]): string[] {
       }
       const granted = approved && bound.has(key) && faults.length === before;
       grants.set(key, granted ? "approved" : "none");
+      if (granted && key === INTAKE_OVERRIDE_CALL_ID) overrideApproved = seq;
     } else if (type === "config.accepted") {
       if (acceptedSeen) fault("more than one config.accepted in one run");
       acceptedSeen = true;
@@ -183,15 +218,26 @@ export function permissionFaults(events: readonly Event[]): string[] {
         fault("config.accepted approved without an approval of its ask");
       }
       grants.set(RING0_CONFIG_CALL_ID, "none");
+    } else if (type === "message.appended") {
+      const message: unknown = payload["message"];
+      const role = (message as Record<string, unknown> | null)?.["role"];
+      if (role === "assistant") engineStepped = true;
     } else if (type === "intake.classified") {
+      if (engineStepped) fault(LATE_INTAKE);
       if (classifiedSeen) fault("more than one intake.classified in one run");
       classifiedSeen = true;
       intakeClass = payload["class"];
     } else if (type === "intake.overridden") {
       const { from, to } = payload;
+      if (engineStepped) fault(LATE_INTAKE);
       if (from !== intakeClass) {
         fault(
           "intake.overridden from another class than the run's intake.classified",
+        );
+      }
+      if (!frictionMatches(payload)) {
+        fault(
+          "intake.overridden with another friction than the rule gives its class",
         );
       }
       if (RANK.indexOf(to) > RANK.indexOf(from) && RANK.includes(from))
@@ -205,6 +251,7 @@ export function permissionFaults(events: readonly Event[]): string[] {
       }
       grants.set(INTAKE_OVERRIDE_CALL_ID, "none");
     } else if (type === "loop.tool.called") {
+      engineStepped = true;
       const reserved = key === undefined ? undefined : RESERVED.get(key);
       if (reserved !== undefined && payload["status"] !== "denied") {
         fault(reserved);
@@ -224,6 +271,14 @@ export function permissionFaults(events: readonly Event[]): string[] {
         fault("tool call ran as another action than its ruling requested");
       }
     }
+  }
+  if (
+    overrideApproved !== undefined &&
+    grants.get(INTAKE_OVERRIDE_CALL_ID) === "approved"
+  ) {
+    faults.push(
+      `seq ${String(overrideApproved)}: approved intake override ask without an intake.overridden`,
+    );
   }
   return faults;
 }

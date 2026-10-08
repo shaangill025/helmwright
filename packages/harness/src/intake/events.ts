@@ -1,13 +1,16 @@
 import {
   validateIntakeEvent,
-  type HelmwrightConfig,
   type IntakeClass,
   type IntakeClassified,
   type IntakeDeclared,
-  type IntakeFriction,
   type IntakeOverridden,
 } from "@helmwright/schema";
-import { IntakeError, type IntakeResult } from "./rubric.ts";
+import {
+  IntakeError,
+  frictionFor,
+  type IntakeInput,
+  type IntakeResult,
+} from "./rubric.ts";
 
 /** OQ-B10-1: the fixed reason a run fails when a downward override is not approved. */
 export const INTAKE_OVERRIDE_NOT_APPROVED =
@@ -17,19 +20,6 @@ export const INTAKE_OVERRIDE_NOT_APPROVED =
 export interface IntakeOverride {
   readonly to: IntakeClass;
   readonly reason: string;
-}
-
-/**
- * S2: the friction `cls` sets under `config`, by the rubric's rule: minimal for a chore
- * when the chore downgrade is on, else the default intensity.
- */
-export function effectiveFriction(
-  cls: IntakeClass,
-  config: Required<NonNullable<HelmwrightConfig["friction"]>>,
-): IntakeFriction {
-  return cls === "chore" && config.choreDowngrade === "on"
-    ? { intensity: "minimal", source: "choreDowngrade" }
-    : { intensity: config.defaultIntensity, source: "default" };
 }
 
 /** `payload` if it is a valid intake event of its kind. @throws IntakeError with fixed text */
@@ -72,11 +62,15 @@ export function intakeClassified(
   });
 }
 
-/** S3: `from` is always the class this run just classified, never the caller's. */
+/**
+ * S3: `from` is always the class this run just classified, never the caller's.
+ * B10-3 S2: `friction` is `to`'s by the rubric's rule under the run's `friction` config.
+ */
 export function intakeOverridden(
   taskId: string,
   result: IntakeResult,
   override: IntakeOverride,
+  friction: IntakeInput["friction"],
 ): IntakeOverridden {
   return checked({
     kind: "intake.overridden",
@@ -88,5 +82,6 @@ export function intakeOverridden(
     attestation: { kind: "none" },
     scopeSha256: result.scopeSha256,
     rubricVersion: result.rubricVersion,
+    friction: frictionFor(override.to, friction),
   });
 }

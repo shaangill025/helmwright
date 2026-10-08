@@ -34,7 +34,6 @@ import {
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
-  effectiveFriction,
   intakeClassified,
   intakeOverridden,
   type IntakeOverride,
@@ -43,6 +42,7 @@ import {
   IntakeError,
   classify,
   overrideDirection,
+  type IntakeInput,
   type IntakeResult,
 } from "../intake/rubric.ts";
 import {
@@ -579,6 +579,7 @@ function intakeRecords(
   task: Task,
   result: IntakeResult,
   override: IntakeOverride | undefined,
+  friction: IntakeInput["friction"],
 ) {
   const scope = Array.isArray(task.intake.scope)
     ? (task.intake.scope as string[])
@@ -591,7 +592,7 @@ function intakeRecords(
   const overridden =
     override === undefined || direction === "same"
       ? undefined
-      : intakeOverridden(task.id, result, override);
+      : intakeOverridden(task.id, result, override, friction);
   const classified = intakeClassified(task.id, scope, declared, result);
   return { result, classified, direction, overridden };
 }
@@ -605,6 +606,12 @@ export interface RunTaskResult extends RunOutcome {
 
 const LOG_FILE = "session.sqlite";
 const WORKSPACES = "workspaces";
+/**
+ * B10-3: why a run fails whose worktree's Ring 0 link targets, with the floor and the
+ * policy's Ring 0 paths, are over the rubric's limits (such as its 1024 Ring 0 paths).
+ */
+export const INTAKE_LINKS_REFUSED =
+  "run refused: the worktree's Ring 0 link targets exceed the intake rubric's limits";
 /** OQ1: why a run whose Ring 0 config change was not approved fails. */
 export const RING0_NOT_APPROVED =
   "Ring 0 configuration changed and was not approved";
@@ -627,6 +634,8 @@ export const RING0_NOT_APPROVED =
  * `intake.classified` is logged after the Ring 0 check. An upward or downward
  * override logs `intake.overridden`; a downward one is first asked like the Ring 0
  * change, and unless approved the run fails with INTAKE_OVERRIDE_NOT_APPROVED.
+ * B10-3: a reclassification with the worktree's Ring 0 link targets that the rubric
+ * refuses fails the run with INTAKE_LINKS_REFUSED.
  * @throws UsageError for an invalid task, intake, override, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
@@ -662,7 +671,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   // Validated before any workspace work; reclassified with the link targets in connect.
   let intake: ReturnType<typeof intakeRecords>;
   try {
-    intake = intakeRecords(task, classifyWith([]), override);
+    intake = intakeRecords(task, classifyWith([]), override, friction);
   } catch (error) {
     if (!(error instanceof IntakeError)) throw error;
     throw new UsageError("task." + error.message, { cause: error });
@@ -765,9 +774,15 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           accepted("approved");
         }
         // S1: the worktree's Ring 0 link targets count too; this only raises the class.
-        const linked = classifyWith(ring0);
+        let linked: IntakeResult;
+        try {
+          linked = classifyWith(ring0);
+        } catch (error) {
+          if (!(error instanceof IntakeError)) throw error;
+          throw new Error(INTAKE_LINKS_REFUSED, { cause: error });
+        }
         if (overrideDirection(intake.result.class, linked.class) === "up") {
-          intake = intakeRecords(task, linked, override);
+          intake = intakeRecords(task, linked, override, friction);
         }
         const { result, classified, direction, overridden } = intake;
         // B10-2: after the Ring 0 check, before the first engine step; never in the context.
@@ -784,8 +799,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         }
         if (overridden !== undefined) {
           emit("intake.overridden", { ...overridden });
-          const { to } = overridden;
-          const effective = effectiveFriction(to, friction);
+          const { to, friction: effective } = overridden;
           const shown = { class: to, reasons: [], friction: effective };
           options.onIntake?.({ kind: "overridden", ...shown });
         }

@@ -255,7 +255,7 @@
   {
     "component": "packages/harness/src/intake/rubric.ts",
     "ring": 0,
-    "assumption": "Intake can be classified from the task's declared scope and facts alone, with no tree inspection until the M2 detectors (Q44). The scope dialect is * within a segment and whole-segment ** only. Chore needs every entry provably in a fail-safe category: Markdown files, non-build files under docs/, non-setup files under test directories, or *.test.*/*.spec.* code files, never AGENTS.md, CLAUDE.md, .claude/ or .changeset/ paths. Any entry that is or may cover a Ring 0 path is at least bounded, and the harness only reclassifies strictly upward.",
+    "assumption": "Intake can be classified from the task's declared scope and facts alone, with no tree inspection until the M2 detectors (Q44). The scope dialect is * within a segment and whole-segment ** only. Chore needs every entry provably in a fail-safe category: Markdown files, non-build files under docs/, non-setup files under test directories, or *.test.*/*.spec.* code files, never AGENTS.md, CLAUDE.md, .claude/ or .changeset/ paths. Any entry that is or may cover a Ring 0 path is at least bounded, and the harness only reclassifies strictly upward. One friction rule (frictionFor) gives the friction of a classification and of an override: minimal for a chore when the chore downgrade is on, else the default intensity.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
@@ -268,7 +268,7 @@
   {
     "component": "packages/harness/src/intake/events.ts",
     "ring": 0,
-    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG).",
+    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG), whose inputSha256 binds the override's from, to, reason and scopeSha256. After the Ring 0 check the task is classified again with the worktree's Ring 0 link targets added, which can only raise the class; if the rubric refuses that input (over its 1024 Ring 0 paths) the run fails with a fixed reason. intake.overridden logs the effective friction of to, and replay checks it against the config defaults, that intake events come before the first engine step, and that an approved override ask is used.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
