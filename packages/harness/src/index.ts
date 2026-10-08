@@ -192,3 +192,9 @@ export {
   sortFindings,
 } from "./floor/rules.ts";
 export { FloorError, floorChecked } from "./floor/events.ts";
+export type { CandidateChanges, FloorLimits, FloorRepo } from "./floor/tree.ts";
+export {
+  FLOOR_LIMITS,
+  candidateChanges,
+  checkCandidate,
+} from "./floor/tree.ts";
