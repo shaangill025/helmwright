@@ -20,6 +20,7 @@ import {
   createBroker,
   deriveMessages,
   executeRun,
+  floorChecked,
   openSessionLog,
   permissionFaults,
   runRing0,
@@ -166,6 +167,8 @@ function run(
     ...{ log: runLog, graphId: "graph-1", runId: "run-1", nodeId: "node-1" },
     ...{ title: "task", limits: LIMITS, started: {}, engine },
     ...{ tools: BROKER_TOOLS, connect },
+    // SF-2: a run with no floor cannot complete.
+    floor: () => floorChecked("a".repeat(40), "a".repeat(40), []),
   });
 }
 

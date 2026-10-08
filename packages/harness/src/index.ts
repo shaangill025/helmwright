@@ -57,6 +57,7 @@ export {
   reapSandboxContainers,
   resolveDockerEndpoint,
   runInSandbox,
+  sandboxContainersGone,
 } from "./sandbox/docker.ts";
 export type {
   AppendInput,

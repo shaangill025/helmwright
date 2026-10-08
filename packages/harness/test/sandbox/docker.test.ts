@@ -22,6 +22,7 @@ import {
   reapSandboxContainers,
   resolveDockerEndpoint,
   runInSandbox,
+  sandboxContainersGone,
   type SandboxDeps,
   type SandboxRequest,
 } from "../../src/index.ts";
@@ -409,6 +410,8 @@ describe("runInSandbox", () => {
     );
     const error = await run.catch((e: unknown) => e);
     expect(String(error).length).toBeLessThan(5_000);
+    // SF-1: the container is killed, removed and confirmed gone, not fire-and-forget.
+    expect(commands(fake.calls()).slice(-3)).toEqual(["kill", "rm", "ps"]);
   });
 
   it("flags 126/127 as a start failure, keeping the exit code", async () => {
@@ -561,4 +564,25 @@ describe("buildSandboxImage", () => {
       }
     }
   }, 30_000);
+});
+
+describe("sandboxContainersGone (SF-1)", () => {
+  it("is true only once docker lists none of the names", async () => {
+    const ok = fakeDocker("ok");
+    await expect(sandboxContainersGone([NAME], ok.deps)).resolves.toBe(true);
+    const ps = ok.calls().map((call) => call.args ?? []);
+    expect(ps).toEqual([
+      ["ps", "-a", "-q", "--filter", "name=^/" + NAME + "$"],
+    ]);
+    const left = fakeDocker("signal");
+    await expect(sandboxContainersGone([NAME], left.deps)).resolves.toBe(false);
+  });
+
+  it("is false if docker fails, and asks nothing for no names", async () => {
+    const broken = { ...fakeDocker("ok").deps, dockerBinary: "/nonexistent/x" };
+    await expect(sandboxContainersGone([NAME], broken)).resolves.toBe(false);
+    const none = fakeDocker("ok");
+    await expect(sandboxContainersGone([], none.deps)).resolves.toBe(true);
+    expect(none.calls()).toEqual([]);
+  });
 });

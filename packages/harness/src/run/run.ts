@@ -80,7 +80,11 @@ import type {
   Message,
   ToolSpec,
 } from "../loop/types.ts";
-import { buildSandboxImage, reapSandboxContainers } from "../sandbox/docker.ts";
+import {
+  buildSandboxImage,
+  reapSandboxContainers,
+  sandboxContainersGone,
+} from "../sandbox/docker.ts";
 
 /** The caller's input was missing or invalid (the CLI exits 64). */
 export class UsageError extends Error {
@@ -291,6 +295,11 @@ export interface RunSetup {
    * means the floor could not check the candidate (fail closed).
    */
   readonly floor?: () => FloorChecked;
+  /**
+   * SF-1: resolves true once every sandbox container the run started is confirmed
+   * gone; false (or a rejection) fails the run with SANDBOX_CLEANUP_FAILED.
+   */
+  readonly confirmCleanup?: () => Promise<boolean>;
 }
 
 /**
@@ -326,6 +335,12 @@ async function settled(
   }
 }
 
+/** What `executeRun` resolves with. */
+export interface RunEnd extends RunOutcome {
+  /** N-1: the `floor.checked` payload logged; null if none was. */
+  readonly floor: FloorChecked | null;
+}
+
 export interface RunOutcome {
   readonly terminal: Terminal;
   readonly summary: string;
@@ -350,11 +365,14 @@ export interface RunOutcome {
  * B3-2: with `setup.floor`, once cleanup is confirmed (not unconfirmed, no
  * SANDBOX_CLEANUP_FAILED halt) the floor runs and `floor.checked` is logged just
  * before `run.terminated`; a run that would complete fails with FLOOR_REJECTED on a
- * finding, or FLOOR_UNCHECKED if the floor throws. Other terminals are kept.
+ * finding, or FLOOR_UNCHECKED if the floor throws, its event cannot be logged, or
+ * there is no `setup.floor` (SF-2). Other terminals are kept. SF-1: first,
+ * `setup.confirmCleanup` must confirm every container gone, else the run is halted
+ * with SANDBOX_CLEANUP_FAILED and the floor is skipped.
  * @throws RangeError for an invalid `settleMs` or `limits` (N-f), before anything is
  * logged; Error if `run.started` cannot be logged.
  */
-export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
+export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   const { log, graphId, runId, nodeId, tools } = setup;
   const settleMs = setup.settleMs ?? SETTLE_TIMEOUT_MS;
   if (!Number.isInteger(settleMs) || settleMs < 0 || settleMs > MAX_LIMIT) {
@@ -510,6 +528,11 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     thrown = { error };
   }
   const unconfirmed = !(await settled(pending, settleMs));
+  // SF-1: no container the run started may outlive it (a background writer).
+  if (!unconfirmed && setup.confirmCleanup !== undefined) {
+    const gone = await setup.confirmCleanup().catch(() => false);
+    if (!gone) halted = SANDBOX_CLEANUP_FAILED;
+  }
   ended = true;
   // SF-3, S-1: one order for every failure, whatever ended the loop.
   const message = (f?: { error: unknown }) =>
@@ -542,15 +565,22 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       : failure === undefined && result !== undefined
         ? outcome(result.terminal, result.summary)
         : failed(failure ?? "the run ended without a result");
-  // B3-2: only once no sandbox can still write to the worktree (S6, SF-4).
-  const floorError =
-    setup.floor === undefined ||
-    halted === SANDBOX_CLEANUP_FAILED ||
-    unconfirmed
-      ? undefined
-      : checkFloor(setup.floor, (checked) => {
-          append("floor.checked", { ...checked }, true);
-        });
+  // B3-2: only once no sandbox can still write to the worktree (S6, SF-1, SF-4).
+  let logged: FloorChecked | null = null;
+  // SF-2: a run with no floor cannot complete.
+  let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
+  if (setup.floor !== undefined && !unconfirmed) {
+    if (halted !== SANDBOX_CLEANUP_FAILED) {
+      try {
+        const checked = setup.floor();
+        append("floor.checked", { ...checked }, true);
+        logged = checked;
+        if (checked.verdict !== "pass") floorError = FLOOR_REJECTED;
+      } catch (error) {
+        floorError = FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
+      }
+    }
+  }
   // OQ-B3-2: a run that ended otherwise keeps its terminal.
   const end =
     floorError !== undefined && done.terminal.kind === "completed"
@@ -558,7 +588,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       : done;
   try {
     append("run.terminated", { agentId: nodeId, ...end }, true);
-    return end;
+    return { ...end, floor: logged };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(failure ?? message(logFailure) ?? errorMessage(error));
@@ -567,24 +597,7 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     } catch {
       // The log itself may be what failed.
     }
-    return lost;
-  }
-}
-
-/**
- * Runs the floor and logs its `floor.checked`; the reason the run must not complete,
- * if any: FLOOR_REJECTED, or FLOOR_UNCHECKED with the escaped error.
- */
-function checkFloor(
-  floor: () => FloorChecked,
-  log: (checked: FloorChecked) => void,
-): string | undefined {
-  try {
-    const checked = floor();
-    log(checked);
-    return checked.verdict === "pass" ? undefined : FLOOR_REJECTED;
-  } catch (error) {
-    return FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
+    return { ...lost, floor: logged };
   }
 }
 
@@ -650,9 +663,7 @@ function intakeRecords(
   return { result, classified, direction, overridden };
 }
 
-export interface RunTaskResult extends RunOutcome {
-  /** B3-2: the run's logged floor check; null if the floor did not check. */
-  readonly floor: FloorChecked | null;
+export interface RunTaskResult extends RunEnd {
   readonly graphId: string;
   readonly runId: string;
   readonly nodeId: string;
@@ -766,7 +777,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
-    let checked: FloorChecked | null = null;
+    const containers = new Set<string>();
     const outcome = await executeRun({
       log,
       graphId,
@@ -807,7 +818,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           ...(presence === undefined ? {} : { presence }),
         };
         const broker = createBroker({
-          ...{ image, workspace, workspaceRoot, halt },
+          ...{ image, workspace, workspaceRoot, halt, containers },
           permission: { ...permission, agentId: nodeId },
         });
         const repo = config.repoId;
@@ -864,17 +875,15 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       // B1: the host's common dir, never one the worktree names; protected = Ring 0.
       floor: () => {
         const repo = { worktree: workspace, commonDir: config.repoId };
-        const result = checkCandidate(repo, baseCommit, ring0Paths);
-        checked = result;
-        return result;
+        return checkCandidate(repo, baseCommit, ring0Paths);
       },
+      confirmCleanup: () => sandboxContainersGone([...containers]),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.checkDesync === undefined
         ? {}
         : { checkDesync: options.checkDesync }),
     });
-    const floor = checked;
-    return { ...outcome, floor, graphId, runId, nodeId, workspace };
+    return { ...outcome, graphId, runId, nodeId, workspace };
   } finally {
     log.close();
   }

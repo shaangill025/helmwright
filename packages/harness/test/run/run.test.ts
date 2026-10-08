@@ -91,6 +91,8 @@ function run(
     tools: [{ name: "t", description: "test tool" }],
     connect,
     checkDesync,
+    // SF-2: a run with no floor cannot complete; tests that omit it get a pass.
+    floor: () => floorChecked("a".repeat(40), "a".repeat(40), []),
     ...more,
   });
 }
@@ -190,7 +192,8 @@ describe("executeRun", () => {
     expect(outcome.terminal).toMatchObject({ kind: "failed" });
     expect(outcome.summary).toContain("run refused");
     const types = log.events({ runId: "run-1" }).map((e) => e.type);
-    expect(types).toEqual(["run.started", "run.terminated"]);
+    // The floor still checks the unchanged candidate.
+    expect(types).toEqual(["run.started", "floor.checked", "run.terminated"]);
   });
 
   it("fails a run halted in its last allowed iteration (SF-3)", async () => {
@@ -543,13 +546,73 @@ describe("executeRun's sensor floor (B3-2)", () => {
     expect(types()).not.toContain("floor.checked");
   });
 
-  it("faults the replay of a completed run with no floor.checked", async () => {
+  it("faults a completed run with no passing floor.checked", async () => {
     const outcome = await run(mutatingEngine(0).engine, true);
     expect(outcome.terminal).toEqual({ kind: "completed" });
+    const events = log.events({ runId: "run-1" });
     const seq = String(terminated()?.seq);
-    // replayRun reports these with the permission faults (e2e: expectReplayMatches).
-    expect(floorFaults(log.events({ runId: "run-1" }))).toEqual([
+    expect(
+      floorFaults(events.filter((e) => e.type !== "floor.checked")),
+    ).toEqual([
       "seq " + seq + ": completed run without a passing floor.checked",
     ]);
   });
+
+  it("returns the floor.checked it logged (N-1)", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true);
+    const logged = log.events({ runId: "run-1" }).at(-2)?.payload;
+    expect(outcome.floor).toEqual(logged);
+  });
+
+  it("fails closed with no floor (SF-2)", async () => {
+    const setup = { log, graphId: "graph-1", runId: "run-1", nodeId: "node-1" };
+    const outcome = await executeRun({
+      ...setup,
+      ...{ title: "task", limits: LIMITS, started: {} },
+      engine: mutatingEngine(0).engine,
+      tools: [{ name: "t", description: "test tool" }],
+      connect: () => ok,
+    });
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: FLOOR_UNCHECKED,
+    });
+    expect(outcome.floor).toBeNull();
+  });
+
+  it("fails closed if floor.checked cannot be logged (N-1)", async () => {
+    const failing: SessionLog = {
+      ...log,
+      append: (event) => {
+        if (event.type === "floor.checked") throw new Error("disk full");
+        return log.append(event);
+      },
+    };
+    const outcome = await run(mutatingEngine(0).engine, true, failing);
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: FLOOR_UNCHECKED + ": disk full",
+    });
+    expect(outcome.floor).toBeNull();
+  });
+
+  it.each([
+    ["reports a leftover container", () => Promise.resolve(false)],
+    ["cannot ask docker", () => Promise.reject(new Error("no docker"))],
+  ])(
+    "skips the floor and fails when cleanup %s (SF-1)",
+    async (_, confirmCleanup) => {
+      const floor = vi.fn(pass);
+      const outcome = await run(mutatingEngine(0).engine, true, log, () => ok, {
+        floor,
+        confirmCleanup,
+      });
+      expect(outcome.terminal).toEqual({
+        kind: "failed",
+        error: SANDBOX_CLEANUP_FAILED,
+      });
+      expect(floor).not.toHaveBeenCalled();
+      expect(types()).not.toContain("floor.checked");
+    },
+  );
 });
