@@ -30,11 +30,12 @@
   {
     "component": "packages/harness/src/log/session-log.ts",
     "ring": 0,
-    "assumption": "The session log is node:sqlite with one writer process per log (a second writer can fail with SQLITE_BUSY after the 5 s busy timeout); its events table is append-only and gap-free even for a raw connection. Every append and every read also passes checkObjectEvent (B5-2): a refused event is not stored and takes no seq (a transaction rolls back whole), and a refused row that a raw writer inserted makes every read that includes it fail as a corrupt event, while reads filtered to other types still work.",
+    "assumption": "The session log is node:sqlite with one writer process per log (a second writer can fail with SQLITE_BUSY after the 5 s busy timeout); its events table is append-only and gap-free even for a raw connection. Every append and every read also passes checkObjectEvent (B5-2): a refused event is not stored and takes no seq (a transaction rolls back whole), and a refused row that a raw writer inserted makes every read that includes it fail as a corrupt event, while reads filtered to other types still work. Schema v3 (B5-3): each append applies its event to the objects projection inside a savepoint of the same transaction, so a refusal stores neither, even when a caller catches it; the objects triggers call hw_projection_write, which every harness connection registers before migrating and whose name must never change; a v2 log migrates once in one BEGIN IMMEDIATE that backfills through the checked read and stays v2 on any failure.",
     "evidence": [
       "decisions Q26",
       "06 Spine",
       "decisions B5-2 owner answers",
+      "decisions B5-3 owner answers",
       "packages/harness/test/log/session-log.test.ts",
       "packages/harness/test/objects/events.test.ts"
     ],
@@ -334,6 +335,21 @@
     "added": "2026-10-08",
     "lastReviewed": "2026-10-08",
     "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/objects/projection.ts",
+    "ring": 0,
+    "assumption": "Object rows are a projection of the events: applyEvent writes a row only in the append transaction of its event, as canonical JSON, read back with JSON.parse, validateObjectRecord and an id, kind, ring and created_seq check, never json_extract or SQL text order. A creation refuses an existing ID; links must exist (run to task, artifact to run, decision to task and an open run of it, footprint to footprint Artifacts, outcome to decision, run and footprint entries); a footprint is set once and only on a resolved decision, so no owned decision has one before SIG; outcomes only append, up to the 1024 cap; a terminal is set once, and run.terminated with no Run row is a no-op. The trigger flag stops accidental raw writes, not a forger. 2026-10-08: until SIG adds a signed quarantine, recovery from a forged event is a new state dir; review at SIG.",
+    "evidence": [
+      "decisions Q26",
+      "decisions Q47",
+      "decisions B5-3 owner answers",
+      "packages/harness/test/objects/projection.test.ts",
+      "packages/harness/test/log/session-log.test.ts"
+    ],
+    "added": "2026-10-08",
+    "lastReviewed": "2026-10-08",
+    "reviewTrigger": ["model", "engine", "milestone"]
   },
   {
     "component": "packages/harness/src/index.ts",
