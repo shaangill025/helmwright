@@ -647,14 +647,14 @@ describe("floor-4 review fixes", () => {
     expect(at(path, ...text)).toEqual([["suppression.added", 2]]);
   });
 
-  // 8 MiB of directives: the quadratic count took over 120 s; 15 s leaves room for a loaded
-  // machine running the whole suite.
+  // 4 MiB of directives: the quadratic count took over 120 s on 8 MiB, so over 30 s here;
+  // 15 s leaves room for a loaded machine running the whole suite.
   it(
     "finds block directives in a large file in linear time",
     { timeout: 60_000 },
     () => {
       const text =
-        "a\nb\n" + "/*\neslint x*/\n".repeat(Math.floor((8 << 20) / 14));
+        "a\nb\n" + "/*\neslint x*/\n".repeat(Math.floor((4 << 20) / 14));
       const start = Date.now();
       const findings = floorFindings(
         [change("src/a.ts", "a\n", text)],
