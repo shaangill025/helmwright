@@ -116,7 +116,7 @@ const kinds = [...new Set(events.map(([, event]) => event.kind))];
 /** Event types with no variant: reserved until A3 and SIG (OD-2), or not object events. */
 const reserved = [
   "decision.owner.precommit",
-  "decision.owner.resolve",
+  "decision.owner.precommit.skip",
   "decision.recommendation.revealed",
 ];
 
