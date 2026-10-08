@@ -32,9 +32,10 @@ const isAskRuling = (e: Event | undefined, id: string): boolean =>
  *   requested (N-c); any `loop.tool.called`, denied too, uses up the grant (N-b);
  * - N4: each call has at most one `permission.evaluated`, and an exfiltration
  *   ruling always denies;
- * - OQ1: a `config.accepted` with `how` "approved" follows a fault-free approval of
- *   the RING0_CONFIG_CALL_ID ask and uses it up; no `loop.tool.called` with that ID
- *   ran.
+ * - OQ1: a run has at most one `config.accepted`, with its `run.started` Ring 0
+ *   digest; with `how` "approved" it follows a fault-free approval of an always-ask
+ *   `config.set` ruling (always-ask.ring0-setting) on the RING0_CONFIG_CALL_ID ask
+ *   and uses it up (N1); no `loop.tool.called` with that ID ran.
  * A missing tool call ID counts as unmatched. Each fault is fixed text and the event's
  * `seq`, never payload text, so it is safe to show. IDs are only Map and Set keys.
  */
@@ -49,12 +50,28 @@ export function permissionFaults(events: readonly Event[]): string[] {
   const evaluatedIds = new Set<string>();
   /** N-c: the action each call's evaluated ruling requested. */
   const requested = new Map<string, unknown>();
+  /** OQ1: the run's Ring 0 digest, its ruling on the reserved ID, a config.accepted. */
+  let ring0Sha256: unknown;
+  let ring0Ruled = false;
+  let acceptedSeen = false;
   for (const [i, { seq, type, payload }] of events.entries()) {
     const fault = (text: string) => faults.push(`seq ${String(seq)}: ${text}`);
     const id = payload["toolCallId"];
     const key = typeof id === "string" ? id : undefined;
-    if (type === "permission.evaluated" || type === "permission.rejected") {
+    if (type === "run.started") {
+      const config: unknown = payload["config"];
+      ring0Sha256 = (config as Record<string, unknown> | null)?.["ring0Sha256"];
+    } else if (
+      type === "permission.evaluated" ||
+      type === "permission.rejected"
+    ) {
       if (type === "permission.evaluated") {
+        if (key === RING0_CONFIG_CALL_ID) {
+          ring0Ruled =
+            payload["requested"] === "config.set" &&
+            payload["tier"] === "alwaysAsk" &&
+            payload["ruleId"] === "always-ask.ring0-setting";
+        }
         if (key !== undefined && evaluatedIds.has(key)) {
           fault("more than one permission.evaluated for one tool call");
         }
@@ -113,8 +130,13 @@ export function permissionFaults(events: readonly Event[]): string[] {
       const granted = approved && bound.has(key) && faults.length === before;
       grants.set(key, granted ? "approved" : "none");
     } else if (type === "config.accepted") {
+      if (acceptedSeen) fault("more than one config.accepted in one run");
+      acceptedSeen = true;
+      if (payload["ring0Sha256"] !== ring0Sha256) {
+        fault("config.accepted for another Ring 0 digest than the run's");
+      }
       if (payload["how"] !== "approved") continue;
-      if (grants.get(RING0_CONFIG_CALL_ID) !== "approved") {
+      if (grants.get(RING0_CONFIG_CALL_ID) !== "approved" || !ring0Ruled) {
         fault("config.accepted approved without an approval of its ask");
       }
       grants.set(RING0_CONFIG_CALL_ID, "none");

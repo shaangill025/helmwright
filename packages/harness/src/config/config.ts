@@ -10,6 +10,7 @@ import {
 } from "@helmwright/schema";
 import type { SessionLog } from "../log/session-log.ts";
 import { errorMessage } from "../loop/terminal.ts";
+import { permissionFaults } from "../permission/faults.ts";
 import {
   DEFAULT_PERMISSION_POLICY,
   canonical,
@@ -116,8 +117,12 @@ export interface RunConfig {
   readonly ring0: Readonly<Record<string, unknown>>;
   /** S1: the realpath of the repo's common git dir, shared by its linked worktrees. */
   readonly repoId: string;
-  /** S1: whether a commit up to the base commit touched the config file. */
-  readonly configHistory: boolean;
+  /**
+   * S1: whether a commit up to the base commit touched the config file, or the clone
+   * is shallow. N-b: the git calls run on the first call only, and only `ring0Status`
+   * makes it, without a baseline. @throws ConfigError if git fails
+   */
+  readonly configHistory: () => boolean;
 }
 
 /** The version of the object hashed for `ring0Sha256`. */
@@ -321,11 +326,14 @@ export function loadRunConfig(repo: string): RunConfig {
   const common = read(["rev-parse", "--git-common-dir"]).toString("utf8");
   const repoId = realpathSync(resolve(repo, common.trim()));
   const log = ["log", "-1", "--format=%H", baseCommit, "--", CONFIG_FILE];
-  // Owner 2026-10-07: a shallow clone hides the file's history, so it counts as history.
-  const shallow = read(["rev-parse", "--is-shallow-repository"]);
-  const configHistory =
-    shallow.toString("utf8").trim() === "true" ||
-    read(log).toString("utf8").trim() !== "";
+  let history: boolean | undefined;
+  const configHistory = (): boolean => {
+    // Owner 2026-10-07: a shallow clone hides the file's history, so it counts as history.
+    history ??=
+      read(["rev-parse", "--is-shallow-repository"]).toString("utf8").trim() ===
+        "true" || read(log).toString("utf8").trim() !== "";
+    return history;
+  };
   const lsTree = ["ls-tree", "-z", "--full-tree", baseCommit, "--"];
   const entries = read([...lsTree, CONFIG_FILE])
     .toString("utf8")
@@ -403,10 +411,23 @@ export type Ring0Status =
       readonly note?: string;
     };
 
+const BASELINE_HOW: ReadonlySet<unknown> = new Set(["default", "approved"]);
+
+/** N1: whether a run's asks and acceptance have no fault; an unreadable run has. */
+function clean(log: Pick<SessionLog, "events">, runId: string): boolean {
+  try {
+    return permissionFaults(log.events({ runId })).length === 0;
+  } catch {
+    return false; // Fails safe: no baseline, so the config is asked.
+  }
+}
+
 /**
  * OQ1: compares `config`'s Ring 0 digest with the baseline for `config.repoId`: the
- * latest `config.accepted` with that repo and a digest. Rows of other types are
- * never read (S3).
+ * latest `config.accepted` with that repo, a known `how` and a digest, from a run whose
+ * asks and acceptance have no fault (N1). Rows of other types are never read (S3).
+ * N-c: each row's parsed `repo` is checked again, as SQLite's json_extract and
+ * JSON.parse can read a duplicate key differently.
  * The baseline is scoped to this state dir. With none, the defaults are accepted
  * silently only if the config file has no history (S1); else the config is asked.
  * A change names the settings whose digests differ from the baseline's; if none can
@@ -420,16 +441,20 @@ export function ring0Status(
   const accepted = log
     .events(query)
     .findLast(
-      ({ payload }) =>
+      ({ runId, payload }) =>
+        payload["repo"] === config.repoId &&
+        BASELINE_HOW.has(payload["how"]) &&
         typeof payload["ring0Sha256"] === "string" &&
-        DIGEST.test(payload["ring0Sha256"]),
+        DIGEST.test(payload["ring0Sha256"]) &&
+        clean(log, runId),
     )?.payload;
   const defaults = settle(undefined);
   const from = (accepted?.["ring0Sha256"] ?? defaults.ring0Sha256) as string;
   const none = accepted === undefined;
-  if (config.record.ring0Sha256 === from && !(none && config.configHistory)) {
-    return { kind: none ? "default" : "unchanged" };
-  }
+  // N-b: the history is read only when it decides the result.
+  const same = config.record.ring0Sha256 === from;
+  const history = none && same && config.configHistory();
+  if (same && !history) return { kind: none ? "default" : "unchanged" };
   const known: unknown = none
     ? ring0SettingDigests(defaults.ring0)
     : accepted["settings"];
@@ -438,15 +463,13 @@ export function ring0Status(
   const changed = RING0_CONFIG_KEYS.filter(
     (key) => before.get(key) !== after.get(key),
   );
-  const history = config.configHistory
+  const why = history
     ? "; the config file has history, or the clone is shallow"
     : "";
   return {
     kind: "changed",
     from,
     changed: changed.length === 0 ? [...RING0_CONFIG_KEYS] : changed,
-    ...(none
-      ? { note: "no accepted baseline in this state dir" + history }
-      : {}),
+    ...(none ? { note: "no accepted baseline in this state dir" + why } : {}),
   };
 }

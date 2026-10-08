@@ -331,7 +331,10 @@ describe("permissionFaults (SF3)", () => {
   it("binds config.accepted approvals to the reserved ask (OQ1)", () => {
     const id = "helmwright.config.ring0";
     const ask = [
-      { ...evaluated("alwaysAsk", id), requested: "config.set" },
+      {
+        ...evaluated("alwaysAsk", id),
+        ...{ requested: "config.set", ruleId: "always-ask.ring0-setting" },
+      },
       { ...asked("tty", true), toolCallId: id },
     ];
     const ok = answered({ toolCallId: id, viewed: true });
@@ -347,8 +350,28 @@ describe("permissionFaults (SF3)", () => {
       permissionFaults(run(...ask, { ...ok, answer: "denied" }, accepted())),
     ).toEqual([`seq 3: ${forged}`]);
     expect(permissionFaults(run(...ask, ok, accepted(), accepted()))).toEqual([
+      "seq 4: more than one config.accepted in one run",
       `seq 4: ${forged}`,
     ]);
+    // N1: bound to the run's digest and an always-ask ring0-setting ruling; one per run.
+    const started = (ring0Sha256: string): Payload => ({
+      kind: "run.started",
+      config: { ring0Sha256 },
+    });
+    const digest = { ...accepted(), ring0Sha256: SHA };
+    expect(permissionFaults(run(started(SHA), ...ask, ok, digest))).toEqual([]);
+    expect(
+      permissionFaults(run(started("b".repeat(64)), ...ask, ok, digest)),
+    ).toEqual([
+      "seq 4: config.accepted for another Ring 0 digest than the run's",
+    ]);
+    const allowRule = { ...ask[0], ruleId: "default.ask", tier: "ask" };
+    expect(
+      permissionFaults(run(allowRule, ask[1] ?? {}, ok, accepted())),
+    ).toEqual([`seq 3: ${forged}`]);
+    expect(
+      permissionFaults(run(accepted("default"), accepted("default"))),
+    ).toEqual(["seq 1: more than one config.accepted in one run"]);
     const ran = { ...called("ok", id), name: "config.set" };
     expect(permissionFaults(run(...ask, ok, ran))).toEqual([
       "seq 3: tool call ran with the reserved Ring 0 config ID",

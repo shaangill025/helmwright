@@ -267,8 +267,8 @@ export interface RunOutcome {
  * before `run.terminated`; past the bound the run fails as cleanup unconfirmed.
  * A failed run's error is, in order: cleanup unconfirmed, the halt reason, the
  * first failed append, the loop's own failure, then whatever else was thrown.
- * @throws RangeError for an invalid `settleMs`, before anything is logged; Error if
- * `run.started` cannot be logged.
+ * @throws RangeError for an invalid `settleMs` or `limits` (N-f), before anything is
+ * logged; Error if `run.started` cannot be logged.
  */
 export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const { log, graphId, runId, nodeId, tools } = setup;
@@ -278,6 +278,8 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       `settleMs must be an integer in [0, ${String(MAX_LIMIT)}]`,
     );
   }
+  // N-f: before the deadline timer, which an invalid timeoutMs would make fire at once.
+  validateLimits(setup.limits);
   // The first failed append is the cause; a later desync is only its effect.
   let logFailure: { error: unknown } | undefined;
   // Set once run.terminated is due: a late call may no longer append.
@@ -434,16 +436,17 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   const failure = unconfirmed
     ? CLEANUP_UNCONFIRMED
     : (halted ?? message(logFailure) ?? also ?? message(thrown));
-  // S2: setup stopped by a cancel or the deadline is incomplete, not failed.
-  const early = !result && halted === undefined && logFailure === undefined;
-  const cancelled =
-    setup.signal?.aborted === true || thrown?.error instanceof CancelledError;
-  const timedOut = deadline.signal.aborted && setup.signal?.aborted !== true;
-  const reason = timedOut ? "timeout" : cancelled ? "cancelled" : undefined;
+  const reason = stopReason({
+    unconfirmed,
+    early: !result && halted === undefined && logFailure === undefined,
+    cancelled:
+      setup.signal?.aborted === true || thrown?.error instanceof CancelledError,
+    timedOut: deadline.signal.aborted && setup.signal?.aborted !== true,
+  });
   const stopped =
-    early && reason !== undefined
-      ? ({ kind: "incomplete", reason } as const)
-      : undefined;
+    reason === undefined
+      ? undefined
+      : ({ kind: "incomplete", reason } as const);
   const done =
     stopped !== undefined
       ? outcome(stopped, summarize(stopped, ""))
@@ -463,6 +466,21 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
     }
     return lost;
   }
+}
+
+/**
+ * S2: why a run whose setup was stopped (`early`: no loop result, no halt and no
+ * failed append) by the deadline or a cancel is incomplete, not failed; undefined
+ * if it was not. N-e: an unconfirmed cleanup always fails the run.
+ */
+export function stopReason(run: {
+  readonly unconfirmed: boolean;
+  readonly early: boolean;
+  readonly timedOut: boolean;
+  readonly cancelled: boolean;
+}): "timeout" | "cancelled" | undefined {
+  if (run.unconfirmed || !run.early) return undefined;
+  return run.timedOut ? "timeout" : run.cancelled ? "cancelled" : undefined;
 }
 
 export interface RunTaskOptions {
@@ -500,7 +518,9 @@ export const RING0_NOT_APPROVED =
  * (`ring0Status`) is asked (always-ask); unless approved the run fails with
  * RING0_NOT_APPROVED. An approval, or a first run on the defaults, logs
  * `config.accepted`; an unchanged config logs nothing more. The ask shares the
- * run's deadline (`limits.timeoutMs`); a cancel during it ends the run incomplete.
+ * run's deadline (`limits.timeoutMs`); a cancel during it (the run's signal, or
+ * Ctrl-C or end of input at the prompt) ends the run incomplete. N-d: any other
+ * answer that is not an approval, such as one not viewed to its end, fails it.
  * @throws UsageError for an invalid task, repo, config or state dir; CancelledError if
  * aborted before the run started; Error if setup fails.
  */
