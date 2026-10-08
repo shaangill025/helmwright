@@ -43,6 +43,16 @@
           "items": { "$ref": "#/$defs/finding" }
         },
         "truncated": { "type": "boolean" }
+      },
+      "if": { "properties": { "verdict": { "const": "pass" } } },
+      "then": {
+        "properties": {
+          "findings": { "type": "array", "maxItems": 0 },
+          "truncated": { "const": false }
+        }
+      },
+      "else": {
+        "properties": { "findings": { "type": "array", "minItems": 1 } }
       }
     },
     "finding": {
@@ -67,13 +77,16 @@
     },
     "rule": {
       "title": "FloorRule",
-      "description": "Rules of `floor-1`. `floor.limits`: the change was too large to check, so the floor fails closed.",
+      "description": "Rules of `floor-1` and `floor-2`. `assertion.removed` is `floor-1` only: `floor-2` replaces it with `protected.changed`, a finding for any change to a protected path. `floor.limits`: the change was too large to check, so the floor fails closed.",
       "enum": [
         "suppression.added",
         "config.changed",
         "package.changed",
         "assertion.removed",
+        "protected.changed",
         "symlink.added",
+        "gitlink.added",
+        "encoding.unreadable",
         "floor.limits"
       ]
     },

@@ -38,6 +38,10 @@ describe("floor-event schema", () => {
       withFinding({ rule: "floor.limits", path: undefined }),
     ],
     ["an escaped path", withFinding({ path: "src/a\\\\b\\u{1b}.ts" })],
+    ["rule protected.changed", withFinding({ rule: "protected.changed" })],
+    ["rule gitlink.added", withFinding({ rule: "gitlink.added" })],
+    ["rule encoding.unreadable", withFinding({ rule: "encoding.unreadable" })],
+    ["a floor-2 check", { ...checked, rules: "floor-2" }],
   ])("accepts %s", (_, event) => {
     expect(validate(JSON.parse(JSON.stringify(event)))).toBe(true);
   });
@@ -63,6 +67,9 @@ describe("floor-event schema", () => {
     ["a .. segment", withFinding({ path: "src/../a.ts" })],
     ["an empty segment", withFinding({ path: "src//a.ts" })],
     ["an extra finding key", withFinding({ fix: "x" })],
+    ["a pass with a finding", { ...checked, verdict: "pass" }],
+    ["a truncated pass", { ...pass, truncated: true }],
+    ["a reject without findings", { ...pass, verdict: "reject" }],
   ])("rejects %s", (_, event) => {
     expect(validate(JSON.parse(JSON.stringify(event)))).toBe(false);
   });

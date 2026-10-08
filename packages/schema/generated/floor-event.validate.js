@@ -51,6 +51,14 @@ const schema31 = {
         },
         truncated: { type: "boolean" },
       },
+      if: { properties: { verdict: { const: "pass" } } },
+      then: {
+        properties: {
+          findings: { type: "array", maxItems: 0 },
+          truncated: { const: false },
+        },
+      },
+      else: { properties: { findings: { type: "array", minItems: 1 } } },
     },
     finding: {
       title: "FloorFinding",
@@ -74,13 +82,16 @@ const schema31 = {
     rule: {
       title: "FloorRule",
       description:
-        "Rules of `floor-1`. `floor.limits`: the change was too large to check, so the floor fails closed.",
+        "Rules of `floor-1` and `floor-2`. `assertion.removed` is `floor-1` only: `floor-2` replaces it with `protected.changed`, a finding for any change to a protected path. `floor.limits`: the change was too large to check, so the floor fails closed.",
       enum: [
         "suppression.added",
         "config.changed",
         "package.changed",
         "assertion.removed",
+        "protected.changed",
         "symlink.added",
+        "gitlink.added",
+        "encoding.unreadable",
         "floor.limits",
       ],
     },
@@ -146,6 +157,14 @@ const schema32 = {
     },
     truncated: { type: "boolean" },
   },
+  if: { properties: { verdict: { const: "pass" } } },
+  then: {
+    properties: {
+      findings: { type: "array", maxItems: 0 },
+      truncated: { const: false },
+    },
+  },
+  else: { properties: { findings: { type: "array", minItems: 1 } } },
 };
 const schema33 = {
   description: "A full lowercase hex git object ID (SHA-1 or SHA-256).",
@@ -181,13 +200,16 @@ const schema36 = {
 const schema37 = {
   title: "FloorRule",
   description:
-    "Rules of `floor-1`. `floor.limits`: the change was too large to check, so the floor fails closed.",
+    "Rules of `floor-1` and `floor-2`. `assertion.removed` is `floor-1` only: `floor-2` replaces it with `protected.changed`, a finding for any change to a protected path. `floor.limits`: the change was too large to check, so the floor fails closed.",
   enum: [
     "suppression.added",
     "config.changed",
     "package.changed",
     "assertion.removed",
+    "protected.changed",
     "symlink.added",
+    "gitlink.added",
+    "encoding.unreadable",
     "floor.limits",
   ],
 };
@@ -448,7 +470,10 @@ function validate22(
         data2 === "config.changed" ||
         data2 === "package.changed" ||
         data2 === "assertion.removed" ||
+        data2 === "protected.changed" ||
         data2 === "symlink.added" ||
+        data2 === "gitlink.added" ||
+        data2 === "encoding.unreadable" ||
         data2 === "floor.limits"
       )) {
         const err11 = {
@@ -681,9 +706,162 @@ function validate21(
   if (evaluated0.dynamicItems) {
     evaluated0.items = undefined;
   }
+  const _errs1 = errors;
+  let valid0 = true;
+  const _errs2 = errors;
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.verdict !== undefined) {
+      if ("pass" !== data.verdict) {
+        const err0 = {};
+        if (vErrors === null) {
+          vErrors = [err0];
+        } else {
+          vErrors.push(err0);
+        }
+        errors++;
+      }
+    }
+  }
+  var _valid0 = _errs2 === errors;
+  errors = _errs1;
+  if (vErrors !== null) {
+    if (_errs1) {
+      vErrors.length = _errs1;
+    } else {
+      vErrors = null;
+    }
+  }
+  let ifClause0;
+  if (_valid0) {
+    const _errs4 = errors;
+    if (data && typeof data == "object" && !Array.isArray(data)) {
+      if (data.findings !== undefined) {
+        let data1 = data.findings;
+        if (Array.isArray(data1)) {
+          if (data1.length > 0) {
+            const err1 = {
+              instancePath: instancePath + "/findings",
+              schemaPath: "#/then/properties/findings/maxItems",
+              keyword: "maxItems",
+              params: { limit: 0 },
+              message: "must NOT have more than 0 items",
+            };
+            if (vErrors === null) {
+              vErrors = [err1];
+            } else {
+              vErrors.push(err1);
+            }
+            errors++;
+          }
+        } else {
+          const err2 = {
+            instancePath: instancePath + "/findings",
+            schemaPath: "#/then/properties/findings/type",
+            keyword: "type",
+            params: { type: "array" },
+            message: "must be array",
+          };
+          if (vErrors === null) {
+            vErrors = [err2];
+          } else {
+            vErrors.push(err2);
+          }
+          errors++;
+        }
+      }
+      if (data.truncated !== undefined) {
+        if (false !== data.truncated) {
+          const err3 = {
+            instancePath: instancePath + "/truncated",
+            schemaPath: "#/then/properties/truncated/const",
+            keyword: "const",
+            params: { allowedValue: false },
+            message: "must be equal to constant",
+          };
+          if (vErrors === null) {
+            vErrors = [err3];
+          } else {
+            vErrors.push(err3);
+          }
+          errors++;
+        }
+      }
+    }
+    var _valid0 = _errs4 === errors;
+    valid0 = _valid0;
+    if (valid0) {
+      var props0 = {};
+      props0.findings = true;
+      props0.truncated = true;
+      props0.verdict = true;
+    }
+    ifClause0 = "then";
+  } else {
+    const _errs8 = errors;
+    if (data && typeof data == "object" && !Array.isArray(data)) {
+      if (data.findings !== undefined) {
+        let data3 = data.findings;
+        if (Array.isArray(data3)) {
+          if (data3.length < 1) {
+            const err4 = {
+              instancePath: instancePath + "/findings",
+              schemaPath: "#/else/properties/findings/minItems",
+              keyword: "minItems",
+              params: { limit: 1 },
+              message: "must NOT have fewer than 1 items",
+            };
+            if (vErrors === null) {
+              vErrors = [err4];
+            } else {
+              vErrors.push(err4);
+            }
+            errors++;
+          }
+        } else {
+          const err5 = {
+            instancePath: instancePath + "/findings",
+            schemaPath: "#/else/properties/findings/type",
+            keyword: "type",
+            params: { type: "array" },
+            message: "must be array",
+          };
+          if (vErrors === null) {
+            vErrors = [err5];
+          } else {
+            vErrors.push(err5);
+          }
+          errors++;
+        }
+      }
+    }
+    var _valid0 = _errs8 === errors;
+    valid0 = _valid0;
+    if (valid0) {
+      if (props0 !== true) {
+        props0 = props0 || {};
+        props0.findings = true;
+      }
+    }
+    ifClause0 = "else";
+  }
+  if (!valid0) {
+    const err6 = {
+      instancePath,
+      schemaPath: "#/if",
+      keyword: "if",
+      params: { failingKeyword: ifClause0 },
+      message: 'must match "' + ifClause0 + '" schema',
+    };
+    if (vErrors === null) {
+      vErrors = [err6];
+    } else {
+      vErrors.push(err6);
+    }
+    errors++;
+  }
   if (data && typeof data == "object" && !Array.isArray(data)) {
     if (data.kind === undefined) {
-      const err0 = {
+      const err7 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -691,14 +869,14 @@ function validate21(
         message: "must have required property '" + "kind" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err0];
+        vErrors = [err7];
       } else {
-        vErrors.push(err0);
+        vErrors.push(err7);
       }
       errors++;
     }
     if (data.rules === undefined) {
-      const err1 = {
+      const err8 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -706,14 +884,14 @@ function validate21(
         message: "must have required property '" + "rules" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err1];
+        vErrors = [err8];
       } else {
-        vErrors.push(err1);
+        vErrors.push(err8);
       }
       errors++;
     }
     if (data.baseCommit === undefined) {
-      const err2 = {
+      const err9 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -721,14 +899,14 @@ function validate21(
         message: "must have required property '" + "baseCommit" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err2];
+        vErrors = [err9];
       } else {
-        vErrors.push(err2);
+        vErrors.push(err9);
       }
       errors++;
     }
     if (data.candidateTree === undefined) {
-      const err3 = {
+      const err10 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -736,14 +914,14 @@ function validate21(
         message: "must have required property '" + "candidateTree" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err3];
+        vErrors = [err10];
       } else {
-        vErrors.push(err3);
+        vErrors.push(err10);
       }
       errors++;
     }
     if (data.verdict === undefined) {
-      const err4 = {
+      const err11 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -751,14 +929,14 @@ function validate21(
         message: "must have required property '" + "verdict" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err4];
+        vErrors = [err11];
       } else {
-        vErrors.push(err4);
+        vErrors.push(err11);
       }
       errors++;
     }
     if (data.findings === undefined) {
-      const err5 = {
+      const err12 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -766,14 +944,14 @@ function validate21(
         message: "must have required property '" + "findings" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err5];
+        vErrors = [err12];
       } else {
-        vErrors.push(err5);
+        vErrors.push(err12);
       }
       errors++;
     }
     if (data.truncated === undefined) {
-      const err6 = {
+      const err13 = {
         instancePath,
         schemaPath: "#/required",
         keyword: "required",
@@ -781,9 +959,9 @@ function validate21(
         message: "must have required property '" + "truncated" + "'",
       };
       if (vErrors === null) {
-        vErrors = [err6];
+        vErrors = [err13];
       } else {
-        vErrors.push(err6);
+        vErrors.push(err13);
       }
       errors++;
     }
@@ -797,133 +975,12 @@ function validate21(
         key0 === "findings" ||
         key0 === "truncated"
       )) {
-        const err7 = {
+        const err14 = {
           instancePath,
           schemaPath: "#/additionalProperties",
           keyword: "additionalProperties",
           params: { additionalProperty: key0 },
           message: "must NOT have additional properties",
-        };
-        if (vErrors === null) {
-          vErrors = [err7];
-        } else {
-          vErrors.push(err7);
-        }
-        errors++;
-      }
-    }
-    if (data.kind !== undefined) {
-      if ("floor.checked" !== data.kind) {
-        const err8 = {
-          instancePath: instancePath + "/kind",
-          schemaPath: "#/properties/kind/const",
-          keyword: "const",
-          params: { allowedValue: "floor.checked" },
-          message: "must be equal to constant",
-        };
-        if (vErrors === null) {
-          vErrors = [err8];
-        } else {
-          vErrors.push(err8);
-        }
-        errors++;
-      }
-    }
-    if (data.rules !== undefined) {
-      let data1 = data.rules;
-      if (typeof data1 === "string") {
-        if (!pattern4.test(data1)) {
-          const err9 = {
-            instancePath: instancePath + "/rules",
-            schemaPath: "#/properties/rules/pattern",
-            keyword: "pattern",
-            params: { pattern: "^floor-[1-9][0-9]{0,5}$" },
-            message: 'must match pattern "' + "^floor-[1-9][0-9]{0,5}$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err9];
-          } else {
-            vErrors.push(err9);
-          }
-          errors++;
-        }
-      } else {
-        const err10 = {
-          instancePath: instancePath + "/rules",
-          schemaPath: "#/properties/rules/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
-        };
-        if (vErrors === null) {
-          vErrors = [err10];
-        } else {
-          vErrors.push(err10);
-        }
-        errors++;
-      }
-    }
-    if (data.baseCommit !== undefined) {
-      let data2 = data.baseCommit;
-      if (typeof data2 === "string") {
-        if (!pattern5.test(data2)) {
-          const err11 = {
-            instancePath: instancePath + "/baseCommit",
-            schemaPath: "#/$defs/oid/pattern",
-            keyword: "pattern",
-            params: { pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
-            message:
-              'must match pattern "' + "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err11];
-          } else {
-            vErrors.push(err11);
-          }
-          errors++;
-        }
-      } else {
-        const err12 = {
-          instancePath: instancePath + "/baseCommit",
-          schemaPath: "#/$defs/oid/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
-        };
-        if (vErrors === null) {
-          vErrors = [err12];
-        } else {
-          vErrors.push(err12);
-        }
-        errors++;
-      }
-    }
-    if (data.candidateTree !== undefined) {
-      let data3 = data.candidateTree;
-      if (typeof data3 === "string") {
-        if (!pattern5.test(data3)) {
-          const err13 = {
-            instancePath: instancePath + "/candidateTree",
-            schemaPath: "#/$defs/oid/pattern",
-            keyword: "pattern",
-            params: { pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
-            message:
-              'must match pattern "' + "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err13];
-          } else {
-            vErrors.push(err13);
-          }
-          errors++;
-        }
-      } else {
-        const err14 = {
-          instancePath: instancePath + "/candidateTree",
-          schemaPath: "#/$defs/oid/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
         };
         if (vErrors === null) {
           vErrors = [err14];
@@ -933,15 +990,14 @@ function validate21(
         errors++;
       }
     }
-    if (data.verdict !== undefined) {
-      let data4 = data.verdict;
-      if (!(data4 === "pass" || data4 === "reject")) {
+    if (data.kind !== undefined) {
+      if ("floor.checked" !== data.kind) {
         const err15 = {
-          instancePath: instancePath + "/verdict",
-          schemaPath: "#/properties/verdict/enum",
-          keyword: "enum",
-          params: { allowedValues: schema32.properties.verdict.enum },
-          message: "must be equal to one of the allowed values",
+          instancePath: instancePath + "/kind",
+          schemaPath: "#/properties/kind/const",
+          keyword: "const",
+          params: { allowedValue: "floor.checked" },
+          message: "must be equal to constant",
         };
         if (vErrors === null) {
           vErrors = [err15];
@@ -951,16 +1007,16 @@ function validate21(
         errors++;
       }
     }
-    if (data.findings !== undefined) {
-      let data5 = data.findings;
-      if (Array.isArray(data5)) {
-        if (data5.length > 256) {
+    if (data.rules !== undefined) {
+      let data5 = data.rules;
+      if (typeof data5 === "string") {
+        if (!pattern4.test(data5)) {
           const err16 = {
-            instancePath: instancePath + "/findings",
-            schemaPath: "#/properties/findings/maxItems",
-            keyword: "maxItems",
-            params: { limit: 256 },
-            message: "must NOT have more than 256 items",
+            instancePath: instancePath + "/rules",
+            schemaPath: "#/properties/rules/pattern",
+            keyword: "pattern",
+            params: { pattern: "^floor-[1-9][0-9]{0,5}$" },
+            message: 'must match pattern "' + "^floor-[1-9][0-9]{0,5}$" + '"',
           };
           if (vErrors === null) {
             vErrors = [err16];
@@ -969,12 +1025,134 @@ function validate21(
           }
           errors++;
         }
-        const len0 = data5.length;
+      } else {
+        const err17 = {
+          instancePath: instancePath + "/rules",
+          schemaPath: "#/properties/rules/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err17];
+        } else {
+          vErrors.push(err17);
+        }
+        errors++;
+      }
+    }
+    if (data.baseCommit !== undefined) {
+      let data6 = data.baseCommit;
+      if (typeof data6 === "string") {
+        if (!pattern5.test(data6)) {
+          const err18 = {
+            instancePath: instancePath + "/baseCommit",
+            schemaPath: "#/$defs/oid/pattern",
+            keyword: "pattern",
+            params: { pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+            message:
+              'must match pattern "' + "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" + '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err18];
+          } else {
+            vErrors.push(err18);
+          }
+          errors++;
+        }
+      } else {
+        const err19 = {
+          instancePath: instancePath + "/baseCommit",
+          schemaPath: "#/$defs/oid/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err19];
+        } else {
+          vErrors.push(err19);
+        }
+        errors++;
+      }
+    }
+    if (data.candidateTree !== undefined) {
+      let data7 = data.candidateTree;
+      if (typeof data7 === "string") {
+        if (!pattern5.test(data7)) {
+          const err20 = {
+            instancePath: instancePath + "/candidateTree",
+            schemaPath: "#/$defs/oid/pattern",
+            keyword: "pattern",
+            params: { pattern: "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+            message:
+              'must match pattern "' + "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" + '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err20];
+          } else {
+            vErrors.push(err20);
+          }
+          errors++;
+        }
+      } else {
+        const err21 = {
+          instancePath: instancePath + "/candidateTree",
+          schemaPath: "#/$defs/oid/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err21];
+        } else {
+          vErrors.push(err21);
+        }
+        errors++;
+      }
+    }
+    if (data.verdict !== undefined) {
+      let data8 = data.verdict;
+      if (!(data8 === "pass" || data8 === "reject")) {
+        const err22 = {
+          instancePath: instancePath + "/verdict",
+          schemaPath: "#/properties/verdict/enum",
+          keyword: "enum",
+          params: { allowedValues: schema32.properties.verdict.enum },
+          message: "must be equal to one of the allowed values",
+        };
+        if (vErrors === null) {
+          vErrors = [err22];
+        } else {
+          vErrors.push(err22);
+        }
+        errors++;
+      }
+    }
+    if (data.findings !== undefined) {
+      let data9 = data.findings;
+      if (Array.isArray(data9)) {
+        if (data9.length > 256) {
+          const err23 = {
+            instancePath: instancePath + "/findings",
+            schemaPath: "#/properties/findings/maxItems",
+            keyword: "maxItems",
+            params: { limit: 256 },
+            message: "must NOT have more than 256 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err23];
+          } else {
+            vErrors.push(err23);
+          }
+          errors++;
+        }
+        const len0 = data9.length;
         for (let i0 = 0; i0 < len0; i0++) {
           if (
-            !validate22(data5[i0], {
+            !validate22(data9[i0], {
               instancePath: instancePath + "/findings/" + i0,
-              parentData: data5,
+              parentData: data9,
               parentDataProperty: i0,
               rootData,
               dynamicAnchors,
@@ -988,7 +1166,7 @@ function validate21(
           }
         }
       } else {
-        const err17 = {
+        const err24 = {
           instancePath: instancePath + "/findings",
           schemaPath: "#/properties/findings/type",
           keyword: "type",
@@ -996,16 +1174,16 @@ function validate21(
           message: "must be array",
         };
         if (vErrors === null) {
-          vErrors = [err17];
+          vErrors = [err24];
         } else {
-          vErrors.push(err17);
+          vErrors.push(err24);
         }
         errors++;
       }
     }
     if (data.truncated !== undefined) {
       if (typeof data.truncated !== "boolean") {
-        const err18 = {
+        const err25 = {
           instancePath: instancePath + "/truncated",
           schemaPath: "#/properties/truncated/type",
           keyword: "type",
@@ -1013,15 +1191,15 @@ function validate21(
           message: "must be boolean",
         };
         if (vErrors === null) {
-          vErrors = [err18];
+          vErrors = [err25];
         } else {
-          vErrors.push(err18);
+          vErrors.push(err25);
         }
         errors++;
       }
     }
   } else {
-    const err19 = {
+    const err26 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -1029,9 +1207,9 @@ function validate21(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err19];
+      vErrors = [err26];
     } else {
-      vErrors.push(err19);
+      vErrors.push(err26);
     }
     errors++;
   }
