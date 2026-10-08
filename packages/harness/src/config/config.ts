@@ -321,7 +321,11 @@ export function loadRunConfig(repo: string): RunConfig {
   const common = read(["rev-parse", "--git-common-dir"]).toString("utf8");
   const repoId = realpathSync(resolve(repo, common.trim()));
   const log = ["log", "-1", "--format=%H", baseCommit, "--", CONFIG_FILE];
-  const configHistory = read(log).toString("utf8").trim() !== "";
+  // Owner 2026-10-07: a shallow clone hides the file's history, so it counts as history.
+  const shallow = read(["rev-parse", "--is-shallow-repository"]);
+  const configHistory =
+    shallow.toString("utf8").trim() === "true" ||
+    read(log).toString("utf8").trim() !== "";
   const lsTree = ["ls-tree", "-z", "--full-tree", baseCommit, "--"];
   const entries = read([...lsTree, CONFIG_FILE])
     .toString("utf8")
@@ -434,7 +438,9 @@ export function ring0Status(
   const changed = RING0_CONFIG_KEYS.filter(
     (key) => before.get(key) !== after.get(key),
   );
-  const history = config.configHistory ? "; the config file has history" : "";
+  const history = config.configHistory
+    ? "; the config file has history, or the clone is shallow"
+    : "";
   return {
     kind: "changed",
     from,
