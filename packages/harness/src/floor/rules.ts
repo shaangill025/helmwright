@@ -57,11 +57,14 @@ const NAMES = ["skip", "only", "todo", "fails"];
 const CALLS = [
   ...NAMES,
   ...["skipif", "runif", "failing", "skipnow", "skipf", "todoif"],
-  // pytest.mark.xfail and unittest.expectedFailure.
-  ...["xfail", "expectedfailure"],
+  // pytest.mark.xfail, unittest's expectedFailure and skipUnless, Playwright's fixme.
+  ...["xfail", "expectedfailure", "skipunless", "fixme"],
 ].join("|");
-/** S1: the values a key may have, alone: a number (such as Prisma's `skip: 10`) or `false`. */
-const KEEPS = "(?! ?(?:false|-?\\d[\\w.]*) ?(?:[,}]|$))";
+/**
+ * S1: the values a key may have before `,` or `}` on its line: a number (such as Prisma's
+ * `skip: 10`) or `false`.
+ */
+const KEEPS = "(?! ?(?:false|-?\\d[\\w.]*) ?[,}])";
 const TEST_FORMS = deepFreeze([
   // A member access of a skip or focus name: a call, a chained call or a bare reference.
   new RegExp("\\.(?:" + CALLS + ")(?![\\w$])"),
@@ -78,14 +81,16 @@ const TEST_FORMS = deepFreeze([
       "it|f" +
       "describe) ?\\(",
   ),
-  // S1: an options-object key at a line start or after `{` or `,`, such as `{ skip: true }`
-  // or a shorthand `{ skip }`, unless its value is a number or `false` alone. A quoted or
-  // computed key, such as `["skip"]: x`, needs a value.
+  // A bare imported decorator, such as unittest's `@skip("r")`.
+  /(?<![\w$.])@ ?(?:skip|skipif|skipunless|expectedfailure)\b/,
+  // S1: an options-object key at a line start or after `{`, `,` or a block comment's end,
+  // such as `{ skip: true }` or a shorthand `{ skip }`, unless KEEPS keeps its value. A
+  // quoted or computed key, such as `["skip"]: x`, needs a value.
   new RegExp(
-    "(?:^|[{,]) ?(?:" + NAMES.join("|") + ") ?(?:[,}]|$|:" + KEEPS + ")",
+    "(?:^|[{,]|\\*/) ?(?:" + NAMES.join("|") + ") ?(?:[,}]|$|:" + KEEPS + ")",
   ),
   new RegExp(
-    "(?:^|[{,]) ?(?:\\[ ?)?[\"'`](?:" +
+    "(?:^|[{,]|\\*/) ?(?:\\[ ?)?[\"'`](?:" +
       NAMES.join("|") +
       ")[\"'`](?: ?\\])? ?:" +
       KEEPS,
@@ -255,16 +260,44 @@ function blockDirectiveLines(text: string): number[] {
   });
 }
 
+/**
+ * `key` without the block comments outside string literals, by one linear scan (an
+ * unterminated comment ends the line), so an options key after a comment shows. A quote in
+ * a regex literal can mislead the scan; test forms match `key` or this.
+ */
+function uncomment(key: string): string {
+  const kept: string[] = [];
+  let from = 0;
+  let quote = "";
+  for (let i = 0; i < key.length; i += 1) {
+    const c = key.charAt(i);
+    if (quote !== "") {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = "";
+    } else if (c === '"' || c === "'" || c === "`") {
+      quote = c;
+    } else if (c === "/" && key.charAt(i + 1) === "*") {
+      kept.push(key.slice(from, i), " ");
+      const close = key.indexOf("*/", i + 2);
+      i = close === -1 ? key.length : close + 1;
+      from = i + 1;
+    }
+  }
+  kept.push(key.slice(from));
+  return norm(kept.join(""));
+}
+
 function suppressions(path: string, base: string, candidate: string) {
   const test =
     isTestFile(path) ||
     (CODE.test(nameOf(path)) && FRAMEWORK.test(caseFold(candidate)));
   const marked = (line: string) => {
     const key = norm(line);
+    const keys = key.includes("/*") ? [key, uncomment(key)] : [key];
     return (
       MARKERS.some((m) => key.includes(m)) ||
       WORD_MARKERS.some((m) => m.test(key)) ||
-      (test && TEST_FORMS.some((form) => form.test(key)))
+      (test && TEST_FORMS.some((form) => keys.some((k) => form.test(k))))
     );
   };
   const findings = addedLines(base, candidate)

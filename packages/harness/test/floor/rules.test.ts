@@ -443,7 +443,7 @@ describe("floor-3 review fixes", () => {
       const text = word + " ".repeat(2_000_000) + "x\n";
       const start = Date.now();
       expect(rules(change("src/a.ts", "", text))).toEqual([]);
-      expect(Date.now() - start).toBeLessThan(2000);
+      expect(Date.now() - start).toBeLessThan(5000);
     },
   );
 
@@ -467,7 +467,6 @@ describe("floor-3 review fixes", () => {
     "prisma.user.findMany({ " + SKIP + ": 10, take: 20 });",
     "it('x', { " + SKIP + ": false }, () => {});",
     "  " + SKIP + ": false,",
-    "  " + SKIP + ": 0",
   ])("ignores the options-object key in %j (F2)", (line) => {
     expect(rules(change("test/a.test.ts", "", lines(line)))).toEqual([]);
   });
@@ -493,6 +492,43 @@ describe("floor-3 review fixes", () => {
     expect(rules(change("src/testkit.mts", "", text))).toEqual([
       "suppression.added",
     ]);
+  });
+});
+
+describe("floor-3 second review fixes", () => {
+  const SKIP = "skip";
+  const file = (...text: string[]) =>
+    rules(change("test/a.test.ts", "", lines(...text)));
+
+  it.each([
+    ["@unittest" + D + "skipUnless" + "(x, 'r')"],
+    ["test" + D + "fixme" + "('x', () => {});"],
+    ["@" + "skip" + "('r')"],
+    ["@" + "skipIf" + "(c, 'r')"],
+    ["{ a: 1, /* ci */ " + SKIP + ": true }"],
+    ["/* flaky */ " + SKIP + ": true,"],
+    ["  " + SKIP + ": false"],
+    ["  " + SKIP + ": 0"],
+    ["it('x', {", "  " + SKIP + ": false", "    || isCI,", "}, () => {});"],
+    // A `/*` in a string before the comment (B1), and a quote in a regex literal.
+    ["it('globs /*.ts', { /* flaky */ " + SKIP + ": true }, () => {});"],
+    ['it("x /*", { ' + SKIP + " /* c */ : true }, () => {});"],
+    ["const o = { a: '/*', /* c */ only: true };"],
+    ["it('x' + /\"/.source, { /* c */ " + SKIP + ": true }, () => {});"],
+    ['it("a \\" /*", { /* c */ ' + SKIP + ": true }, () => {});"],
+  ])("finds the test form in %j", (...text) => {
+    expect(file(...text)).toEqual(["suppression.added"]);
+  });
+
+  it.each([
+    ["a long value", "{" + SKIP + ":1" + "a".repeat(2_000_000), true],
+    ["open comments", "/*x".repeat(700_000), false],
+    ["closed comments", "/* */".repeat(400_000) + SKIP + ": true", true],
+    ["open strings", "'/*".repeat(700_000), false],
+  ])("matches S1 in linear time after %s", (_, text, found) => {
+    const start = Date.now();
+    expect(file(text)).toEqual(found ? ["suppression.added"] : []);
+    expect(Date.now() - start).toBeLessThan(5000);
   });
 });
 

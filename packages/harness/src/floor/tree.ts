@@ -387,8 +387,17 @@ const LITERAL_DATA = /\.(?:json5?|jsonc|ya?ml|toml)$/;
 
 /** The extensions Node, TypeScript and Vite try for an extensionless import. */
 const EXTENSIONS = deepFreeze(
-  ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"].map((e) => "." + e),
+  ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs", "json"].map(
+    (e) => "." + e,
+  ),
 );
+/** The TypeScript files Vite, Vitest and jiti also resolve a `.js`-style import to. */
+const TS_SIBLINGS = new Map([
+  [".js", [".ts", ".tsx"]],
+  [".jsx", [".tsx"]],
+  [".mjs", [".mts"]],
+  [".cjs", [".cts"]],
+]);
 
 /**
  * `rel` (relative to `dir`) as a repo file path, or undefined if it leaves the repo or
@@ -471,10 +480,11 @@ function tsLinks(dir: string, text: string): string[] {
 }
 
 /**
- * The repo paths of relative module-like string literals in a module config. An
- * extensionless literal, such as `./vitest.shared`, gives each file it could resolve to
- * (`rel` or `rel/index` with each of EXTENSIONS) once one of them is in the base, so a
- * file that shadows the base's own is in the chain too; those not in the base are guesses.
+ * The repo paths of relative module-like string literals in a module config. A `.js`-style
+ * literal also gives its TS_SIBLINGS. An extensionless literal, such as `./vitest.shared`,
+ * gives each file it could resolve to (`rel` or `rel/index` with each of EXTENSIONS) once
+ * one of them is in the base, so a file that shadows the base's own is in the chain too.
+ * A sibling or resolution not in the base is a guess.
  */
 function jsLinks(dir: string, text: string, inBase: (path: string) => boolean) {
   const links: { path: string; guess: boolean }[] = [];
@@ -482,6 +492,12 @@ function jsLinks(dir: string, text: string, inBase: (path: string) => boolean) {
     if (MODULE.test(rel)) {
       const path = resolvePath(dir, rel);
       if (path !== undefined) links.push({ path, guess: false });
+      const ext = posix.extname(rel);
+      for (const sibling of TS_SIBLINGS.get(ext) ?? []) {
+        const file = resolvePath(dir, rel.slice(0, -ext.length) + sibling);
+        if (file !== undefined)
+          links.push({ path: file, guess: !inBase(file) });
+      }
       continue;
     }
     const files = EXTENSIONS.flatMap((ext) => [

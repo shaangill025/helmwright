@@ -302,6 +302,31 @@ describe("config chain review fixes", { timeout: 30_000 }, () => {
   });
 });
 
+describe("config chain second review fixes", { timeout: 30_000 }, () => {
+  it.each([
+    ["./shared.js", "shared.ts", "shared.ts"],
+    ["./shared.js", "shared.js", "shared.ts"],
+    ["./data", "data.json", "data.json"],
+  ])("finds a change chained by %j with base %j: %j", (rel, inBase, edit) => {
+    rebase({
+      "vitest.config.ts": `import s from "${rel}";\n`,
+      [inBase]: "export default {};\n",
+    });
+    write(edit, "export default { x: 1 };\n");
+    expect(details()).toEqual([["config.changed", edit, "config chain"]]);
+  });
+
+  it("counts no guess toward the path bound", () => {
+    const names = ["a", "b", "c", "d", "e"];
+    rebase({
+      "eslint.config.js": names.map((n) => `import "./lint/${n}";`).join("\n"),
+      ...Object.fromEntries(names.map((n) => [`lint/${n}.ts`, "export {};\n"])),
+    });
+    expect(changes().chain.size).toBe(90);
+    expect(details()).toEqual([]);
+  });
+});
+
 describe("ignored agent and config files (S4)", { timeout: 30_000 }, () => {
   it("finds ignored agent files and config-named files, not build caches", () => {
     writeFileSync(
