@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   CONFIG_DEFAULTS,
   type Event,
+  type FloorChecked,
   type IntakeClass,
   type IntakeDeclared,
   type IntakeFriction,
@@ -32,6 +33,8 @@ import {
   type RunConfig,
 } from "../config/config.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
+import { floorFaults } from "../floor/events.ts";
+import { checkCandidate } from "../floor/tree.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
@@ -282,6 +285,12 @@ export interface RunSetup {
    * in [0, MAX_LIMIT]. Default SETTLE_TIMEOUT_MS.
    */
   readonly settleMs?: number;
+  /**
+   * B3-2: checks the candidate once every tool call has settled and its sandbox is
+   * confirmed removed; logged as `floor.checked` just before `run.terminated`. A throw
+   * means the floor could not check the candidate (fail closed).
+   */
+  readonly floor?: () => FloorChecked;
 }
 
 /**
@@ -292,6 +301,10 @@ export interface RunSetup {
 export const SETTLE_TIMEOUT_MS = 60_000;
 const CLEANUP_UNCONFIRMED =
   "sandbox cleanup unconfirmed: a tool call was still running when the run ended";
+/** OQ-B3-2: why a run that would have completed fails on a floor finding. */
+export const FLOOR_REJECTED = "sensor floor rejected the candidate";
+/** Why a run that would have completed fails when the floor cannot check (fail closed). */
+export const FLOOR_UNCHECKED = "sensor floor could not check the candidate";
 
 /** Resolves true once every call in `pending` has settled, or false after `ms`. */
 async function settled(
@@ -334,6 +347,10 @@ export interface RunOutcome {
  * before `run.terminated`; past the bound the run fails as cleanup unconfirmed.
  * A failed run's error is, in order: cleanup unconfirmed, the halt reason, the
  * first failed append, the loop's own failure, then whatever else was thrown.
+ * B3-2: with `setup.floor`, once cleanup is confirmed (not unconfirmed, no
+ * SANDBOX_CLEANUP_FAILED halt) the floor runs and `floor.checked` is logged just
+ * before `run.terminated`; a run that would complete fails with FLOOR_REJECTED on a
+ * finding, or FLOOR_UNCHECKED if the floor throws. Other terminals are kept.
  * @throws RangeError for an invalid `settleMs` or `limits` (N-f), before anything is
  * logged; Error if `run.started` cannot be logged.
  */
@@ -351,8 +368,13 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
   let logFailure: { error: unknown } | undefined;
   // Set once run.terminated is due: a late call may no longer append.
   let ended = false;
-  const append = (type: string, payload: Record<string, unknown>): Event => {
-    if (ended && type !== "run.terminated") {
+  // `final`: the run's own end (floor.checked, run.terminated), due once it has ended.
+  const append = (
+    type: string,
+    payload: Record<string, unknown>,
+    final = false,
+  ): Event => {
+    if (ended && !final) {
       throw new Error("the run has ended");
     }
     try {
@@ -520,18 +542,49 @@ export async function executeRun(setup: RunSetup): Promise<RunOutcome> {
       : failure === undefined && result !== undefined
         ? outcome(result.terminal, result.summary)
         : failed(failure ?? "the run ended without a result");
+  // B3-2: only once no sandbox can still write to the worktree (S6, SF-4).
+  const floorError =
+    setup.floor === undefined ||
+    halted === SANDBOX_CLEANUP_FAILED ||
+    unconfirmed
+      ? undefined
+      : checkFloor(setup.floor, (checked) => {
+          append("floor.checked", { ...checked }, true);
+        });
+  // OQ-B3-2: a run that ended otherwise keeps its terminal.
+  const end =
+    floorError !== undefined && done.terminal.kind === "completed"
+      ? failed(floorError)
+      : done;
   try {
-    append("run.terminated", { agentId: nodeId, ...done });
-    return done;
+    append("run.terminated", { agentId: nodeId, ...end }, true);
+    return end;
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(failure ?? message(logFailure) ?? errorMessage(error));
     try {
-      append("run.terminated", { agentId: nodeId, ...lost });
+      append("run.terminated", { agentId: nodeId, ...lost }, true);
     } catch {
       // The log itself may be what failed.
     }
     return lost;
+  }
+}
+
+/**
+ * Runs the floor and logs its `floor.checked`; the reason the run must not complete,
+ * if any: FLOOR_REJECTED, or FLOOR_UNCHECKED with the escaped error.
+ */
+function checkFloor(
+  floor: () => FloorChecked,
+  log: (checked: FloorChecked) => void,
+): string | undefined {
+  try {
+    const checked = floor();
+    log(checked);
+    return checked.verdict === "pass" ? undefined : FLOOR_REJECTED;
+  } catch (error) {
+    return FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
   }
 }
 
@@ -598,6 +651,8 @@ function intakeRecords(
 }
 
 export interface RunTaskResult extends RunOutcome {
+  /** B3-2: the run's logged floor check; null if the floor did not check. */
+  readonly floor: FloorChecked | null;
   readonly graphId: string;
   readonly runId: string;
   readonly nodeId: string;
@@ -711,6 +766,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
+    let checked: FloorChecked | null = null;
     const outcome = await executeRun({
       log,
       graphId,
@@ -805,12 +861,20 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         }
         return broker.executeTool;
       },
+      // B1: the host's common dir, never one the worktree names; protected = Ring 0.
+      floor: () => {
+        const repo = { worktree: workspace, commonDir: config.repoId };
+        const result = checkCandidate(repo, baseCommit, ring0Paths);
+        checked = result;
+        return result;
+      },
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.checkDesync === undefined
         ? {}
         : { checkDesync: options.checkDesync }),
     });
-    return { ...outcome, graphId, runId, nodeId, workspace };
+    const floor = checked;
+    return { ...outcome, floor, graphId, runId, nodeId, workspace };
   } finally {
     log.close();
   }
@@ -848,7 +912,10 @@ export type ReplayResult =
       /** From the run's `run.terminated` event; null if it recorded none. */
       readonly recordedDigest: string | null;
       readonly events: number;
-      /** How asks and answers in the log break their binding (SF3); empty if none. */
+      /**
+       * How asks and answers in the log break their binding (SF3), and B3-2 floor
+       * faults (`floorFaults`); empty if none.
+       */
       readonly permissionFaults: string[];
     }
   | { readonly runId: string; readonly terminated: false };
@@ -857,7 +924,8 @@ export type ReplayResult =
  * Re-derives a run's context (and the tools logged in `run.started`) from the
  * log and compares its digest with the one recorded from the loop's transcript
  * (`match`), and checks that each ask and answer in the log is bound to what the
- * owner was asked (`permissionFaults`, SF3). The replay passes only if `match` is
+ * owner was asked (`permissionFaults`, SF3), and that a completed run has a passing
+ * `floor.checked` (`floorFaults`, B3-2). The replay passes only if `match` is
  * true and `permissionFaults` is empty. Executes no effects. Without a hash
  * chain a fully rewritten, self-consistent log can still pass; see
  * `contextDigest`.
@@ -889,7 +957,7 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
       derivedDigest,
       recordedDigest,
       events: events.length,
-      permissionFaults: permissionFaults(events),
+      permissionFaults: [...permissionFaults(events), ...floorFaults(events)],
     };
   } finally {
     log.close();

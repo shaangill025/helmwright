@@ -2,11 +2,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { FloorFinding } from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SANDBOX_CLEANUP_FAILED,
   errorMessage,
   executeRun,
+  floorChecked,
+  floorFaults,
   openSessionLog,
   replayRun,
   type Engine,
@@ -15,7 +18,11 @@ import {
   type RunSetup,
   type SessionLog,
 } from "../../src/index.ts";
-import { stopReason } from "../../src/run/run.ts";
+import {
+  FLOOR_REJECTED,
+  FLOOR_UNCHECKED,
+  stopReason,
+} from "../../src/run/run.ts";
 
 const LIMITS = {
   maxIterations: 5,
@@ -460,5 +467,89 @@ describe("executeRun", () => {
     expect(
       stopReason({ ...stop, early: false, unconfirmed: false }),
     ).toBeUndefined();
+  });
+});
+
+describe("executeRun's sensor floor (B3-2)", () => {
+  const oid = "a".repeat(40);
+  const finding: FloorFinding = {
+    ...{ rule: "suppression.added", path: "src/a.ts" },
+    ...{ line: 1, detail: "marker" },
+  };
+  const pass = () => floorChecked(oid, oid, []);
+  const reject = () => floorChecked(oid, oid, [finding]);
+  const types = () => log.events({ runId: "run-1" }).map((e) => e.type);
+
+  it("logs floor.checked just before run.terminated; a pass completes", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      floor: pass,
+    });
+    expect(outcome.terminal).toEqual({ kind: "completed" });
+    expect(types().slice(-2)).toEqual(["floor.checked", "run.terminated"]);
+    expect(floorFaults(log.events({ runId: "run-1" }))).toEqual([]);
+  });
+
+  it("fails a would-be completed run on a finding (OQ-B3-2)", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      floor: reject,
+    });
+    expect(outcome.terminal).toEqual({ kind: "failed", error: FLOOR_REJECTED });
+    expect(terminated()?.payload["terminal"]).toEqual(outcome.terminal);
+    expect(types().at(-2)).toBe("floor.checked");
+  });
+
+  it("fails closed with the escaped error if the floor throws", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      floor: () => {
+        throw new Error("bad \u001b[2J");
+      },
+    });
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: FLOOR_UNCHECKED + ": bad \\u{1b}[2J",
+    });
+    expect(types()).not.toContain("floor.checked");
+  });
+
+  it("keeps a failed run's own error on a finding", async () => {
+    const engine: Engine = { step: () => Promise.reject(new Error("boom")) };
+    const outcome = await run(engine, true, log, undefined, { floor: reject });
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    expect(outcome.terminal).not.toEqual({
+      kind: "failed",
+      error: FLOOR_REJECTED,
+    });
+    expect(types().at(-2)).toBe("floor.checked");
+  });
+
+  it("skips the floor after a sandbox cleanup failure (S6)", async () => {
+    const floor = vi.fn(pass);
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      log,
+      ({ halt }) =>
+        () => {
+          halt(SANDBOX_CLEANUP_FAILED);
+          return ok();
+        },
+      { floor },
+    );
+    expect(outcome.terminal).toEqual({
+      kind: "failed",
+      error: SANDBOX_CLEANUP_FAILED,
+    });
+    expect(floor).not.toHaveBeenCalled();
+    expect(types()).not.toContain("floor.checked");
+  });
+
+  it("faults the replay of a completed run with no floor.checked", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true);
+    expect(outcome.terminal).toEqual({ kind: "completed" });
+    const seq = String(terminated()?.seq);
+    // replayRun reports these with the permission faults (e2e: expectReplayMatches).
+    expect(floorFaults(log.events({ runId: "run-1" }))).toEqual([
+      "seq " + seq + ": completed run without a passing floor.checked",
+    ]);
   });
 });

@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import type { FloorChecked } from "@helmwright/schema";
 import { errorMessage } from "./loop/terminal.ts";
 import { displayText } from "./permission/policy.ts";
 import { createTtyPresence } from "./permission/presence.ts";
@@ -16,8 +17,9 @@ const USAGE =
   "       cli.ts reap --state-dir <dir>";
 
 /**
- * run: 0 completed, 2 incomplete, 1 failed; replay: 0 match, 3 mismatch (the
- * context digest differs or `permissionFaults` is not empty), 4 never terminated;
+ * run: 0 completed, 2 incomplete, 1 failed (also on a floor finding, OQ-B3-2);
+ * replay: 0 match, 3 mismatch (the context digest differs or `permissionFaults`,
+ * which includes the floor faults, is not empty), 4 never terminated;
  * reap: 0, 1 if anything could not be reaped; 64 usage.
  */
 const EXIT = {
@@ -53,6 +55,18 @@ function jsonLine(value: unknown): string {
     }
     return escaped;
   });
+}
+
+/** B3-2: one escaped, bounded stderr line for the run's floor check. */
+function floorLine(checked: FloorChecked | null): string {
+  if (checked === null) return "floor not checked";
+  if (checked.verdict === "pass") return "floor pass";
+  const { findings, truncated } = checked;
+  const count = String(findings.length) + (truncated ? "+" : "");
+  const named = findings.map(({ rule, path }) =>
+    path === undefined ? rule : rule + " " + path,
+  );
+  return "floor reject: " + count + " findings (" + named.join(", ") + ")";
 }
 
 function command(args: readonly string[]) {
@@ -121,7 +135,7 @@ async function main(args: readonly string[]): Promise<number> {
     // The owner is present only at an interactive terminal: asks go to stderr, so
     // stdout stays one JSON line. Otherwise every ask is denied (nobody present).
     const present = process.stdin.isTTY && process.stderr.isTTY;
-    const { runId, terminal, summary } = await runTask({
+    const { runId, terminal, summary, floor } = await runTask({
       taskFile: target,
       stateDir,
       signal: controller.signal,
@@ -141,6 +155,7 @@ async function main(args: readonly string[]): Promise<number> {
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
         : {}),
     });
+    console.error("helmwright: " + displayText(floorLine(floor)));
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
   } catch (error) {
