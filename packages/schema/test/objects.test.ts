@@ -209,6 +209,8 @@ describe("ObjectRecord", () => {
         { status: "done" },
         { text: "line one\nline two" },
         { text: "\u{1f600}".repeat(8192) },
+        // Tabs, CRLF and an emoji joined by U+200D are honest text.
+        { text: "a\tb\r\nc \u{1f468}‍\u{1f469}‍\u{1f467}" },
         { repoId: "/" },
       ],
       [
@@ -222,6 +224,18 @@ describe("ObjectRecord", () => {
         { text: "   " },
         { text: " \n\t" },
         { text: "x".repeat(8193) },
+        // Control characters, bidi controls and lone surrogates.
+        ...[
+          "\u0000",
+          "\u001b",
+          "\u007f",
+          "\u0085",
+          "‮",
+          "⁦",
+          "‏",
+          "\ud800",
+          "\udc00",
+        ].map((c) => ({ text: "a" + c + "b" })),
         { repoId: "relative" },
         { repoId: "" },
         { repoId: "/a\u001bb" },
@@ -281,7 +295,6 @@ describe("ObjectRecord", () => {
           "footprint.module",
         ].map((type) => ({ type })),
         { type: "conceptExpansion", repoId: undefined, ref: "concept-slug" },
-        { type: "report", repoId: undefined },
         { runId: "run-x" },
         { type: "diff", ref: "d".repeat(40), runId: "run-x" },
         { type: "footprint.symbol", ref: "src/a.ts#parse" },
@@ -289,6 +302,7 @@ describe("ObjectRecord", () => {
       [
         ...[
           "diff",
+          "report",
           "footprint.file",
           "footprint.symbol",
           "footprint.dependency",
@@ -371,6 +385,8 @@ describe("ObjectRecord", () => {
       not?: { pattern: string };
       enum?: string[];
       items?: { enum: string[] };
+      minimum?: number;
+      maximum?: number;
     }
     const objects = read("objects.schema.json") as {
       $defs: Record<string, Def>;
@@ -382,7 +398,7 @@ describe("ObjectRecord", () => {
       $defs: Record<string, Def>;
     };
     const envelope = read("event.schema.json") as {
-      properties: { at: Def };
+      properties: { at: Def; seq: Def };
       $defs: { id: Def };
     };
     const rot = read("rot-register.schema.json") as {
@@ -402,6 +418,10 @@ describe("ObjectRecord", () => {
     expect(own["displayText"]?.pattern).toEqual(floor.$defs["text"]?.pattern);
     expect(own["at"]?.pattern).toEqual(envelope.properties.at.pattern);
     expect(own["envelopeId"]?.pattern).toEqual(envelope.$defs.id.pattern);
+    expect([own["seq"]?.minimum, own["seq"]?.maximum]).toEqual([
+      envelope.properties.seq.minimum,
+      envelope.properties.seq.maximum,
+    ]);
     expect(own["reviewTrigger"]?.items?.enum).toEqual(
       rot.$defs.reviewTrigger.enum,
     );

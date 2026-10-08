@@ -199,6 +199,7 @@ const schema31 = {
           type: {
             enum: [
               "diff",
+              "report",
               "footprint.file",
               "footprint.symbol",
               "footprint.dependency",
@@ -402,9 +403,11 @@ const schema31 = {
         "^/[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{0,4095}$",
     },
     text: {
-      description: "Escaped text, 1 to 8192 code points, not only spaces.",
+      description:
+        "Text of 1 to 8192 code points, not only spaces; tabs and line breaks are kept, but no other control character, bidi control or lone surrogate.",
       type: "string",
-      pattern: "^[\\s\\S]{1,8192}$",
+      pattern:
+        "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
       not: { pattern: "^\\s*$" },
     },
     displayText: {
@@ -566,9 +569,11 @@ const schema36 = {
     "^/[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{0,4095}$",
 };
 const schema37 = {
-  description: "Escaped text, 1 to 8192 code points, not only spaces.",
+  description:
+    "Text of 1 to 8192 code points, not only spaces; tabs and line breaks are kept, but no other control character, bidi control or lone surrogate.",
   type: "string",
-  pattern: "^[\\s\\S]{1,8192}$",
+  pattern:
+    "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
   not: { pattern: "^\\s*$" },
 };
 const schema38 = {
@@ -591,7 +596,10 @@ const pattern6 = new RegExp(
   "u",
 );
 const pattern7 = new RegExp("^\\s*$", "u");
-const pattern8 = new RegExp("^[\\s\\S]{1,8192}$", "u");
+const pattern8 = new RegExp(
+  "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
+  "u",
+);
 const pattern9 = new RegExp("(^|/)\\.{0,2}(/|$)", "u");
 const pattern10 = new RegExp(
   "^[^\\\\\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,1024}$",
@@ -1021,8 +1029,14 @@ function validate21(
             instancePath: instancePath + "/text",
             schemaPath: "#/$defs/text/pattern",
             keyword: "pattern",
-            params: { pattern: "^[\\s\\S]{1,8192}$" },
-            message: 'must match pattern "' + "^[\\s\\S]{1,8192}$" + '"',
+            params: {
+              pattern:
+                "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
+            },
+            message:
+              'must match pattern "' +
+              "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$" +
+              '"',
           };
           if (vErrors === null) {
             vErrors = [err23];
@@ -2450,6 +2464,7 @@ const schema50 = {
       type: {
         enum: [
           "diff",
+          "report",
           "footprint.file",
           "footprint.symbol",
           "footprint.dependency",
@@ -2503,6 +2518,7 @@ function validate27(
       let data0 = data.type;
       if (!(
         data0 === "diff" ||
+        data0 === "report" ||
         data0 === "footprint.file" ||
         data0 === "footprint.symbol" ||
         data0 === "footprint.dependency" ||
@@ -3622,8 +3638,14 @@ function validate29(
             instancePath: instancePath + "/text",
             schemaPath: "#/$defs/text/pattern",
             keyword: "pattern",
-            params: { pattern: "^[\\s\\S]{1,8192}$" },
-            message: 'must match pattern "' + "^[\\s\\S]{1,8192}$" + '"',
+            params: {
+              pattern:
+                "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$",
+            },
+            message:
+              'must match pattern "' +
+              "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,8192}$" +
+              '"',
           };
           if (vErrors === null) {
             vErrors = [err23];
