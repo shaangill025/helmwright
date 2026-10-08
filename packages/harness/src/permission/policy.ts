@@ -202,6 +202,13 @@ function whole(text: string, max: number): string | undefined {
   const shown = escape(text);
   return Array.from(shown).length <= max ? shown : undefined;
 }
+/** N3: whether an ask for `config.set` of `setting` to `value` can show the whole value. */
+export function fitsAsk(setting: string, value: unknown): boolean {
+  const detail = canonical(value);
+  const room = MAX_FULL_SHOWN - Array.from(escape(setting)).length;
+  const bytes = Buffer.byteLength(detail) + Buffer.byteLength(setting) + 64;
+  return bytes <= MAX_INPUT_BYTES && whole(detail, room) !== undefined;
+}
 /** The raw text cut to `max` code points (so no escape is split), escaped, then a marker if cut; and if it was. */
 function bounded(text: string, max: number): readonly [string, boolean] {
   let kept = "";

@@ -1,17 +1,20 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   CONFIG_DEFAULTS,
   RING0_CONFIG_KEYS,
   validateHelmwrightConfig,
-  type Event,
   type PermissionPolicy,
 } from "@helmwright/schema";
+import type { SessionLog } from "../log/session-log.ts";
 import { errorMessage } from "../loop/terminal.ts";
 import {
   DEFAULT_PERMISSION_POLICY,
   canonical,
   displayText,
+  fitsAsk,
   resolvePolicy,
 } from "../permission/policy.ts";
 
@@ -111,6 +114,10 @@ export interface RunConfig {
   readonly record: ConfigRecord;
   /** The object hashed for `record.ring0Sha256`. */
   readonly ring0: Readonly<Record<string, unknown>>;
+  /** S1: the realpath of the repo's common git dir, shared by its linked worktrees. */
+  readonly repoId: string;
+  /** S1: whether a commit up to the base commit touched the config file. */
+  readonly configHistory: boolean;
 }
 
 /** The version of the object hashed for `ring0Sha256`. */
@@ -242,6 +249,12 @@ function settle(policyOverride: unknown): {
     return [key, value] as const;
   });
   const object = { format: RING0_FORMAT, ...Object.fromEntries(ring0) };
+  // N3: a change that cannot be shown in full could never be approved.
+  if (!RING0_CONFIG_KEYS.every((key) => fitsAsk(key, object))) {
+    throw new ConfigError(
+      `${CONFIG_FILE}: Ring 0 configuration is too large to approve`,
+    );
+  }
   return { policy, ring0Sha256: sha256(canonical(object)), ring0: object };
 }
 
@@ -305,6 +318,10 @@ export function loadRunConfig(repo: string): RunConfig {
       throw new ConfigError(`${CONFIG_FILE}: cannot read: ${why}`);
     }
   };
+  const common = read(["rev-parse", "--git-common-dir"]).toString("utf8");
+  const repoId = realpathSync(resolve(repo, common.trim()));
+  const log = ["log", "-1", "--format=%H", baseCommit, "--", CONFIG_FILE];
+  const configHistory = read(log).toString("utf8").trim() !== "";
   const lsTree = ["ls-tree", "-z", "--full-tree", baseCommit, "--"];
   const entries = read([...lsTree, CONFIG_FILE])
     .toString("utf8")
@@ -314,7 +331,7 @@ export function loadRunConfig(repo: string): RunConfig {
     const { policy, ring0Sha256, ring0 } = settle(undefined);
     const sha = sha256(canonical(CONFIG_DEFAULTS));
     const record = { source: "default", sha256: sha, ring0Sha256 } as const;
-    return { baseCommit, policy, record, ring0 };
+    return { baseCommit, policy, record, ring0, repoId, configHistory };
   }
   const [entry = ""] = entries;
   const tab = entry.indexOf("\t");
@@ -350,7 +367,7 @@ export function loadRunConfig(repo: string): RunConfig {
     sha256: sha256(bytes),
     ring0Sha256,
   } as const;
-  return { baseCommit, policy, record, ring0 };
+  return { baseCommit, policy, record, ring0, repoId, configHistory };
 }
 
 /** OQ1: the event that records a repo's accepted Ring 0 config. */
@@ -370,52 +387,60 @@ export function ring0SettingDigests(
 /** How a run's Ring 0 config compares with the last one accepted for its repo. */
 export type Ring0Status =
   | { readonly kind: "unchanged" }
-  /** No acceptance is logged and the config is the defaults: accepted silently. */
+  /** No baseline, no config history, and the config is the defaults: accepted silently. */
   | { readonly kind: "default" }
   | {
       readonly kind: "changed";
-      /** The accepted digest it differs from. */
+      /** The baseline digest it differs from (the defaults' if there is none). */
       readonly from: string;
       /** The Ring 0 settings that differ, in RING0_CONFIG_KEYS order; never empty. */
       readonly changed: readonly string[];
+      /** Fixed text when there is no accepted baseline. */
+      readonly note?: string;
     };
 
 /**
- * OQ1: compares `config`'s Ring 0 digest with the baseline for `repo` (its
- * realpath): the latest `config.accepted` event in `events` with that repo and a
- * well-formed digest, else the digest of the defaults. A change names the settings
- * whose digests differ from the baseline's; if the baseline has none to compare
- * (or none differ, as for a new RING0_FORMAT), every Ring 0 setting.
+ * OQ1: compares `config`'s Ring 0 digest with the baseline for `config.repoId`: the
+ * latest `config.accepted` with that repo and a digest. Rows of other types are
+ * never read (S3).
+ * The baseline is scoped to this state dir. With none, the defaults are accepted
+ * silently only if the config file has no history (S1); else the config is asked.
+ * A change names the settings whose digests differ from the baseline's; if none can
+ * be compared, every Ring 0 setting.
  */
 export function ring0Status(
-  events: readonly Event[],
-  repo: string,
-  config: Pick<RunConfig, "record" | "ring0">,
+  log: Pick<SessionLog, "events">,
+  config: Pick<RunConfig, "record" | "ring0" | "repoId" | "configHistory">,
 ): Ring0Status {
-  const accepted = events.findLast(
-    ({ type, payload }) =>
-      type === CONFIG_ACCEPTED &&
-      payload["repo"] === repo &&
-      typeof payload["ring0Sha256"] === "string" &&
-      DIGEST.test(payload["ring0Sha256"]),
-  )?.payload;
+  const query = { type: CONFIG_ACCEPTED, repo: config.repoId };
+  const accepted = log
+    .events(query)
+    .findLast(
+      ({ payload }) =>
+        typeof payload["ring0Sha256"] === "string" &&
+        DIGEST.test(payload["ring0Sha256"]),
+    )?.payload;
   const defaults = settle(undefined);
   const from = (accepted?.["ring0Sha256"] ?? defaults.ring0Sha256) as string;
-  if (config.record.ring0Sha256 === from) {
-    return { kind: accepted === undefined ? "default" : "unchanged" };
+  const none = accepted === undefined;
+  if (config.record.ring0Sha256 === from && !(none && config.configHistory)) {
+    return { kind: none ? "default" : "unchanged" };
   }
-  const known: unknown =
-    accepted === undefined
-      ? ring0SettingDigests(defaults.ring0)
-      : accepted["settings"];
+  const known: unknown = none
+    ? ring0SettingDigests(defaults.ring0)
+    : accepted["settings"];
   const before = new Map(isRecord(known) ? Object.entries(known) : []);
   const after = new Map(Object.entries(ring0SettingDigests(config.ring0)));
   const changed = RING0_CONFIG_KEYS.filter(
     (key) => before.get(key) !== after.get(key),
   );
+  const history = config.configHistory ? "; the config file has history" : "";
   return {
     kind: "changed",
     from,
     changed: changed.length === 0 ? [...RING0_CONFIG_KEYS] : changed,
+    ...(none
+      ? { note: "no accepted baseline in this state dir" + history }
+      : {}),
   };
 }
