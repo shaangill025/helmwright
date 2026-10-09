@@ -208,6 +208,7 @@ export {
   runRecorded,
   taskCreated,
 } from "./objects/events.ts";
+export { objectFaults } from "./objects/faults.ts";
 export type {
   MapStore,
   ProjectionCheck,

@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -374,6 +375,29 @@ function objectOf(id: string) {
   }
 }
 
+/** The objects projection checked against the events, as replay reports it (B5-4b). */
+function projectionsOf() {
+  const log = openSessionLog(join(stateDir, "session.sqlite"));
+  try {
+    return log.verifyProjections();
+  } finally {
+    log.close();
+  }
+}
+
+/** Edits the Run row `id` as a raw writer that registers the guard's flag function can. */
+function editRunRow(id: string): void {
+  const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+  try {
+    db.function("hw_projection_write", () => 1);
+    const edit =
+      "UPDATE objects SET record = json_set(record, '$.class', 'chore') WHERE id = ? AND record ->> '$.class' IS NOT 'chore'";
+    expect(Number(db.prepare(edit).run(id).changes)).toBe(1);
+  } finally {
+    db.close();
+  }
+}
+
 /**
  * The log of one run, the first in its state dir: B5-4 logs `task.created` and
  * `run.recorded` before `run.started`. Returns its events from `run.started` on.
@@ -411,6 +435,9 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
   expect(tools?.map((t) => t.name)).toEqual(["execute"]);
   const messages = deriveMessages(events, runId);
   expect(recorded).toBe(contextDigest(messages, tools ?? []));
+  // B5-4b: the whole log's projections match, and the Task and Run relations hold.
+  const projections = projectionsOf();
+  expect(projections).toMatchObject({ match: true, differingIds: [] });
   expect(out).toEqual({
     runId,
     terminated: true,
@@ -419,6 +446,8 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
     recordedDigest: recorded,
     events: all.length,
     permissionFaults: [],
+    objectFaults: [],
+    projections,
   });
   expect(recorded).toMatch(/^[0-9a-f]{64}$/);
 }
@@ -1193,11 +1222,101 @@ describe("helmwright CLI (e2e)", () => {
     const runId = events[0]?.runId ?? "";
     const replay = cli("replay", runId, "--state-dir", stateDir);
     expect(replay.status, replay.stderr).toBe(4);
-    expect(JSON.parse(replay.stdout)).toEqual({ runId, terminated: false });
+    const projections = projectionsOf();
+    expect(projections.match).toBe(true);
+    expect(JSON.parse(replay.stdout)).toEqual({
+      ...{ runId, terminated: false, projections },
+    });
+    // B5-4b: a projection mismatch is exit 3 even for a run that never terminated.
+    editRunRow(runId);
+    const edited = cli("replay", runId, "--state-dir", stateDir);
+    expect(edited.status, edited.stderr).toBe(3);
+    expect(JSON.parse(edited.stdout)).toMatchObject({
+      ...{ runId, terminated: false },
+      projections: { match: false, guarded: true, differingIds: [runId] },
+    });
     // reap leaves a run that has not terminated alone.
     const reap = cli("reap", "--state-dir", stateDir);
     expect(reap.status, reap.stderr).toBe(0);
     expect(existsSync(join(stateDir, "workspaces", runId))).toBe(true);
+  });
+
+  // B5-4b: the edited row, then a forged event, each fail the replay of a good run.
+  it(
+    "refuses a replay on an edited projection row or a forged event",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(0);
+      editRunRow(out.runId);
+      const edited = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(edited.status, edited.stderr).toBe(3);
+      expect(JSON.parse(edited.stdout)).toMatchObject({
+        ...{ match: true, permissionFaults: [], objectFaults: [] },
+        projections: { match: false, guarded: true, differingIds: [out.runId] },
+      });
+      expect(cli("rebuild", "--state-dir", stateDir).status).toBe(0);
+      expect(cli("replay", out.runId, "--state-dir", stateDir).status).toBe(0);
+      // Any forged event fails every replay closed (exit 1), as rebuild does.
+      rawAppend("decision.owner.answered", {});
+      const seq = String(lastSeqRaw());
+      const forged = cli("replay", out.runId, "--state-dir", stateDir);
+      expect([forged.status, forged.stdout]).toEqual([1, ""]);
+      expect(forged.stderr).toContain(
+        "helmwright: replay refused (see inspect; until SIG a bad event needs a new state dir): session log: corrupt event at seq " +
+          seq +
+          ": ",
+      );
+    },
+  );
+
+  it(
+    "replays a legacy run, and faults a later run with no Run (OD-B54-3)",
+    { timeout: T },
+    () => {
+      const ended = {
+        contextDigest: contextDigest([], []),
+        terminal: { kind: "incomplete", reason: "cancelled" },
+      };
+      // Before any run.recorded: a run as a B5-3 build logged it, with no Run.
+      openSessionLog(join(stateDir, "session.sqlite")).close();
+      rawAppend("run.started", { tools: [] }, "run-legacy");
+      rawAppend("run.terminated", ended, "run-legacy");
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(0);
+      rawAppend("run.started", { tools: [] }, "run-unrecorded");
+      rawAppend("run.terminated", ended, "run-unrecorded");
+      const legacy = cli("replay", "run-legacy", "--state-dir", stateDir);
+      expect(legacy.status, legacy.stderr).toBe(0);
+      const passed = { match: true, permissionFaults: [] };
+      expect(JSON.parse(legacy.stdout)).toMatchObject({
+        ...{ ...passed, objectFaults: [], events: 2 },
+        projections: { match: true },
+      });
+      const seq = String(lastSeqRaw() - 1);
+      const late = cli("replay", "run-unrecorded", "--state-dir", stateDir);
+      expect(late.status, late.stderr).toBe(3);
+      expect(JSON.parse(late.stdout)).toMatchObject({
+        ...{ ...passed, projections: { match: true } },
+        objectFaults: ["seq " + seq + ": run.started without run.recorded"],
+      });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      expectReplayMatches(out.runId, events.slice(2));
+    },
+  );
+
+  it("explains inspect on a state dir it cannot write", { timeout: T }, () => {
+    openSessionLog(join(stateDir, "session.sqlite")).close();
+    chmodSync(stateDir, 0o500);
+    try {
+      const shown = cli("inspect", "--state-dir", stateDir);
+      expect(shown.status, shown.stderr).toBe(1);
+      expect(shown.stderr).toContain(
+        "helmwright: inspect needs write access to the state dir, where SQLite creates the log's -shm file (WAL): attempt to write a readonly database",
+      );
+    } finally {
+      chmodSync(stateDir, 0o700);
+    }
   });
 
   it("reaps the worktree of a finished run", { timeout: T }, () => {
@@ -1274,8 +1393,18 @@ const RING0_END =
   "Approve config.set (always-ask.ring0-setting, alwaysAsk)? [v=view, y/N] ";
 const NOT_APPROVED = "Ring 0 configuration changed and was not approved";
 
+/** The highest seq in the log, read raw (a checked read refuses a forged row). */
+function lastSeqRaw(): number {
+  const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+  try {
+    return Number(db.prepare("SELECT MAX(seq) AS n FROM events").get()?.["n"]);
+  } finally {
+    db.close();
+  }
+}
+
 /** S3, N1: appends a row with a raw connection, as a forger could. */
-function rawAppend(type: string, payload: object): void {
+function rawAppend(type: string, payload: object, runId = "run-forged"): void {
   const db = new DatabaseSync(join(stateDir, "session.sqlite"));
   try {
     const next = "SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events";
@@ -1284,12 +1413,12 @@ function rawAppend(type: string, payload: object): void {
     const row = [
       seq,
       `forged-${String(seq)}`,
+      runId,
       type,
       at,
       JSON.stringify(payload),
     ];
-    const insert =
-      "INSERT INTO events VALUES (?, 1, ?, 'g', 'run-forged', 'n', ?, ?, ?)";
+    const insert = "INSERT INTO events VALUES (?, 1, ?, 'g', ?, 'n', ?, ?, ?)";
     db.prepare(insert).run(...row);
   } finally {
     db.close();

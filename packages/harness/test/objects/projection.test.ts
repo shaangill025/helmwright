@@ -518,9 +518,12 @@ describe("session log migration v2 to v3 (B5-3)", () => {
     const args = [CLI, "replay", RUN, "--state-dir", dirname(v2())];
     const replay = () =>
       spawnSync(process.execPath, args, { encoding: "utf8", timeout: 60_000 });
+    // B5-4b: replay checks the Run against run.started (objectFaults).
+    const { taskId, engine, baseCommit } = run();
+    const title = task().text;
     v2Log([
       ...SEED.slice(0, 2),
-      ["run.started", { tools: [] }],
+      ["run.started", { tools: [], taskId, title, engine, baseCommit }],
       ["run.terminated", ended],
     ]);
     const passed = replay();
@@ -540,5 +543,5 @@ describe("session log migration v2 to v3 (B5-3)", () => {
     expect(refused.stderr).toMatch(/cannot migrate v2 to v3/);
     expect(refused.stdout).toBe("");
     expect(shape().version).toBe(2);
-  });
+  }, 120_000);
 });

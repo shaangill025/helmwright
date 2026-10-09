@@ -60,6 +60,8 @@ import {
   runRecorded,
   taskCreated,
 } from "../objects/events.ts";
+import { objectFaults } from "../objects/faults.ts";
+import type { ProjectionCheck } from "../objects/projection.ts";
 import { INVISIBLE, hasControl } from "../permission/normalize.ts";
 import { permissionFaults } from "../permission/faults.ts";
 import {
@@ -1071,19 +1073,30 @@ export type ReplayResult =
        * faults (`floorFaults`); empty if none.
        */
       readonly permissionFaults: string[];
+      /** How the run's Task and Run break their relations (B5-4b); empty if none. */
+      readonly objectFaults: string[];
+      readonly projections: ProjectionCheck;
     }
-  | { readonly runId: string; readonly terminated: false };
+  | {
+      readonly runId: string;
+      readonly terminated: false;
+      /** The whole log's objects table checked against its events (B5-4b). */
+      readonly projections: ProjectionCheck;
+    };
 
 /**
  * Re-derives a run's context (and the tools logged in `run.started`) from the
  * log and compares its digest with the one recorded from the loop's transcript
  * (`match`), and checks that each ask and answer in the log is bound to what the
  * owner was asked (`permissionFaults`, SF3), and that a completed run has a passing
- * `floor.checked` (`floorFaults`, B3-2). The replay passes only if `match` is
- * true and `permissionFaults` is empty. Executes no effects. Without a hash
+ * `floor.checked` (`floorFaults`, B3-2). B5-4b: first it verifies the log's object
+ * projections (`projections`, also for a run that never terminated), and it checks the
+ * run's Task and Run relations (`objectFaults`). The replay passes only if both `match`
+ * values are true and both fault lists are empty. Executes no effects. Without a hash
  * chain a fully rewritten, self-consistent log can still pass; see
  * `contextDigest`.
- * @throws UsageError for a bad run ID; Error if there is no log or no such run.
+ * @throws UsageError for a bad run ID; Error if there is no log or no such run, or
+ * "corrupt event at seq N" or "cannot apply event at seq N" for any event of the log.
  */
 export function replayRun(runId: string, stateDir: string): ReplayResult {
   if (!ID.test(runId)) throw new UsageError(`run ID must match ${ID.source}`);
@@ -1091,10 +1104,13 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
   if (!existsSync(path)) throw new Error(`no session log at ${path}`);
   const log = openSessionLog(path);
   try {
+    const projections = log.verifyProjections();
     const events = log.events({ runId });
     if (events.length === 0) throw new Error(`no events for run ${runId}`);
     const terminated = events.findLast((e) => e.type === "run.terminated");
-    if (terminated === undefined) return { runId, terminated: false };
+    if (terminated === undefined) {
+      return { runId, terminated: false, projections };
+    }
     const tools = events.find((e) => e.type === "run.started")?.payload[
       "tools"
     ];
@@ -1112,6 +1128,11 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
       recordedDigest,
       events: events.length,
       permissionFaults: [...permissionFaults(events), ...floorFaults(events)],
+      objectFaults: objectFaults(events, [
+        ...log.events({ type: "task.created" }),
+        ...log.events({ type: "run.recorded" }),
+      ]),
+      projections,
     };
   } finally {
     log.close();

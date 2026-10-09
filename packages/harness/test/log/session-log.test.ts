@@ -321,6 +321,28 @@ describe("transaction", () => {
   });
 });
 
+describe("verifyProjections (B5-4b)", () => {
+  // RED before B5-4b: verify took BEGIN IMMEDIATE and failed with SQLITE_BUSY after 5 s.
+  it("reads a snapshot without waiting for or blocking a writer", () => {
+    const log = openLog();
+    log.append(input());
+    const raw = new DatabaseSync(file);
+    try {
+      raw.exec("BEGIN IMMEDIATE");
+      const started = performance.now();
+      expect(log.verifyProjections()).toMatchObject({ match: true });
+      expect(performance.now() - started).toBeLessThan(2_000);
+      // The writer still commits, and verify left no transaction open.
+      rawInsert(raw, ["INSERT", 1, "raw-1"]);
+      raw.exec("COMMIT");
+    } finally {
+      raw.close();
+    }
+    expect(log.append(input()).seq).toBe(2);
+    expect(log.transaction(() => log.verifyProjections().match)).toBe(true);
+  }, 15_000);
+});
+
 describe("cross-process", () => {
   // Both writers pause 1 ms between appends: SQLite's busy handler is not fair,
   // so an unpaced tight loop can starve the other writer past its busy timeout.

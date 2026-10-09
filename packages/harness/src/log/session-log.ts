@@ -122,7 +122,8 @@ export interface SessionLog {
   object(id: string): ObjectRecord | undefined;
   /**
    * Re-applies every event, read through the checked path, in memory and compares the
-   * result and the table's DDL with the objects table (B5-3b). Does not change the log.
+   * result and the table's DDL with the objects table (B5-3b). Does not change the log;
+   * reads one snapshot in a deferred transaction, so a live writer is not blocked (B5-4b).
    * @throws Error "corrupt event at seq N" or "cannot apply event at seq N"
    */
   verifyProjections(): ProjectionCheck;
@@ -275,6 +276,33 @@ function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
 }
 
 /**
+ * B5-4b: runs `fn` in a deferred read transaction, a WAL snapshot: every read in `fn`
+ * sees one snapshot, and it neither waits for nor blocks a writer's BEGIN IMMEDIATE.
+ * `fn` must not write. @throws RollbackError if the transaction cannot be ended
+ */
+function readTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec("BEGIN");
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    endRead(db, error);
+    throw error;
+  }
+  endRead(db, undefined);
+  return result;
+}
+
+function endRead(db: DatabaseSync, cause: unknown): void {
+  if (!db.isTransaction) return;
+  try {
+    db.exec("ROLLBACK");
+  } catch (rollback) {
+    throw new RollbackError(rollback, cause);
+  }
+}
+
+/**
  * Runs `fn` inside a savepoint of the open transaction, so a failed append stores
  * nothing even when the caller of `SessionLog.transaction` catches its error.
  */
@@ -336,16 +364,21 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
   // N-3: after a failed rollback a write could join the stale transaction and never
   // commit, so every later write throws instead.
   let poisoned: RollbackError | undefined;
-  const write = <T>(fn: () => T, savepoint = false): T => {
+  const guarded = <T>(fn: () => T): T => {
     if (poisoned !== undefined) throw poisoned;
     try {
-      return inTransaction(db, savepoint ? () => atomically(db, fn) : fn);
+      return fn();
     } catch (error) {
       if (rollbackErrors.has(error as object))
         poisoned = error as RollbackError;
       throw error;
     }
   };
+  const write = <T>(fn: () => T, savepoint = false): T =>
+    guarded(() => inTransaction(db, savepoint ? () => atomically(db, fn) : fn));
+  // B5-4b: a read left open would hold every later write in it, so it poisons too.
+  const read = <T>(fn: () => T): T =>
+    guarded(() => (db.isTransaction ? fn() : readTransaction(db, fn)));
 
   return {
     append(input) {
@@ -426,8 +459,7 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
       return store.get(id);
     },
     verifyProjections() {
-      // A write transaction, so the events and rows are read from one snapshot.
-      return write(() => {
+      return read(() => {
         const rebuilt = createMapStore();
         applyAll(db, rebuilt);
         return checkProjections(db, rebuilt.records());
