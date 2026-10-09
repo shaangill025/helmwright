@@ -57,6 +57,28 @@ const unique = (values: readonly string[]) =>
 const sortedUnique = (values: readonly string[]) =>
   values.every((value, i) => i === 0 || (values[i - 1] ?? "") < value);
 
+/**
+ * A Ruling's class and rubric family by its source: intake is outside the owned classes
+ * (OD-2) and uses the intake rubric; a plan or floor call keeps its owned class and uses
+ * the materiality rubric (Q53, B5-5a).
+ */
+function rulingReason(p: DecisionOpenedRuling): string | undefined {
+  if (p.source === "intake") {
+    if (p.class !== null) {
+      return "decision.opened intake Ruling must have class null";
+    }
+    return p.ruling.rubricVersion.startsWith("intake-rubric-")
+      ? undefined
+      : "decision.opened intake Ruling needs an intake-rubric- version";
+  }
+  if (p.class === null) {
+    return "decision.opened plan or floor Ruling must have a class";
+  }
+  return p.ruling.rubricVersion.startsWith("materiality-rubric-")
+    ? undefined
+    : "decision.opened plan or floor Ruling needs a materiality-rubric- version";
+}
+
 /** The relations of a schema-valid payload that the schema cannot express. */
 function relationReason(p: ObjectEvent): string | undefined {
   switch (p.kind) {
@@ -78,11 +100,7 @@ function relationReason(p: ObjectEvent): string | undefined {
     }
     case "decision.opened":
       if (!unique(p.signalIds)) return "decision.opened signalIds repeat";
-      if (p.authority === "harness") {
-        return p.source === "intake" && p.class !== null
-          ? "decision.opened intake Ruling must have class null"
-          : undefined;
-      }
+      if (p.authority === "harness") return rulingReason(p);
       if (!unique(p.brief.options.map((o) => o.id))) {
         return "decision.opened option IDs repeat";
       }

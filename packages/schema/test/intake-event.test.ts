@@ -18,7 +18,7 @@ const declared = {
 };
 const classified: IntakeClassified = {
   kind: "intake.classified",
-  taskId: "task_01",
+  taskId: "task-01",
   class: "bounded",
   rubricVersion: "intake-rubric-1",
   reasons: [{ rule: "notDocsOrTests", entries: ["src/a.ts"] }],
@@ -28,11 +28,10 @@ const classified: IntakeClassified = {
   declared,
   friction: { intensity: "moderate", source: "default" },
   sparring: "optIn",
-  costIfWrong: "one review",
 };
 const overridden: IntakeOverridden = {
   kind: "intake.overridden",
-  taskId: "task_01",
+  taskId: "task-01",
   from: "bounded",
   to: "chore",
   reason: "formatting only",
@@ -44,7 +43,7 @@ const overridden: IntakeOverridden = {
 };
 const reclassified: IntakeReclassified = {
   kind: "intake.reclassified",
-  taskId: "task_01",
+  taskId: "task-01",
   from: "chore",
   to: "bounded",
   source: "floor",
@@ -55,6 +54,12 @@ const events: IntakeEvent[] = [classified, overridden, reclassified];
 /** Characters an entry may not have (S5), built so that the source holds none of them. */
 const hidden = [0x202e, 0x200b, 0x2028, 0x2029, 0xd800, 0x85, 0x7f, 0x1b];
 const hiddenEntries = hidden.map((c) => `src/a${String.fromCodePoint(c)}.ts`);
+/** Each hidden character inside an entry, a reason or display text. */
+const withHidden = (text: string) =>
+  hidden.map((c) => text + String.fromCodePoint(c));
+const entries = (list: string[]) => ({
+  reasons: [{ rule: "notDocsOrTests", entries: list }],
+});
 const without = (event: object, key: string) =>
   Object.fromEntries(Object.entries(event).filter(([k]) => k !== key));
 const minimal = { intensity: "minimal", source: "choreDowngrade" };
@@ -65,20 +70,19 @@ const facts = {
   newProcessBoundary: true,
 };
 
+const read = (file: string): unknown =>
+  JSON.parse(
+    readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"),
+  );
+
 describe("IntakeEvent", () => {
   it.each(events)("accepts a well-formed $kind", (event) => {
     expect(validate(event)).toBe(true);
   });
 
-  it("accepts a classification without costIfWrong", () => {
-    expect(validate(without(classified, "costIfWrong"))).toBe(true);
-  });
-
   it.each(
     events.flatMap((event) =>
-      Object.keys(event)
-        .filter((key) => key !== "costIfWrong")
-        .map((key) => [event.kind, key, event] as const),
+      Object.keys(event).map((key) => [event.kind, key, event] as const),
     ),
   )("rejects %s without %s", (_kind, key, event) => {
     expect(validate(without(event, key))).toBe(false);
@@ -110,7 +114,8 @@ describe("IntakeEvent", () => {
         { scope: ["docs/**", "**/*.md"], rubricVersion: "intake-rubric-12" },
         { scope: ["a/.b", "a/..b/c", "...", "café/ü.md", "a b/c.md"] },
         { scope: Array.from({ length: 256 }, (_, i) => `src/${String(i)}.ts`) },
-        { declared: facts, costIfWrong: "" },
+        { declared: facts },
+        entries(["x".repeat(8192), "src/a\\u{1b}.ts"]),
       ],
       [
         { class: "trivial" },
@@ -154,7 +159,13 @@ describe("IntakeEvent", () => {
         { declared: { ...declared, newProcessBoundary: "no" } },
         { declared: { ...declared, extra: [] } },
         { declared: without(declared, "newModules") },
-        { costIfWrong: "x".repeat(8193) },
+        // B5-5a: no costIfWrong (OQ-B55-1), objects' task IDs and display text.
+        { costIfWrong: "one review" },
+        { taskId: "task_01" },
+        { taskId: "x" },
+        entries([""]),
+        entries(["x".repeat(8193)]),
+        ...withHidden("src/a.ts").map((e) => entries([e])),
       ],
     ],
     [
@@ -180,6 +191,9 @@ describe("IntakeEvent", () => {
         { attestation: { kind: "presence" } },
         { attestation: { kind: "none", signature: "x" } },
         { attestation: "none" },
+        { taskId: "task_01" },
+        { reason: "two\nlines" },
+        ...withHidden("formatting").map((reason) => ({ reason })),
       ],
     ],
     [
@@ -191,6 +205,7 @@ describe("IntakeEvent", () => {
         { signalIds: [""] },
         { signalIds: ["a b"] },
         { taskId: "a b" },
+        { taskId: "task_01" },
         { rubricVersion: "v1" },
       ],
     ],
@@ -210,10 +225,6 @@ describe("IntakeEvent", () => {
   });
 
   it("keeps its friction intensities equal to the config's", () => {
-    const read = (file: string): unknown =>
-      JSON.parse(
-        readFileSync(new URL(`../schemas/${file}`, import.meta.url), "utf8"),
-      );
     const config = read("helmwright-config.schema.json") as {
       properties: {
         friction: { properties: { defaultIntensity: { enum: string[] } } };
@@ -231,6 +242,30 @@ describe("IntakeEvent", () => {
     expectTypeOf<IntakeFriction["intensity"]>().toEqualTypeOf<
       NonNullable<Intensity>
     >();
+  });
+
+  it.each([
+    ["taskId", ["taskId"]],
+    ["displayText", ["displayText"]],
+    ["signalId", ["reclassified", "properties", "signalIds", "items"]],
+  ])("keeps its copy of objects.schema.json's %s equal", (name, path) => {
+    type Def = Record<string, unknown>;
+    const intake = read("intake-event.schema.json") as { $defs: Def };
+    const objects = read("objects.schema.json") as { $defs: Def };
+    const copy = path.reduce<unknown>(
+      (def, key) => (def as Def | undefined)?.[key],
+      intake.$defs,
+    ) as Def | undefined;
+    /** A copy differs from its source only in its `$comment`. */
+    const strip = (def: Def | undefined) =>
+      Object.fromEntries(
+        Object.entries(def ?? {}).filter(([key]) => key !== "$comment"),
+      );
+    expect(objects.$defs[name]).toBeDefined();
+    expect(copy?.["$comment"]).toBe(
+      "Copy of objects.schema.json's `" + name + "`.",
+    );
+    expect(strip(copy)).toEqual(strip(objects.$defs[name] as Def | undefined));
   });
 
   it("narrows unknown input to IntakeEvent", () => {

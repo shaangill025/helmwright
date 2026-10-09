@@ -153,7 +153,11 @@ const artifact = artifactRecorded({
 });
 
 /** Expects `append` to refuse with EventValidationError and to store nothing. */
-function expectRefused(type: string, payload: object, reason: RegExp): void {
+function expectRefused(
+  type: string,
+  payload: object,
+  reason: RegExp | string,
+): void {
   const before = log.lastSeq();
   let error: unknown;
   try {
@@ -253,6 +257,73 @@ describe("SessionLog.append refuses (B5-2, OD-3)", () => {
         { ...payload, ...(kind.endsWith("signalled") ? signal : {}) },
         /repeat/,
       );
+    }
+  });
+
+  // B5-5a: Q53, a plan or floor Ruling keeps its class; each source has its rubric family.
+  const PLAN_CLASS = "decision.opened plan or floor Ruling must have a class";
+  const INTAKE_FAMILY =
+    "decision.opened intake Ruling needs an intake-rubric- version";
+  const MATERIALITY_FAMILY =
+    "decision.opened plan or floor Ruling needs a materiality-rubric- version";
+  const materiality = (source: "plan" | "floor", change: object = {}) => ({
+    ...ruling,
+    class: "technology" as const,
+    source,
+    ruling: { ...ruling.ruling, rubricVersion: "materiality-rubric-1" },
+    ...change,
+  });
+  const version = (rubricVersion: string) => ({
+    ruling: { ...ruling.ruling, rubricVersion },
+  });
+  it.each([
+    [
+      "a plan Ruling with class null",
+      materiality("plan", { class: null }),
+      PLAN_CLASS,
+    ],
+    [
+      "a floor Ruling with class null",
+      materiality("floor", { class: null }),
+      PLAN_CLASS,
+    ],
+    [
+      "a plan Ruling with an intake rubric",
+      materiality("plan", version("intake-rubric-1")),
+      MATERIALITY_FAMILY,
+    ],
+    [
+      "a floor Ruling with an intake rubric",
+      materiality("floor", version("intake-rubric-1")),
+      MATERIALITY_FAMILY,
+    ],
+    [
+      "an intake Ruling with a materiality rubric",
+      { ...ruling, ...version("materiality-rubric-1") },
+      INTAKE_FAMILY,
+    ],
+  ])("%s, also in checkObjectEvent", (_, payload, reason) => {
+    const opened = { ...payload, kind: "decision.opened" };
+    const event = {
+      ...input("decision.opened", opened),
+      seq: 0,
+      schemaVersion: 1,
+    };
+    expect(checkObjectEvent(event as Event)).toBe(reason);
+    expectRefused("decision.opened", opened, reason);
+  });
+
+  it("a plan or floor Ruling with a class and a materiality rubric (control)", () => {
+    log.transaction(() => {
+      append("task.created", task);
+      append("run.recorded", run);
+    });
+    for (const [id, source] of [
+      ["decision-3", "plan"],
+      ["decision-4", "floor"],
+    ] as const) {
+      const opened = decisionOpened(materiality(source, { id }));
+      expect(append("decision.opened", opened).payload).toEqual(opened);
     }
   });
 

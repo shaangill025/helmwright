@@ -330,17 +330,18 @@
   {
     "component": "packages/harness/src/objects/events.ts",
     "ring": 0,
-    "assumption": "One check, checkObjectEvent, decides which object events the log stores, on append and on every read (so also on the B5-3 rebuild): every decision.owner.* type is refused until SIG replaces the refusal with a signature check, decision.recommendation.revealed until A3, and any other task., artifact. or decision. type without a payload schema; the run. namespace stays open. An object event payload must be valid for its type, keep the relations the schema cannot express (sorted unique scope, unique IDs, the footprint content address SHA-256 of JSON.stringify([type, repoId, ref]), an intake Ruling's null class) and create a record that objects.schema.json accepts, with createdAt and createdSeq from the envelope's at and seq and a Run's id, graphId and nodeId from the envelope.",
+    "assumption": "One check, checkObjectEvent, decides which object events the log stores, on append and on every read (so also on the B5-3 rebuild): every decision.owner.* type is refused until SIG replaces the refusal with a signature check, decision.recommendation.revealed until A3, and any other task., artifact. or decision. type without a payload schema; the run. namespace stays open. An object event payload must be valid for its type, keep the relations the schema cannot express (sorted unique scope, unique IDs, the footprint content address SHA-256 of JSON.stringify([type, repoId, ref]), a Ruling's class and rubric family by source: intake has class null and an intake-rubric- version, plan or floor an owned class and a materiality-rubric- version) and create a record that objects.schema.json accepts, with createdAt and createdSeq from the envelope's at and seq and a Run's id, graphId and nodeId from the envelope.",
     "evidence": [
       "10 Ontology position",
       "decisions Q46",
       "decisions Q47",
       "decisions B5 owner answers",
       "decisions B5-2 owner answers",
+      "decisions B5-5 owner answers",
       "packages/harness/test/objects/events.test.ts"
     ],
     "added": "2026-10-08",
-    "lastReviewed": "2026-10-08",
+    "lastReviewed": "2026-10-09",
     "reviewTrigger": ["milestone"]
   },
   {
@@ -437,14 +438,15 @@
   {
     "component": "packages/schema/schemas/intake-event.schema.json",
     "ring": 0,
-    "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths; an owner override with the task ID, the scope hash, the rubric version, a non-empty reason and attestation none until slice SIG; and a reclassification with the task ID and its signals. Scope and declared entries exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema.",
+    "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths, and no costIfWrong (the intake Ruling holds it, B5-5); an owner override with the task ID, the scope hash, the rubric version, a reason that is not only spaces and attestation none until slice SIG; and a reclassification with the task ID and its signals. The task ID, signal IDs, reason entries and the override reason are copies of objects.schema.json's taskId, signalId and displayText (B5-5a). Scope, declared and reason entries and the reason exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema. Only the writer validates intake payloads, so older rows (such as a task ID without task-) are not checked again on read.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
+      "decisions B5-5 owner answers",
       "packages/schema/test/intake-event.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-09",
     "reviewTrigger": ["milestone"]
   },
   {

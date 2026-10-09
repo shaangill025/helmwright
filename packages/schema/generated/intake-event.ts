@@ -6,7 +6,7 @@
 export type IntakeEvent =
   IntakeClassified | IntakeOverridden | IntakeReclassified;
 /**
- * The task's ID.
+ * Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).
  */
 export type TaskId = string;
 /**
@@ -31,9 +31,9 @@ export type IntakeRule =
   | "docsOnly"
   | "testsOnly";
 /**
- * Escaped display text, at most 8192 code points.
+ * Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.
  */
-export type Text = string;
+export type DisplayText = string;
 /**
  * A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.
  */
@@ -84,10 +84,6 @@ export interface IntakeClassified {
    * The sparring default the class sets. Only opt-in exists until A5.
    */
   sparring: "optIn";
-  /**
-   * Escaped display text, at most 8192 code points.
-   */
-  costIfWrong?: string;
 }
 /**
  * One rule that fired and the entries it fired on, escaped for display. `noDeclaredScope` and `newProcessBoundary` have no entries.
@@ -97,7 +93,7 @@ export interface IntakeReason {
   /**
    * @maxItems 1024
    */
-  entries: Text[];
+  entries: DisplayText[];
 }
 /**
  * Facts the task declares about its change. Any one of them makes the task architectural.
@@ -133,7 +129,7 @@ export interface IntakeOverridden {
   from: IntakeClass;
   to: IntakeClass;
   /**
-   * The owner's reason, escaped: not empty and not only spaces.
+   * Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.
    */
   reason: string;
   by: "cli";
@@ -165,6 +161,8 @@ export interface IntakeReclassified {
    *
    * @minItems 1
    * @maxItems 256
+   *
+   * Items: The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.
    */
   signalIds: [string, ...string[]];
   rubricVersion: RubricVersion;
