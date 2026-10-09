@@ -1,5 +1,8 @@
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { FloorChecked } from "@helmwright/schema";
+import { inspectEvents, openSessionLog } from "./log/session-log.ts";
 import { errorMessage } from "./loop/terminal.ts";
 import { displayText } from "./permission/policy.ts";
 import { createTtyPresence } from "./permission/presence.ts";
@@ -14,13 +17,15 @@ import {
 const USAGE =
   "usage: cli.ts run <task.json> --state-dir <dir> [--class <class> --reason <text>]\n" +
   "       cli.ts replay <runId> --state-dir <dir>\n" +
-  "       cli.ts reap --state-dir <dir>";
+  "       cli.ts reap --state-dir <dir>\n" +
+  "       cli.ts inspect --state-dir <dir> [--from-seq <n>] [--limit <1-1000>]\n" +
+  "       cli.ts rebuild --state-dir <dir>";
 
 /**
  * run: 0 completed, 2 incomplete, 1 failed (also on a floor finding, OQ-B3-2);
  * replay: 0 match, 3 mismatch (the context digest differs or `permissionFaults`,
  * which includes the floor faults, is not empty), 4 never terminated;
- * reap: 0, 1 if anything could not be reaped; 64 usage.
+ * reap: 0, 1 if anything could not be reaped; inspect, rebuild: 0, 1 failed; 64 usage.
  */
 const EXIT = {
   ok: 0,
@@ -35,7 +40,11 @@ const COMMANDS = new Map([
   ["run", 1],
   ["replay", 1],
   ["reap", 0],
+  ["inspect", 0],
+  ["rebuild", 0],
 ]);
+const INSPECT_LIMIT = 100;
+const MAX_INSPECT_LIMIT = 1000;
 
 /**
  * S-4: control, format, surrogate, private-use, unassigned, line/paragraph
@@ -80,6 +89,8 @@ function command(args: readonly string[]) {
         "state-dir": { type: "string" },
         class: { type: "string" },
         reason: { type: "string" },
+        "from-seq": { type: "string" },
+        limit: { type: "string" },
       },
     });
   } catch (error) {
@@ -104,12 +115,81 @@ function command(args: readonly string[]) {
     to === undefined || reason === undefined
       ? {}
       : { intakeOverride: { to, reason } };
-  return { name, target: operands[0] ?? "", stateDir, override };
+  const { "from-seq": from, limit } = parsed.values;
+  if ((from ?? limit) !== undefined && name !== "inspect") {
+    throw new UsageError("--from-seq and --limit are for inspect only");
+  }
+  const page = {
+    fromSeq: count(from, 0),
+    limit: count(limit, INSPECT_LIMIT),
+  };
+  if (page.limit < 1 || page.limit > MAX_INSPECT_LIMIT) {
+    throw new UsageError("--limit must be 1 to 1000");
+  }
+  return { name, target: operands[0] ?? "", stateDir, override, page };
 }
+
+/** `text` as a whole number, or `fallback` if it is undefined. */
+function count(text: string | undefined, fallback: number): number {
+  if (text === undefined) return fallback;
+  if (!/^\d{1,15}$/.test(text)) {
+    throw new UsageError("--from-seq and --limit take a whole number");
+  }
+  return Number(text);
+}
+
+/** `<stateDir>/session.sqlite`, which must exist (no command here creates a log). */
+function logFile(stateDir: string): string {
+  const path = join(resolve(stateDir), "session.sqlite");
+  if (!existsSync(path)) throw new Error("no session log at " + path);
+  return path;
+}
+
+/**
+ * B5-3b decision 2 (D): rebuilds the objects projection from the events. A log whose
+ * checked read fails (a forged event) is refused; until SIG adds a signed quarantine,
+ * its recovery is a new state dir.
+ */
+function rebuild(stateDir: string): string {
+  try {
+    const log = openSessionLog(logFile(stateDir));
+    try {
+      return log.rebuildProjections();
+    } finally {
+      log.close();
+    }
+  } catch (error) {
+    // Only a log that fails closed gets the hint; a lock or a missing file keeps its text.
+    const message = errorMessage(error);
+    if (!BAD_EVENT.test(message)) throw error;
+    throw new Error(
+      "rebuild refused (see inspect; until SIG a bad event needs a new state dir): " +
+        message,
+      { cause: error },
+    );
+  }
+}
+const BAD_EVENT = /(?:corrupt|cannot apply) event at seq /;
 
 async function main(args: readonly string[]): Promise<number> {
   try {
-    const { name, target, stateDir, override } = command(args);
+    const { name, target, stateDir, override, page } = command(args);
+    if (name === "inspect") {
+      // B5-3b decision 2 (A): raw rows, read-only, never migrated or projected.
+      const path = logFile(stateDir);
+      const { events, next } = inspectEvents(path, page.fromSeq, page.limit);
+      for (const event of events) console.log(jsonLine(event));
+      if (next !== null) {
+        console.error(
+          "helmwright: inspect: more rows from seq " + String(next),
+        );
+      }
+      return EXIT.ok;
+    }
+    if (name === "rebuild") {
+      console.log(jsonLine({ rebuilt: true, digest: rebuild(stateDir) }));
+      return EXIT.ok;
+    }
     if (name === "reap") {
       const result = await reapRuns(stateDir);
       console.log(jsonLine(result));

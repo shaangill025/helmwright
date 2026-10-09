@@ -1,4 +1,5 @@
-import type { DatabaseSync, SQLOutputValue } from "node:sqlite";
+import { createHash } from "node:crypto";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import {
   validateObjectEvent,
   validateObjectRecord,
@@ -109,29 +110,49 @@ function checkedRow(
   row: Record<string, SQLOutputValue>,
   id: string,
 ): ObjectRecord {
-  const text = row["record"];
-  let record: unknown;
-  try {
-    record = typeof text === "string" ? JSON.parse(text) : undefined;
-  } catch {
-    record = undefined;
-  }
-  if (
-    !validateObjectRecord(record) ||
-    record.id !== row["id"] ||
-    record.kind !== row["kind"] ||
-    record.ring !== row["ring"] ||
-    record.createdSeq !== row["created_seq"]
-  ) {
+  const record = rowRecord(row);
+  if (record === undefined) {
     throw new Error("session log: corrupt object row " + id);
   }
   return record;
 }
 
+/**
+ * The valid record of `row` that agrees with its columns and is stored as its canonical
+ * JSON (so key order, spacing, number form, escapes or a repeated key cannot hide an
+ * edit from a reader of the text), or undefined.
+ */
+function rowRecord(
+  row: Record<string, SQLOutputValue>,
+): ObjectRecord | undefined {
+  const text = row["record"];
+  let record: unknown;
+  try {
+    record = typeof text === "string" ? JSON.parse(text) : undefined;
+  } catch {
+    return undefined;
+  }
+  return validateObjectRecord(record) &&
+    text === canonicalJson(record) &&
+    record.id === row["id"] &&
+    record.kind === row["kind"] &&
+    record.ring === row["ring"] &&
+    record.createdSeq === row["created_seq"]
+    ? record
+    : undefined;
+}
+
+/** A store in memory with the same rules, for a rebuild that compares with the table. */
+export interface MapStore extends ProjectionStore {
+  /** The records by ID. */
+  records(): ReadonlyMap<string, ObjectRecord>;
+}
+
 /** An in-memory store with the same rules, for a rebuild that compares with the table. */
-export function createMapStore(): ProjectionStore {
+export function createMapStore(): MapStore {
   const records = new Map<string, ObjectRecord>();
   return {
+    records: () => records,
     get(id) {
       const record = records.get(id);
       return record === undefined ? undefined : structuredClone(record);
@@ -295,4 +316,107 @@ function update(
   }
   store.put(after, event.seq);
   return undefined;
+}
+
+/** Tags the digest format; a new format gets a new tag. */
+const DIGEST_TAG = "helmwright-projection-1";
+const MAX_DIFFERING = 20;
+
+/**
+ * The projection digest (B5-3b): sha256 of the UTF-8 of canonicalJson([DIGEST_TAG,
+ * records sorted by ID]). Sorting is in UTF-16 code-unit order (the default sort, as
+ * canonicalJson sorts keys), never SQL text order or localeCompare.
+ */
+export function projectionDigest(
+  records: ReadonlyMap<string, unknown>,
+): string {
+  const ids = [...records.keys()].sort();
+  const sorted = ids.map((id) => records.get(id));
+  const text = canonicalJson([DIGEST_TAG, sorted]);
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * Each row of `objects` by ID: its record from JSON.parse (never json_extract), or
+ * `{ corruptRow }` with the whole row if the record is invalid or disagrees with a column.
+ */
+export function storedRecords(db: DatabaseSync): Map<string, unknown> {
+  const sql = "SELECT id, kind, ring, created_seq, record FROM objects";
+  const rows = db.prepare(sql).all();
+  return new Map(
+    rows.map((row) => [
+      String(row["id"]),
+      rowRecord(row) ?? { corruptRow: row },
+    ]),
+  );
+}
+
+/** The result of comparing the objects table with a rebuild from the events. */
+export interface ProjectionCheck {
+  /** True only if `guarded` and the stored and rebuilt digests are equal. */
+  readonly match: boolean;
+  /** False if the table, its index or a guard trigger is missing, changed or added. */
+  readonly guarded: boolean;
+  /** The digest of the stored rows; null if the table is missing or changed. */
+  readonly storedDigest: string | null;
+  readonly rebuiltDigest: string;
+  /** The first 20 IDs, in UTF-16 order, whose stored and rebuilt records differ. */
+  readonly differingIds: readonly string[];
+}
+
+/** Compares the objects table of `db`, and its DDL, with `rebuilt` (B5-3b). */
+export function checkProjections(
+  db: DatabaseSync,
+  rebuilt: ReadonlyMap<string, ObjectRecord>,
+): ProjectionCheck {
+  const actual = objectsSchema(db);
+  const created = createdSchema();
+  const guarded =
+    actual.size === created.size &&
+    [...created].every(([name, entry]) => actual.get(name) === entry);
+  const intact = actual.get("objects") === created.get("objects");
+  const stored = intact ? storedRecords(db) : new Map<string, unknown>();
+  const ids = new Set([...stored.keys(), ...rebuilt.keys()]);
+  const differ = (id: string) =>
+    canonicalJson(stored.get(id)) !== canonicalJson(rebuilt.get(id));
+  const storedDigest = intact ? projectionDigest(stored) : null;
+  const rebuiltDigest = projectionDigest(rebuilt);
+  return {
+    match: guarded && storedDigest === rebuiltDigest,
+    guarded,
+    storedDigest,
+    rebuiltDigest,
+    differingIds: [...ids].filter(differ).sort().slice(0, MAX_DIFFERING),
+  };
+}
+
+/** Name to type and SQL of each schema object on `objects` (table, index, triggers). */
+function objectsSchema(db: DatabaseSync): Map<string, string> {
+  const sql =
+    "SELECT name, type, sql FROM sqlite_schema WHERE tbl_name = 'objects'";
+  return new Map(
+    db
+      .prepare(sql)
+      .all()
+      .map((row) => [
+        String(row["name"]),
+        canonicalJson([row["type"], row["sql"]]),
+      ]),
+  );
+}
+
+let createdCache: Map<string, string> | undefined;
+
+/** The schema objects that OBJECTS_SCHEMA creates, from an in-memory database. */
+function createdSchema(): Map<string, string> {
+  if (createdCache === undefined) {
+    const db = new DatabaseSync(":memory:");
+    try {
+      db.exec(OBJECTS_SCHEMA);
+      createdCache = objectsSchema(db);
+    } finally {
+      db.close();
+    }
+  }
+  return createdCache;
 }

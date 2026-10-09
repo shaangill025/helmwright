@@ -10,7 +10,12 @@ import { checkObjectEvent } from "../objects/events.ts";
 import {
   OBJECTS_SCHEMA,
   applyEvent,
+  checkProjections,
+  createMapStore,
   createSqlStore,
+  projectionDigest,
+  storedRecords,
+  type ProjectionCheck,
   type ProjectionStore,
 } from "../objects/projection.ts";
 import { MESSAGE_APPENDED, isStorableMessagePayload } from "./messages.ts";
@@ -115,6 +120,18 @@ export interface SessionLog {
   events(query?: EventsQuery): Event[];
   /** The projected record with `id` (B5-3), read back checked, or undefined. */
   object(id: string): ObjectRecord | undefined;
+  /**
+   * Re-applies every event, read through the checked path, in memory and compares the
+   * result and the table's DDL with the objects table (B5-3b). Does not change the log.
+   * @throws Error "corrupt event at seq N" or "cannot apply event at seq N"
+   */
+  verifyProjections(): ProjectionCheck;
+  /**
+   * Drops and recreates the objects table with its triggers and re-applies every event,
+   * in one write transaction; returns the projection digest (B5-3b).
+   * @throws Error as verifyProjections; then nothing changes
+   */
+  rebuildProjections(): string;
   /** The highest stored seq, or `undefined` for an empty log. */
   lastSeq(): number | undefined;
   close(): void;
@@ -204,20 +221,27 @@ function migrateV2(db: DatabaseSync, path: string, store: ProjectionStore) {
       throw new Error("no events table");
     }
     db.exec(OBJECTS_SCHEMA);
-    const rows = db.prepare(`SELECT ${COLUMNS} FROM events ORDER BY seq`).all();
-    for (const event of rows.map(toEvent)) {
-      const refused = applyEvent(store, event);
-      if (refused !== undefined) {
-        const seq = String(event.seq);
-        throw new Error(`cannot apply event at seq ${seq}: ${refused}`);
-      }
-    }
+    applyAll(db, store);
     db.exec(SET_VERSION);
   } catch (error) {
     const cause = error instanceof Error ? error.message : "unknown error";
     throw new Error(`session log ${path}: cannot migrate v2 to v3: ${cause}`, {
       cause: error,
     });
+  }
+}
+
+/** Applies every event of `db`, read through the checked path, to `store` in seq order. */
+function applyAll(db: DatabaseSync, store: ProjectionStore): void {
+  const rows = db.prepare(`SELECT ${COLUMNS} FROM events ORDER BY seq`).all();
+  for (const event of rows.map(toEvent)) {
+    const refused = applyEvent(store, event);
+    if (refused !== undefined) {
+      const seq = String(event.seq);
+      throw new Error(
+        `session log: cannot apply event at seq ${seq}: ${refused}`,
+      );
+    }
   }
 }
 
@@ -401,6 +425,22 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
     object(id) {
       return store.get(id);
     },
+    verifyProjections() {
+      // A write transaction, so the events and rows are read from one snapshot.
+      return write(() => {
+        const rebuilt = createMapStore();
+        applyAll(db, rebuilt);
+        return checkProjections(db, rebuilt.records());
+      });
+    },
+    rebuildProjections() {
+      return write(() => {
+        db.exec("DROP TABLE IF EXISTS objects");
+        db.exec(OBJECTS_SCHEMA);
+        applyAll(db, store);
+        return projectionDigest(storedRecords(db));
+      });
+    },
     lastSeq,
     close() {
       db.close();
@@ -435,4 +475,48 @@ function toEvent(row: Record<string, SQLOutputValue>): Event {
   const refused = checkObjectEvent(candidate);
   if (refused !== undefined) throw corrupt([objectIssue(refused)]);
   return candidate;
+}
+
+/** One raw event row as `inspectEvents` shows it. */
+export interface InspectedEvent {
+  readonly seq: unknown;
+  readonly type: unknown;
+  readonly runId: unknown;
+  readonly at: unknown;
+  /** The stored payload text, unparsed. */
+  readonly payload: unknown;
+  /** Why every read refuses the row ("corrupt event at seq N: ..."), or null. */
+  readonly refused: string | null;
+}
+
+/**
+ * The owner's diagnosis read (B5-3b, decision 2): up to `limit` raw event rows from
+ * `fromSeq`, each with the reason a checked read refuses it. Opens `path` read-only:
+ * no migration, no projection, no write to the database file (SQLite may leave empty
+ * -wal and -shm files). `next` is the seq of the first row not returned, or null.
+ */
+export function inspectEvents(
+  path: string,
+  fromSeq: number,
+  limit: number,
+): { events: InspectedEvent[]; next: number | null } {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const sql = `SELECT ${COLUMNS} FROM events WHERE seq >= ? ORDER BY seq LIMIT ?`;
+    const rows = db.prepare(sql).all(fromSeq, limit + 1);
+    const events = rows.slice(0, limit).map((row) => {
+      let refused: string | null = null;
+      try {
+        toEvent(row);
+      } catch (error) {
+        refused = error instanceof Error ? error.message : "unreadable row";
+      }
+      const { seq, type, run_id: runId, at, payload } = row;
+      return { seq, type, runId, at, payload, refused };
+    });
+    const next = rows[limit]?.["seq"];
+    return { events, next: next === undefined ? null : Number(next) };
+  } finally {
+    db.close();
+  }
 }
