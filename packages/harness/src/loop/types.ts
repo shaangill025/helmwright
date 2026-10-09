@@ -60,11 +60,15 @@ export type Schedule = (ms: number, fn: () => void) => () => void;
 
 export type Emit = (type: string, payload: Record<string, unknown>) => void;
 
-/** Appends `entries` in one transaction: all of them, or none and it throws. */
+/**
+ * Appends `entries` in one transaction: all of them, or none and it throws. An entry's
+ * `eventId`, if given, is its event's ID (B5-5: an event that a later one names).
+ */
 export type EmitAll = (
   entries: readonly {
     readonly type: string;
     readonly payload: Record<string, unknown>;
+    readonly eventId?: string;
   }[],
 ) => void;
 

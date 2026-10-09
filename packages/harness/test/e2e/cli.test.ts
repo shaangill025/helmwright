@@ -470,7 +470,7 @@ describe("helmwright CLI (e2e)", () => {
       // first run on the defaults accepts them silently (OQ1).
       expect(events.map((e) => e.type)).toEqual([
         ...["run.started", "config.accepted", "intake.classified"],
-        ...["message.appended", "loop.iteration.started"],
+        ...["decision.opened", "message.appended", "loop.iteration.started"],
         ...["message.appended", "loop.tool.started", "permission.evaluated"],
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
         ...["message.appended", "floor.checked", "run.terminated"],
@@ -1278,27 +1278,35 @@ describe("helmwright CLI (e2e)", () => {
         contextDigest: contextDigest([], []),
         terminal: { kind: "incomplete", reason: "cancelled" },
       };
-      // Before any run.recorded: a run as a B5-3 build logged it, with no Run.
+      // B5-5: intake.classified is no object event, so a raw row passes every read.
+      const classified = { kind: "intake.classified", class: "bounded" };
+      const old = (runId: string) => {
+        rawAppend("run.started", { tools: [] }, runId);
+        rawAppend("intake.classified", classified, runId);
+        rawAppend("run.terminated", ended, runId);
+      };
+      // Before any run.recorded or Ruling: a run as a B5-3 build logged it.
       openSessionLog(join(stateDir, "session.sqlite")).close();
-      rawAppend("run.started", { tools: [] }, "run-legacy");
-      rawAppend("run.terminated", ended, "run-legacy");
+      old("run-legacy");
       const { status, stderr, out } = runTask("write-file.turns.json");
       expect(status, stderr).toBe(0);
-      rawAppend("run.started", { tools: [] }, "run-unrecorded");
-      rawAppend("run.terminated", ended, "run-unrecorded");
+      old("run-unrecorded");
       const legacy = cli("replay", "run-legacy", "--state-dir", stateDir);
       expect(legacy.status, legacy.stderr).toBe(0);
       const passed = { match: true, permissionFaults: [] };
       expect(JSON.parse(legacy.stdout)).toMatchObject({
-        ...{ ...passed, objectFaults: [], events: 2 },
+        ...{ ...passed, objectFaults: [], events: 3 },
         projections: { match: true },
       });
-      const seq = String(lastSeqRaw() - 1);
+      const seq = (back: number) => "seq " + String(lastSeqRaw() - back);
       const late = cli("replay", "run-unrecorded", "--state-dir", stateDir);
       expect(late.status, late.stderr).toBe(3);
       expect(JSON.parse(late.stdout)).toMatchObject({
         ...{ ...passed, projections: { match: true } },
-        objectFaults: ["seq " + seq + ": run.started without run.recorded"],
+        objectFaults: [
+          seq(1) + ": intake.classified without its intake Ruling",
+          seq(2) + ": run.started without run.recorded",
+        ],
       });
       const events = logEvents().filter((e) => e.runId === out.runId);
       expectReplayMatches(out.runId, events.slice(2));
@@ -1662,6 +1670,9 @@ describe("helmwright.config.json (e2e)", () => {
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
       ]);
       expect(logEvents().some((e) => e.type === "config.accepted")).toBe(false);
+      // B5-5: a refused run records its Run, but no intake event and so no Ruling.
+      expect(objectOf(out.runId)).toMatchObject({ kind: "run" });
+      expect(logEvents().some((e) => e.type === "decision.opened")).toBe(false);
       // No loop ran, so there is no context digest to match; the asks are bound.
       const replay = cli("replay", out.runId, "--state-dir", stateDir);
       expect(JSON.parse(replay.stdout)).toMatchObject({
@@ -2026,9 +2037,9 @@ describe("intake (e2e, B10-2)", () => {
         "helmwright: intake chore (docsOnly: docs/a.md) friction minimal\n",
       );
       const events = expectWellFormedLog(out.runId);
-      expect(events.slice(0, 4).map((e) => e.type)).toEqual([
+      expect(events.slice(0, 5).map((e) => e.type)).toEqual([
         ...["run.started", "config.accepted", "intake.classified"],
-        "message.appended",
+        ...["decision.opened", "message.appended"],
       ]);
       expect(events[2]?.payload).toEqual({
         kind: "intake.classified",
@@ -2044,6 +2055,24 @@ describe("intake (e2e, B10-2)", () => {
         sparring: "optIn",
       });
       expect(events[2]?.payload["ring0Sha256"]).toMatch(/^[0-9a-f]{64}$/);
+      // B5-5: the intake Ruling is the next event, its signal intake.classified.
+      const id = "decision-intake-" + out.runId.slice(4);
+      const opened = events[3];
+      expect(objectOf(id)).toEqual({
+        ...{ id, kind: "decision", ring: 0, authority: "harness" },
+        ...{ createdAt: opened?.at, createdSeq: opened?.seq },
+        ...{ taskId: "task-1", runId: out.runId, class: null },
+        ...{ signalIds: [events[2]?.eventId], source: "intake" },
+        ruling: {
+          what: "Classified the task as chore",
+          why: "docsOnly\n  docs/a.md",
+          costIfWrong:
+            "If the task is not a chore, it runs at minimal friction and a change that needs review or a brief gets none.",
+          rubricVersion: "intake-rubric-1",
+        },
+        ...{ footprint: [], outcomes: [], status: "resolved" },
+      });
+      expect(opened?.seq).toBe((events[2]?.seq ?? 0) + 1);
       // No intake data enters the engine's context.
       const texts = deriveMessages(events, out.runId).map((m) => m.text);
       expect(texts.join("\n")).not.toContain("chore");
@@ -2115,10 +2144,11 @@ describe("intake (e2e, B10-2)", () => {
       const events = expectWellFormedLog(up.out.runId);
       // OD-B54-2: the Run records the rubric's class; the override is its own event.
       expect(objectOf(up.out.runId)).toMatchObject({ class: "chore" });
-      expect(events.slice(2, 5).map((e) => e.type)).toEqual([
-        ...["intake.classified", "intake.overridden", "message.appended"],
+      expect(events.slice(2, 6).map((e) => e.type)).toEqual([
+        ...["intake.classified", "decision.opened", "intake.overridden"],
+        "message.appended",
       ]);
-      expect(events[3]?.payload).toEqual({
+      expect(events[4]?.payload).toEqual({
         kind: "intake.overridden",
         taskId: "task-1",
         from: "chore",
@@ -2130,7 +2160,12 @@ describe("intake (e2e, B10-2)", () => {
         rubricVersion: "intake-rubric-1",
         // B10-3 S2: the effective friction of `to`, not the chore's minimal.
         friction: { intensity: "moderate", source: "default" },
+        // B5-5: the override overrules the run's intake Ruling.
+        decisionId: events[3]?.payload["id"],
       });
+      expect(events[3]?.payload["id"]).toBe(
+        "decision-intake-" + up.out.runId.slice(4),
+      );
       const ids = events.map((e) => e.payload["toolCallId"]);
       expect(ids).not.toContain(OVERRIDE_ID);
       // N8: the effective class and its friction (S2: default, not the chore's minimal).
@@ -2147,6 +2182,21 @@ describe("intake (e2e, B10-2)", () => {
       expect(same.status, same.stderr).toBe(0);
       const later = logEvents().filter((e) => e.runId === same.out.runId);
       expect(payloadsOf(later, "intake.overridden")).toEqual([]);
+
+      // B5-5: an override that names another decision is a replay fault.
+      const forged = { ...events[4]?.payload, decisionId: "decision-x" };
+      rawAppend("intake.overridden", forged, up.out.runId);
+      const seq = String(lastSeqRaw());
+      const tampered = cli("replay", up.out.runId, "--state-dir", stateDir);
+      expect(tampered.status, tampered.stderr).toBe(3);
+      expect(JSON.parse(tampered.stdout)).toMatchObject({
+        projections: { match: true },
+        objectFaults: [
+          "seq " +
+            seq +
+            ": intake.overridden is not linked to the run's intake Ruling",
+        ],
+      });
     },
   );
 
@@ -2167,11 +2217,10 @@ describe("intake (e2e, B10-2)", () => {
       const events = expectWellFormedLog(out.runId);
       expect(events.map((e) => e.type)).toEqual([
         ...["run.started", "config.accepted", "intake.classified"],
-        ...["permission.evaluated", "permission.asked", "permission.answered"],
-        "floor.checked",
-        "run.terminated",
+        ...["decision.opened", "permission.evaluated", "permission.asked"],
+        ...["permission.answered", "floor.checked", "run.terminated"],
       ]);
-      expect(events.slice(3, 6).map((e) => e.payload)).toMatchObject([
+      expect(events.slice(4, 7).map((e) => e.payload)).toMatchObject([
         {
           ...{ toolCallId: OVERRIDE_ID, requested: "config.set" },
           ...{ tier: "alwaysAsk", ruleId: "always-ask.ring0-setting" },
@@ -2204,22 +2253,25 @@ describe("intake (e2e, B10-2)", () => {
       expect(status, shown).toBe(0);
       expect(shown).toContain("intake.classification");
       const events = expectWellFormedLog(out.runId);
-      expect(events.slice(2, 8).map((e) => e.type)).toEqual([
-        ...["intake.classified", "permission.evaluated", "permission.asked"],
-        ...["permission.answered", "intake.overridden", "message.appended"],
+      // B5-5: the Ruling comes before the override's ask.
+      expect(events.slice(2, 9).map((e) => e.type)).toEqual([
+        ...["intake.classified", "decision.opened", "permission.evaluated"],
+        ...["permission.asked", "permission.answered", "intake.overridden"],
+        "message.appended",
       ]);
-      expect(events[5]?.payload).toMatchObject({
+      expect(events[6]?.payload).toMatchObject({
         toolCallId: OVERRIDE_ID,
         answer: "approved",
         by: "tty",
       });
       // OD-B54-2: the approved downward override does not change the Run's class.
       expect(objectOf(out.runId)).toMatchObject({ class: "bounded" });
-      expect(events[6]?.payload).toMatchObject({
+      expect(events[7]?.payload).toMatchObject({
         from: "bounded",
         to: "chore",
         reason: "formatting-only",
         friction: { intensity: "minimal", source: "choreDowngrade" },
+        decisionId: "decision-intake-" + out.runId.slice(4),
       });
       expectReplayMatches(out.runId, events);
     },

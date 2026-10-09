@@ -40,6 +40,7 @@ const overridden: IntakeOverridden = {
   scopeSha256: "a".repeat(64),
   rubricVersion: "intake-rubric-1",
   friction: { intensity: "minimal", source: "choreDowngrade" },
+  decisionId: "decision-intake-01",
 };
 const reclassified: IntakeReclassified = {
   kind: "intake.reclassified",
@@ -176,6 +177,7 @@ describe("IntakeEvent", () => {
         { reason: " a " },
         // B10-3 S2: the effective friction of `to`.
         { to: "bounded", friction: { intensity: "high", source: "default" } },
+        { decisionId: "decision-" + "x".repeat(119) },
       ],
       [
         { friction: { intensity: "minimal" } },
@@ -194,6 +196,10 @@ describe("IntakeEvent", () => {
         { taskId: "task_01" },
         { reason: "two\nlines" },
         ...withHidden("formatting").map((reason) => ({ reason })),
+        // B5-5: the run's intake Ruling, as objects' decisionId.
+        { decisionId: "run-01" },
+        { decisionId: "decision_01" },
+        { decisionId: "decision-" + "x".repeat(120) },
       ],
     ],
     [
@@ -248,6 +254,7 @@ describe("IntakeEvent", () => {
     ["taskId", ["taskId"]],
     ["displayText", ["displayText"]],
     ["signalId", ["reclassified", "properties", "signalIds", "items"]],
+    ["decisionId", ["decisionId"]],
   ])("keeps its copy of objects.schema.json's %s equal", (name, path) => {
     type Def = Record<string, unknown>;
     const intake = read("intake-event.schema.json") as { $defs: Def };
