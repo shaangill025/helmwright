@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,8 @@ import {
   floorFaults,
   openSessionLog,
   replayRun,
+  runRecorded,
+  taskCreated,
   type Engine,
   type EngineTurn,
   type Message,
@@ -21,6 +23,7 @@ import {
 import {
   FLOOR_REJECTED,
   FLOOR_UNCHECKED,
+  loadTask,
   stopReason,
 } from "../../src/run/run.ts";
 
@@ -478,6 +481,152 @@ describe("executeRun", () => {
     expect(
       stopReason({ ...stop, early: false, unconfirmed: false }),
     ).toBeUndefined();
+  });
+});
+
+describe("executeRun's Task and Run records (B5-4)", () => {
+  const records = () => [
+    {
+      type: "task.created",
+      payload: {
+        ...taskCreated({
+          id: "task-1",
+          repoId: "/r/.git",
+          text: "task",
+          scope: [],
+        }),
+      },
+    },
+    {
+      type: "run.recorded",
+      payload: {
+        ...runRecorded({
+          ...{ taskId: "task-1", engine: "scripted" },
+          ...{ baseCommit: "a".repeat(40), class: "bounded" },
+        }),
+      },
+    },
+  ];
+  const escaped = { kind: "failed", error: "a\\u{a}b\\u{1b}" } as const;
+  const failing: Engine = {
+    step: () => Promise.reject(new Error("a\nb\u001b")),
+  };
+
+  /** The Run's terminal equals the one run.terminated logged, and the outcome's. */
+  function expectRunEnded(terminal: object) {
+    expect(terminated()?.payload["terminal"]).toEqual(terminal);
+    expect(log.object("run-1")).toMatchObject({
+      ...{ kind: "run", taskId: "task-1", class: "bounded" },
+      terminal,
+    });
+  }
+
+  it("logs the records first, in run.started's transaction", async () => {
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      records,
+    });
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types.slice(0, 3)).toEqual([
+      ...["task.created", "run.recorded", "run.started"],
+    ]);
+    expect(log.object("task-1")).toMatchObject({ kind: "task", text: "task" });
+    expectRunEnded(outcome.terminal);
+  });
+
+  it("logs nothing and rejects if records throws", async () => {
+    log.append({
+      ...{ eventId: "e0", graphId: "graph-0", runId: "run-0" },
+      ...{ nodeId: "node-0", type: "note.test", at: new Date().toISOString() },
+      payload: {},
+    });
+    const before = log.lastSeq();
+    const done: EngineTurn = { text: "", toolCalls: [], claimsDone: true };
+    const step = vi.fn(() => Promise.resolve(done));
+    const throwing = () => {
+      throw new Error("task.id task-1 is already recorded");
+    };
+    await expect(
+      run({ step }, true, log, undefined, { records: throwing }),
+    ).rejects.toThrow("task.id task-1 is already recorded");
+    expect(log.lastSeq()).toBe(before);
+    expect(log.events({ runId: "run-1" })).toEqual([]);
+    expect(step).not.toHaveBeenCalled();
+  });
+
+  it("logs run.terminated with an engine error escaped (requirement a)", async () => {
+    const outcome = await run(failing, true, log, undefined, { records });
+    expect(outcome.terminal).toEqual(escaped);
+    expectRunEnded(escaped);
+  });
+
+  it("logs run.terminated with a connect error escaped (requirement a)", async () => {
+    const outcome = await run(
+      failing,
+      true,
+      log,
+      () => {
+        throw new Error("a\nb\u001b");
+      },
+      { records },
+    );
+    expect(outcome.terminal).toEqual(escaped);
+    expectRunEnded(escaped);
+  });
+
+  it("retries run.terminated with the append error escaped (requirement a)", async () => {
+    let first = true;
+    const flaky: SessionLog = {
+      ...log,
+      append: (event) => {
+        if (event.type === "run.terminated" && first) {
+          first = false;
+          throw new Error("a\nb\u001b");
+        }
+        return log.append(event);
+      },
+    };
+    const outcome = await run(
+      mutatingEngine(0).engine,
+      true,
+      flaky,
+      undefined,
+      {
+        records,
+      },
+    );
+    expect(outcome.terminal).toEqual(escaped);
+    expectRunEnded(escaped);
+  });
+});
+
+describe("loadTask (D-1, B5-4)", () => {
+  const load = (fields: object) => {
+    const file = join(dir, "task.json");
+    const task = {
+      ...{ id: "task-1", title: "t", repo: "/r" },
+      ...{ engine: { kind: "scripted", turns: "t.json" }, limits: LIMITS },
+      ...fields,
+    };
+    writeFileSync(file, JSON.stringify(task));
+    return loadTask(file);
+  };
+
+  it("bounds the title in code points, as the Task's text", () => {
+    const face = "\u{1f600}";
+    expect(load({ title: face.repeat(8192) }).title).toBe(face.repeat(8192));
+    expect(() => load({ title: face.repeat(8193) })).toThrow("task.title");
+    expect(load({ title: "a\tb\r\nc" }).title).toBe("a\tb\r\nc");
+    for (const title of ["a\u007f", "a\u0085", "a\u2066", "a\ud800"]) {
+      expect(() => load({ title })).toThrow("task.title");
+    }
+  });
+
+  it("sorts and dedupes the scope, and keeps an invalid one for classify", () => {
+    const scope = ["src/b.ts", "src/a.ts", "src/b.ts"];
+    expect(load({ intake: { scope } }).intake.scope).toEqual([
+      ...["src/a.ts", "src/b.ts"],
+    ]);
+    expect(load({ intake: { scope: "src" } }).intake.scope).toBe("src");
   });
 });
 

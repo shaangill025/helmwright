@@ -15,6 +15,7 @@ import {
   type IntakeDeclared,
   type IntakeFriction,
   type IntakeReason,
+  type TaskCreated,
 } from "@helmwright/schema";
 import {
   BROKER_TOOLS,
@@ -54,6 +55,11 @@ import {
   deriveMessages,
 } from "../log/messages.ts";
 import { openSessionLog, type SessionLog } from "../log/session-log.ts";
+import {
+  ObjectEventError,
+  runRecorded,
+  taskCreated,
+} from "../objects/events.ts";
 import { INVISIBLE, hasControl } from "../permission/normalize.ts";
 import { permissionFaults } from "../permission/faults.ts";
 import {
@@ -126,6 +132,11 @@ const NOTHING_DECLARED = {
 };
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** D-1 (B5-4): the objects `taskId` def. */
+const TASK_ID = /^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$/;
+/** What the objects `text` def bars besides C0 and C1 controls: bidi controls and lone surrogates. */
+const BIDI_OR_LONE = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\p{Cs}]/u;
+const MAX_TITLE = 8192;
 type Fields = Record<string, unknown>;
 const isRecord = (v: unknown): v is Fields =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -148,6 +159,9 @@ function known(v: unknown, keys: readonly string[], where: string): Fields {
   return v;
 }
 
+const isStrings = (v: unknown): v is string[] =>
+  Array.isArray(v) && v.every((e: unknown) => typeof e === "string");
+
 function taskIntake(v: unknown): Task["intake"] {
   if (v === undefined) return { declared: { ...NOTHING_DECLARED } };
   const intake = known(v, ["scope", "declared"], "task.intake");
@@ -158,8 +172,10 @@ function taskIntake(v: unknown): Task["intake"] {
     "task.intake.declared",
   );
   const { scope } = intake;
+  // D-1 (B5-4): sorted and unique, as the Task records it; classify checks the entries.
+  const normalized = isStrings(scope) ? [...new Set(scope)].sort() : scope;
   return {
-    ...(scope === undefined ? {} : { scope }),
+    ...(scope === undefined ? {} : { scope: normalized }),
     declared: { ...NOTHING_DECLARED, ...declared },
   };
 }
@@ -177,11 +193,15 @@ export function loadTask(taskFile: string): Task {
   const t = fields(json, [...base, ...optional], "task");
   const engine = fields(t["engine"], ["kind", "turns"], "task.engine");
   const { id, title, repo, limits } = t;
-  if (typeof id !== "string" || !ID.test(id)) {
-    throw new UsageError(`task.id must match ${ID.source}`);
+  if (typeof id !== "string" || !TASK_ID.test(id)) {
+    throw new UsageError(
+      `task.id must match ${TASK_ID.source} (since B5-4 a task id starts with "task-", e.g. rename "1" to "task-1")`,
+    );
   }
-  if (typeof title !== "string" || title.trim() === "") {
-    throw new UsageError("task.title must be a non-empty string");
+  if (!isTaskText(title)) {
+    throw new UsageError(
+      "task.title must be 1 to 8192 characters, not only spaces, without control characters other than tab and line breaks, or bidi controls",
+    );
   }
   if (typeof repo !== "string" || !isAbsolute(repo)) {
     throw new UsageError("task.repo must be an absolute path");
@@ -209,6 +229,17 @@ export function loadTask(taskFile: string): Task {
   };
 }
 
+/** Whether `title` satisfies the objects `text` def, which a Task's `text` must (D-1). */
+function isTaskText(title: unknown): title is string {
+  return (
+    typeof title === "string" &&
+    title.trim() !== "" &&
+    Array.from(title).length <= MAX_TITLE &&
+    !hasControl(title, "\t\n\r") &&
+    !BIDI_OR_LONE.test(title)
+  );
+}
+
 /** task.repo must be the top level of a git repository, never a directory inside one. */
 function checkRepoRoot(repo: string): void {
   let top: string;
@@ -231,7 +262,7 @@ function checkRepoRoot(repo: string): void {
 /**
  * sha256 (hex) of the canonical JSON of the tools offered and the context messages.
  * Without a hash chain over the log, a log rewritten consistently (messages, tools
- * and digest) still matches: this detects divergence, not tampering (a later slice).
+ * and digest) still matches: this detects divergence, not tampering (until SIG, M1).
  */
 export function contextDigest(
   messages: readonly Message[],
@@ -263,6 +294,12 @@ export interface RunHooks {
   readonly signal: AbortSignal;
 }
 
+/** An event that `RunSetup.records` logs before `run.started`. */
+export interface RunRecordEvent {
+  readonly type: string;
+  readonly payload: Record<string, unknown>;
+}
+
 /** A set-up run: everything from `run.started` to `run.terminated`. */
 export interface RunSetup {
   readonly log: SessionLog;
@@ -273,6 +310,12 @@ export interface RunSetup {
   readonly limits: LoopLimits;
   /** Further `run.started` fields (task, repo, workspace, image, engine, baseCommit, config). */
   readonly started: Readonly<Record<string, unknown>>;
+  /**
+   * B5-4: the events logged before `run.started`, in its transaction (such as
+   * `task.created` and `run.recorded`). Called inside that transaction, so it may read
+   * the log race-free; a throw logs nothing and rejects the run.
+   */
+  readonly records?: () => readonly RunRecordEvent[];
   readonly engine: Engine;
   readonly tools: readonly ToolSpec[];
   /**
@@ -369,8 +412,10 @@ export interface RunOutcome {
  * there is no `setup.floor` (SF-2). Other terminals are kept. SF-1: first,
  * `setup.confirmCleanup` must confirm every container gone, else the run is halted
  * with SANDBOX_CLEANUP_FAILED and the floor is skipped.
+ * B5-4: `setup.records` and `run.started` are logged in one transaction, records first.
  * @throws RangeError for an invalid `settleMs` or `limits` (N-f), before anything is
- * logged; Error if `run.started` cannot be logged.
+ * logged; whatever `setup.records` throws, or Error if `run.started` cannot be logged,
+ * and then nothing is logged.
  */
 export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   const { log, graphId, runId, nodeId, tools } = setup;
@@ -419,10 +464,16 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     return deriveMessages(events, runId);
   };
 
-  append("run.started", {
-    ...setup.started,
-    limits: { ...setup.limits },
-    tools,
+  // Requirement (b): the run's records come before run.started, or neither is logged.
+  log.transaction(() => {
+    for (const { type, payload } of setup.records?.() ?? []) {
+      append(type, payload);
+    }
+    append("run.started", {
+      ...setup.started,
+      limits: { ...setup.limits },
+      tools,
+    });
   });
   const startedAt = performance.now();
   const deadline = new AbortController();
@@ -535,8 +586,9 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   }
   ended = true;
   // SF-3, S-1: one order for every failure, whatever ended the loop.
+  // Requirement (a): escaped once, so run.terminated's terminal is valid display text.
   const message = (f?: { error: unknown }) =>
-    f === undefined ? undefined : errorMessage(f.error);
+    f === undefined ? undefined : displayText(errorMessage(f.error));
   // Nit-2: a later throw (a final desync) must not mask the loop's own failure.
   const own =
     result?.terminal.kind === "failed" ? result.terminal.error : undefined;
@@ -591,7 +643,9 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     return { ...end, floor: logged };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
-    const lost = failed(failure ?? message(logFailure) ?? errorMessage(error));
+    const lost = failed(
+      failure ?? message(logFailure) ?? displayText(errorMessage(error)),
+    );
     try {
       append("run.terminated", { agentId: nodeId, ...lost }, true);
     } catch {
@@ -701,8 +755,12 @@ export const RING0_NOT_APPROVED =
  * override logs `intake.overridden`; a downward one is first asked like the Ring 0
  * change, and unless approved the run fails with INTAKE_OVERRIDE_NOT_APPROVED.
  * B10-3: a reclassification with the worktree's Ring 0 link targets that the rubric
- * refuses fails the run with INTAKE_LINKS_REFUSED.
- * @throws UsageError for an invalid task, intake, override, repo, config or state dir; CancelledError if
+ * refuses fails the run with INTAKE_LINKS_REFUSED. B5-4: those targets are read before
+ * `run.started`, which is logged in one transaction after `task.created` (only for a
+ * new Task) and `run.recorded` (with that class); a failure of the read still fails
+ * the run at its old point.
+ * @throws UsageError for an invalid task, intake, override, repo, config or state dir,
+ * or a Task already recorded differently (OD-B54-1); CancelledError if
  * aborted before the run started; Error if setup fails.
  */
 export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
@@ -734,13 +792,39 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       ring0Paths: [...ring0Paths, ...links],
       friction,
     });
-  // Validated before any workspace work; reclassified with the link targets in connect.
+  // Validated before any workspace work; reclassified with the link targets below.
   let intake: ReturnType<typeof intakeRecords>;
   try {
     intake = intakeRecords(task, classifyWith([]), override, friction);
   } catch (error) {
     if (!(error instanceof IntakeError)) throw error;
     throw new UsageError("task." + error.message, { cause: error });
+  }
+  // S1: the worktree's Ring 0 link targets count too; this only raises the class.
+  const reclassified = (links: RunRing0) => {
+    let linked: IntakeResult;
+    try {
+      linked = classifyWith(links);
+    } catch (error) {
+      if (!(error instanceof IntakeError)) throw error;
+      throw new Error(INTAKE_LINKS_REFUSED, { cause: error });
+    }
+    return overrideDirection(intake.result.class, linked.class) === "up"
+      ? intakeRecords(task, linked, override, friction)
+      : intake;
+  };
+  // B5-4: the Task's payload, built and checked before anything is created.
+  let created: TaskCreated;
+  try {
+    created = taskCreated({
+      id: task.id,
+      repoId: config.repoId,
+      text: task.title,
+      scope: isStrings(task.intake.scope) ? task.intake.scope : [],
+    });
+  } catch (error) {
+    if (!(error instanceof ObjectEventError)) throw error;
+    throw new UsageError(error.message, { cause: error });
   }
   const stateDir = resolve(options.stateDir);
   const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
@@ -756,6 +840,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   }
   const log = openSessionLog(join(stateDir, LOG_FILE));
   try {
+    // OD-B54-1: a changed Task is refused before anything else is created.
+    recordedTask(log, created);
     mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
     const workspace = join(realpathSync(workspaceRoot), runId);
     mkdirSync(workspace, { mode: 0o700 });
@@ -777,7 +863,32 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       rmSync(workspace, { recursive: true, force: true }); // no worktree was added
       throw error;
     }
+    // B5-4: read before run.recorded so the class is final. A failure is kept and
+    // thrown in connect where it was before, so the run fails with the same events.
+    const ring0Read = attempt(() => {
+      try {
+        return runRing0(workspace, policy);
+      } catch (error) {
+        const why = errorMessage(error);
+        throw new Error(`run refused: Ring 0 check of the worktree: ${why}`, {
+          cause: error,
+        });
+      }
+    });
+    const linkRead =
+      "error" in ring0Read
+        ? undefined
+        : attempt(() => reclassified(ring0Read.value));
+    if (linkRead !== undefined && "value" in linkRead) intake = linkRead.value;
+    // OD-B54-2: the rubric class after the link targets (= intake.classified.class).
+    const recorded = runRecorded({
+      taskId: task.id,
+      engine: task.engine.kind,
+      baseCommit,
+      class: intake.result.class,
+    });
     const containers = new Set<string>();
+    const seqBefore = log.lastSeq();
     const outcome = await executeRun({
       log,
       graphId,
@@ -796,18 +907,18 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         config: config.record,
         policyVersion: policy.version,
       },
+      // OD-B54-1: checked again in run.started's transaction; a same Task is reused.
+      records: () => {
+        const run = { type: "run.recorded", payload: { ...recorded } };
+        return recordedTask(log, created) === "new"
+          ? [{ type: "task.created", payload: { ...created } }, run]
+          : [run];
+      },
       engine,
       tools: BROKER_TOOLS,
       connect: async ({ emit, emitAll, halt, signal }) => {
-        let ring0: RunRing0;
-        try {
-          ring0 = runRing0(workspace, policy);
-        } catch (error) {
-          const why = errorMessage(error);
-          throw new Error(`run refused: Ring 0 check of the worktree: ${why}`, {
-            cause: error,
-          });
-        }
+        if ("error" in ring0Read) throw ring0Read.error;
+        const ring0 = ring0Read.value;
         const { presence } = options;
         const permission = {
           policy,
@@ -840,17 +951,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           if (answer !== "approved") throw new Error(RING0_NOT_APPROVED);
           accepted("approved");
         }
-        // S1: the worktree's Ring 0 link targets count too; this only raises the class.
-        let linked: IntakeResult;
-        try {
-          linked = classifyWith(ring0);
-        } catch (error) {
-          if (!(error instanceof IntakeError)) throw error;
-          throw new Error(INTAKE_LINKS_REFUSED, { cause: error });
-        }
-        if (overrideDirection(intake.result.class, linked.class) === "up") {
-          intake = intakeRecords(task, linked, override, friction);
-        }
+        if (linkRead !== undefined && "error" in linkRead) throw linkRead.error;
         const { result, classified, direction, overridden } = intake;
         // B10-2: after the Ring 0 check, before the first engine step; never in the context.
         emit("intake.classified", { ...classified });
@@ -882,11 +983,55 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       ...(options.checkDesync === undefined
         ? {}
         : { checkDesync: options.checkDesync }),
+    }).catch((error: unknown) => {
+      // B5-4: the start transaction failed (e.g. a changed Task raced in): with no
+      // run.started, reap never sees this worktree. A changed last seq may be another
+      // process's event, so the worktree is then kept.
+      if (log.lastSeq() === seqBefore) {
+        attempt(() =>
+          runGit(task.repo, ["worktree", "remove", "--force", workspace]),
+        );
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      throw error;
     });
     return { ...outcome, graphId, runId, nodeId, workspace };
   } finally {
     log.close();
   }
+}
+
+/** B5-4: what `fn` returned, or what it threw, to be thrown later. */
+function attempt<T>(
+  fn: () => T,
+): { readonly value: T } | { readonly error: unknown } {
+  try {
+    return { value: fn() };
+  } catch (error) {
+    return { error };
+  }
+}
+
+/**
+ * OD-B54-1: "new" if `log` has no Task `created.id`, "same" if it has one with the same
+ * repo, text and (normalized) scope, which a re-run reuses.
+ * @throws UsageError if it has one that differs (D-2: a Task never changes)
+ */
+function recordedTask(log: SessionLog, created: TaskCreated): "new" | "same" {
+  const found = log.object(created.id);
+  if (found === undefined) return "new";
+  let differs: string | undefined;
+  if (found.kind !== "task" || found.repoId !== created.repoId) {
+    differs = "repo";
+  } else if (found.text !== created.text) {
+    differs = "title";
+  } else if (JSON.stringify(found.scope) !== JSON.stringify(created.scope)) {
+    differs = "intake.scope";
+  }
+  if (differs === undefined) return "same";
+  throw new UsageError(
+    `task.id ${created.id} is already recorded in this state dir with a different ${differs}; a Task never changes (D-2): give the changed task a new id`,
+  );
 }
 
 const CLASSES: readonly IntakeClass[] = ["chore", "bounded", "architectural"];

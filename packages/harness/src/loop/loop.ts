@@ -2,6 +2,7 @@ import { callKey, createCallCounters, reminderFor } from "./reminders.ts";
 import type { CallCounters } from "./reminders.ts";
 import { FALLBACK_SUMMARY, errorMessage, summarize } from "./terminal.ts";
 import type { IncompleteReason, Terminal } from "./terminal.ts";
+import { displayText } from "../permission/policy.ts";
 import type {
   Clock,
   Emit,
@@ -314,7 +315,8 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
       );
       if (stepped.kind === "aborted") return halt(stopReason() ?? "cancelled");
       if (stepped.kind === "error") {
-        const error = errorMessage(stepped.error);
+        // Requirement (a) (B5-4): a terminal error is escaped display text, once.
+        const error = displayText(errorMessage(stepped.error));
         return { terminal: { kind: "failed", error }, text: lastText };
       }
       const turn = stepped.value;
@@ -382,7 +384,7 @@ async function run(options: LoopOptions, deps: LoopDeps): Promise<LoopResult> {
     ending = await loop();
   } catch (error) {
     ending = {
-      terminal: { kind: "failed", error: errorMessage(error) },
+      terminal: { kind: "failed", error: displayText(errorMessage(error)) },
       text: lastText,
     };
   } finally {

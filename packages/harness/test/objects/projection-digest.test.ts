@@ -305,168 +305,177 @@ describe("projection digest and verifyProjections (B5-3b)", () => {
   });
 });
 
-describe("inspect and rebuild through the real CLI (B5-3b)", () => {
-  /** Control, format (bidi included) and separator characters. */
-  const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-  const lines = (stdout: string) =>
-    stdout
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-  const shape = (path = file) =>
-    raw(
-      (db) => {
-        const version = db.prepare("PRAGMA user_version").get()?.[
-          "user_version"
-        ];
-        const sql =
-          "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name";
-        const tables = db
-          .prepare(sql)
-          .all()
-          .map((row) => row["name"]);
-        return { version, tables };
-      },
-      false,
-      path,
-    );
+// Each test spawns the CLI several times: an explicit timeout, not the 5 s default.
+describe(
+  "inspect and rebuild through the real CLI (B5-3b)",
+  { timeout: 60_000 },
+  () => {
+    /** Control, format (bidi included) and separator characters. */
+    const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+    const lines = (stdout: string) =>
+      stdout
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const shape = (path = file) =>
+      raw(
+        (db) => {
+          const version = db.prepare("PRAGMA user_version").get()?.[
+            "user_version"
+          ];
+          const sql =
+            "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name";
+          const tables = db
+            .prepare(sql)
+            .all()
+            .map((row) => row["name"]);
+          return { version, tables };
+        },
+        false,
+        path,
+      );
 
-  it("inspect prints escaped raw rows of a log whose reads throw, and writes nothing", () => {
-    seed();
-    const forged = rawEvent(
-      "decision.owner.resolve",
-      '{"note":"\u202Egnp.exe"}',
-    );
-    const hostile = rawEvent("test.happened", "{}", "2026\u001b[2J");
-    expect(() => log.events()).toThrow(
-      "corrupt event at seq " + String(forged),
-    );
-    log.close();
-    const before = [readFileSync(file), statSync(file).mtimeMs, shape()];
+    it("inspect prints escaped raw rows of a log whose reads throw, and writes nothing", () => {
+      seed();
+      const forged = rawEvent(
+        "decision.owner.resolve",
+        '{"note":"\u202Egnp.exe"}',
+      );
+      const hostile = rawEvent("test.happened", "{}", "2026\u001b[2J");
+      expect(() => log.events()).toThrow(
+        "corrupt event at seq " + String(forged),
+      );
+      log.close();
+      const before = [readFileSync(file), statSync(file).mtimeMs, shape()];
 
-    const shown = cli("inspect", "--state-dir", dir);
-    expect(shown.status, shown.stderr).toBe(0);
-    for (const line of shown.stdout.split("\n")) {
-      expect(line).not.toMatch(UNSAFE);
-    }
-    expect(shown.stdout).toContain("\\u202e");
-    expect(shown.stdout).toContain("\\u001b");
-    const rows = lines(shown.stdout);
-    expect(rows.map((row) => row["seq"])).toEqual([
-      0,
-      1,
-      2,
-      3,
-      forged,
-      hostile,
-    ]);
-    expect(rows.slice(0, 4).map((row) => row["refused"])).toEqual([
-      null,
-      null,
-      null,
-      null,
-    ]);
-    expect(rows[forged]).toMatchObject({
-      type: "decision.owner.resolve",
-      runId: RUN,
-      payload: '{"note":"\u202Egnp.exe"}',
-    });
-    expect(rows[forged]?.["refused"]).toMatch(/seq 4: .*refused until SIG/);
-    expect(rows[hostile]).toMatchObject({ at: "2026\u001b[2J" });
-    expect(rows[hostile]?.["refused"]).toMatch(
-      /corrupt event at seq 5: .*\/at/,
-    );
+      const shown = cli("inspect", "--state-dir", dir);
+      expect(shown.status, shown.stderr).toBe(0);
+      for (const line of shown.stdout.split("\n")) {
+        expect(line).not.toMatch(UNSAFE);
+      }
+      expect(shown.stdout).toContain("\\u202e");
+      expect(shown.stdout).toContain("\\u001b");
+      const rows = lines(shown.stdout);
+      expect(rows.map((row) => row["seq"])).toEqual([
+        0,
+        1,
+        2,
+        3,
+        forged,
+        hostile,
+      ]);
+      expect(rows.slice(0, 4).map((row) => row["refused"])).toEqual([
+        null,
+        null,
+        null,
+        null,
+      ]);
+      expect(rows[forged]).toMatchObject({
+        type: "decision.owner.resolve",
+        runId: RUN,
+        payload: '{"note":"\u202Egnp.exe"}',
+      });
+      expect(rows[forged]?.["refused"]).toMatch(/seq 4: .*refused until SIG/);
+      expect(rows[hostile]).toMatchObject({ at: "2026\u001b[2J" });
+      expect(rows[hostile]?.["refused"]).toMatch(
+        /corrupt event at seq 5: .*\/at/,
+      );
 
-    const page = cli(
-      "inspect",
-      "--state-dir",
-      dir,
-      "--from-seq",
-      "1",
-      "--limit",
-      "2",
-    );
-    expect(page.status, page.stderr).toBe(0);
-    expect(lines(page.stdout).map((row) => row["seq"])).toEqual([1, 2]);
-    expect(page.stderr).toContain("more rows from seq 3");
-    expect([readFileSync(file), statSync(file).mtimeMs, shape()]).toEqual(
-      before,
-    );
-    log = openSessionLog(file);
-  });
-
-  it("inspect reads a v2 file without migrating it; rebuild migrates it", () => {
-    const v2 = join(dir, "v2", "session.sqlite");
-    mkdirSync(join(dir, "v2"));
-    raw(
-      (db) => {
-        // The v2 events columns; projection.test.ts has the full frozen v2 DDL.
-        db.exec(
-          "CREATE TABLE events (seq INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, event_id TEXT NOT NULL, graph_id TEXT NOT NULL, run_id TEXT NOT NULL, node_id TEXT NOT NULL, type TEXT NOT NULL, at TEXT NOT NULL, payload TEXT NOT NULL) STRICT; PRAGMA user_version = 2;",
-        );
-        const sql =
-          "INSERT INTO events VALUES (0, 1, 'evt-v2', 'graph-1', ?, 'node-1', 'task.created', ?, ?)";
-        db.prepare(sql).run(RUN, AT, JSON.stringify(task()));
-      },
-      false,
-      v2,
-    );
-    const before = [readFileSync(v2), shape(v2)];
-    const shown = cli("inspect", "--state-dir", join(dir, "v2"));
-    expect(shown.status, shown.stderr).toBe(0);
-    expect(lines(shown.stdout)).toEqual([
-      expect.objectContaining({ seq: 0, type: "task.created", refused: null }),
-    ]);
-    expect([readFileSync(v2), shape(v2)]).toEqual(before);
-    expect(before[1]).toEqual({ version: 2, tables: ["events"] });
-
-    const rebuilt = cli("rebuild", "--state-dir", join(dir, "v2"));
-    expect(rebuilt.status, rebuilt.stderr).toBe(0);
-    expect(shape(v2)).toEqual({ version: 3, tables: ["events", "objects"] });
-  });
-
-  it("rebuild restores a dropped table, and refuses a log with a forged row", () => {
-    seed();
-    const digest = log.verifyProjections().rebuiltDigest;
-    rawExec("DROP TABLE objects");
-    const rebuilt = cli("rebuild", "--state-dir", dir);
-    expect(rebuilt.status, rebuilt.stderr).toBe(0);
-    expect(lines(rebuilt.stdout)).toEqual([{ rebuilt: true, digest }]);
-    expect(log.verifyProjections()).toMatchObject({
-      match: true,
-      guarded: true,
+      const page = cli(
+        "inspect",
+        "--state-dir",
+        dir,
+        "--from-seq",
+        "1",
+        "--limit",
+        "2",
+      );
+      expect(page.status, page.stderr).toBe(0);
+      expect(lines(page.stdout).map((row) => row["seq"])).toEqual([1, 2]);
+      expect(page.stderr).toContain("more rows from seq 3");
+      expect([readFileSync(file), statSync(file).mtimeMs, shape()]).toEqual(
+        before,
+      );
+      log = openSessionLog(file);
     });
 
-    const seq = rawEvent("decision.owner.resolve", "{}");
-    const refused = cli("rebuild", "--state-dir", dir);
-    expect(refused.status).toBe(1);
-    expect(refused.stdout).toBe("");
-    expect(refused.stderr).toMatch(
-      /^helmwright: rebuild refused \(see inspect; until SIG/,
-    );
-    expect(refused.stderr).toContain("corrupt event at seq " + String(seq));
-    expect(shape().tables).toEqual(["events", "objects"]);
-  });
+    it("inspect reads a v2 file without migrating it; rebuild migrates it", () => {
+      const v2 = join(dir, "v2", "session.sqlite");
+      mkdirSync(join(dir, "v2"));
+      raw(
+        (db) => {
+          // The v2 events columns; projection.test.ts has the full frozen v2 DDL.
+          db.exec(
+            "CREATE TABLE events (seq INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, event_id TEXT NOT NULL, graph_id TEXT NOT NULL, run_id TEXT NOT NULL, node_id TEXT NOT NULL, type TEXT NOT NULL, at TEXT NOT NULL, payload TEXT NOT NULL) STRICT; PRAGMA user_version = 2;",
+          );
+          const sql =
+            "INSERT INTO events VALUES (0, 1, 'evt-v2', 'graph-1', ?, 'node-1', 'task.created', ?, ?)";
+          db.prepare(sql).run(RUN, AT, JSON.stringify(task()));
+        },
+        false,
+        v2,
+      );
+      const before = [readFileSync(v2), shape(v2)];
+      const shown = cli("inspect", "--state-dir", join(dir, "v2"));
+      expect(shown.status, shown.stderr).toBe(0);
+      expect(lines(shown.stdout)).toEqual([
+        expect.objectContaining({
+          seq: 0,
+          type: "task.created",
+          refused: null,
+        }),
+      ]);
+      expect([readFileSync(v2), shape(v2)]).toEqual(before);
+      expect(before[1]).toEqual({ version: 2, tables: ["events"] });
 
-  it("refuses bad inspect options and a missing log", () => {
-    for (const args of [
-      ["inspect", "--limit", "0"],
-      ["inspect", "--limit", "1001"],
-      ["inspect", "--from-seq", "-1"],
-      ["rebuild", "--limit", "5"],
-    ]) {
-      const result = cli(...args, "--state-dir", dir);
-      expect(result.status, args.join(" ")).toBe(64);
-    }
-    const missing = cli("inspect", "--state-dir", join(dir, "none"));
-    expect(missing.status).toBe(1);
-    expect(missing.stderr).toContain("no session log at");
-    // Not a bad event: no "new state dir" hint.
-    const gone = cli("rebuild", "--state-dir", join(dir, "none"));
-    expect([gone.status, gone.stderr.includes("rebuild refused")]).toEqual([
-      1,
-      false,
-    ]);
-    expect(gone.stderr).toContain("no session log at");
-  });
-});
+      const rebuilt = cli("rebuild", "--state-dir", join(dir, "v2"));
+      expect(rebuilt.status, rebuilt.stderr).toBe(0);
+      expect(shape(v2)).toEqual({ version: 3, tables: ["events", "objects"] });
+    });
+
+    it("rebuild restores a dropped table, and refuses a log with a forged row", () => {
+      seed();
+      const digest = log.verifyProjections().rebuiltDigest;
+      rawExec("DROP TABLE objects");
+      const rebuilt = cli("rebuild", "--state-dir", dir);
+      expect(rebuilt.status, rebuilt.stderr).toBe(0);
+      expect(lines(rebuilt.stdout)).toEqual([{ rebuilt: true, digest }]);
+      expect(log.verifyProjections()).toMatchObject({
+        match: true,
+        guarded: true,
+      });
+
+      const seq = rawEvent("decision.owner.resolve", "{}");
+      const refused = cli("rebuild", "--state-dir", dir);
+      expect(refused.status).toBe(1);
+      expect(refused.stdout).toBe("");
+      expect(refused.stderr).toMatch(
+        /^helmwright: rebuild refused \(see inspect; until SIG/,
+      );
+      expect(refused.stderr).toContain("corrupt event at seq " + String(seq));
+      expect(shape().tables).toEqual(["events", "objects"]);
+    });
+
+    it("refuses bad inspect options and a missing log", () => {
+      for (const args of [
+        ["inspect", "--limit", "0"],
+        ["inspect", "--limit", "1001"],
+        ["inspect", "--from-seq", "-1"],
+        ["rebuild", "--limit", "5"],
+      ]) {
+        const result = cli(...args, "--state-dir", dir);
+        expect(result.status, args.join(" ")).toBe(64);
+      }
+      const missing = cli("inspect", "--state-dir", join(dir, "none"));
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("no session log at");
+      // Not a bad event: no "new state dir" hint.
+      const gone = cli("rebuild", "--state-dir", join(dir, "none"));
+      expect([gone.status, gone.stderr.includes("rebuild refused")]).toEqual([
+        1,
+        false,
+      ]);
+      expect(gone.stderr).toContain("no session log at");
+    });
+  },
+);
