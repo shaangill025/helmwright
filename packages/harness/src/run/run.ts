@@ -888,6 +888,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       class: intake.result.class,
     });
     const containers = new Set<string>();
+    const seqBefore = log.lastSeq();
     const outcome = await executeRun({
       log,
       graphId,
@@ -982,6 +983,17 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       ...(options.checkDesync === undefined
         ? {}
         : { checkDesync: options.checkDesync }),
+    }).catch((error: unknown) => {
+      // B5-4: the start transaction failed (e.g. a changed Task raced in): with no
+      // run.started, reap never sees this worktree. A changed last seq may be another
+      // process's event, so the worktree is then kept.
+      if (log.lastSeq() === seqBefore) {
+        attempt(() =>
+          runGit(task.repo, ["worktree", "remove", "--force", workspace]),
+        );
+        rmSync(workspace, { recursive: true, force: true });
+      }
+      throw error;
     });
     return { ...outcome, graphId, runId, nodeId, workspace };
   } finally {

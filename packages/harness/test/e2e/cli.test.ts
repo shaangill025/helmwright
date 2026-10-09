@@ -2321,6 +2321,35 @@ describe("Task and Run records (e2e, B5-4)", () => {
   );
 
   it(
+    "removes the worktree when the start transaction fails",
+    { timeout: T },
+    () => {
+      const file = join(stateDir, "session.sqlite");
+      openSessionLog(file).close();
+      const spaces = join(stateDir, "workspaces");
+      const listed = () => (existsSync(spaces) ? readdirSync(spaces) : []);
+      const worktrees = git("-C", repo, "worktree", "list", "--porcelain");
+      // Another writer holds the log, so run.started's transaction gets SQLITE_BUSY.
+      const lock = new DatabaseSync(file);
+      lock.exec("BEGIN IMMEDIATE");
+      try {
+        const task = writeTask("write-file.turns.json", LIMITS, repo);
+        const result = cli("run", task, "--state-dir", stateDir);
+        expect(result.status, result.stderr).toBe(1);
+        expect(result.stderr).toContain("locked");
+      } finally {
+        lock.exec("ROLLBACK");
+        lock.close();
+      }
+      expect(git("-C", repo, "worktree", "list", "--porcelain")).toBe(
+        worktrees,
+      );
+      expect(listed()).toEqual([]);
+      expect(logEvents()).toHaveLength(0);
+    },
+  );
+
+  it(
     "exits 64 on a task ID without task- or a title the Task refuses (D-1)",
     { timeout: T },
     () => {
