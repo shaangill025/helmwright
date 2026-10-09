@@ -284,6 +284,19 @@ describe("objectFaults: the intake Ruling (B5-5)", () => {
     ]);
   });
 
+  it("faults a Ruling at the next seq that another run logged for this run", () => {
+    const elsewhere = edit(ruled(0), 4, (e) => ({ ...e, runId: "run-9" }));
+    expect(
+      intake(
+        elsewhere.filter((e) => e.runId === "run-1"),
+        elsewhere,
+      ),
+    ).toEqual([
+      "seq 3: intake.classified without its intake Ruling",
+      NOT_LINKED,
+    ]);
+  });
+
   it.each([
     ["another", override("decision-intake-2")],
     ["no", override()],

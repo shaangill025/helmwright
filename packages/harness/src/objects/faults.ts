@@ -61,17 +61,18 @@ function intakeFaults(
       fault(e.seq, "intake Ruling without intake.classified");
     }
   }
+  // The Ruling of a classification is the run's own event at the next seq, never one
+  // logged under another run that names this run.
+  const own = (r: Event, seq: number) => r.runId === runId && r.seq === seq + 1;
   for (const e of classified) {
-    const ruling = rulings.find((r) => r.seq === e.seq + 1);
+    const ruling = rulings.find((r) => own(r, e.seq));
     if (ruling === undefined) {
       fault(e.seq, "intake.classified without its intake Ruling");
     } else if (!isDeepStrictEqual(ruling.payload, recomputed(runId, e))) {
       fault(ruling.seq, "intake Ruling is not intake.classified's");
     }
   }
-  const ruling = rulings.find(
-    (r) => first !== undefined && r.seq === first.seq + 1,
-  );
+  const ruling = rulings.find((r) => first !== undefined && own(r, first.seq));
   for (const e of events.filter((x) => x.type === "intake.overridden")) {
     if (
       ruling === undefined ||

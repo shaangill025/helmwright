@@ -152,6 +152,7 @@ describe("intakeRuling (B5-5)", () => {
   it.each([
     ["run-" + "x".repeat(120), "decision.opened cannot be logged"],
     ["graph-1", "decision.opened cannot be logged: not a run ID"],
+    ["run-", "decision.opened cannot be logged: not a run ID"],
     ["run-a.b", "decision.opened cannot be logged"],
   ])("refuses the run ID %s", (runId, message) => {
     expect(() => intakeRuling(runId, "evt-1", classified)).toThrow(

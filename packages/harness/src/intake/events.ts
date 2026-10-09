@@ -118,7 +118,7 @@ const MAX_WHY = 8192;
 
 /** B5-5: the ID of the intake Ruling of the run `runId` (`run-<id>`): `decision-intake-<id>`. */
 export function intakeRulingId(runId: string): string {
-  if (!runId.startsWith("run-")) {
+  if (!runId.startsWith("run-") || runId.length === "run-".length) {
     throw new IntakeError("decision.opened cannot be logged: not a run ID");
   }
   return "decision-intake-" + runId.slice("run-".length);
