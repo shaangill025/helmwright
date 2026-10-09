@@ -187,7 +187,7 @@ export interface TaskRecord {
   status: TaskStatus;
 }
 /**
- * One execution of a Task at a base commit with the intake class it started with (after any owner override; a later upward reclassification is an `intake.reclassified` event), written by the harness at run start; only `terminal` changes, once, at `run.terminated`.
+ * One execution of a Task at a base commit with the intake class it started with: the rubric class after the worktree's Ring 0 link targets, equal to `intake.classified.class` (OD-B54-2; an owner override stays the `intake.overridden` event and a later upward reclassification an `intake.reclassified` event), written by the harness before `run.started`; only `terminal` changes, once, at `run.terminated`.
  */
 export interface RunRecord {
   /**

@@ -61,14 +61,15 @@
   {
     "component": "packages/harness/src/loop/loop.ts",
     "ring": 0,
-    "assumption": "P1: progress is a tool call not already made in this run, keyed by name and canonical input and independent of its result; a run without progress for noProgressIterations iterations halts, and a cap or watchdog halt gets one tools-stripped handoff step.",
+    "assumption": "P1: progress is a tool call not already made in this run, keyed by name and canonical input and independent of its result; a run without progress for noProgressIterations iterations halts, and a cap or watchdog halt gets one tools-stripped handoff step. A failed terminal's error is escaped display text (B5-4), so its run.terminated is valid for the Run record.",
     "evidence": [
       "decisions P1",
       "06 Ring 0 contents",
+      "decisions B5-4 owner answers",
       "packages/harness/test/loop/loop.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["model", "engine", "milestone"]
   },
   {
@@ -231,16 +232,17 @@
   {
     "component": "packages/harness/src/run/run.ts",
     "ring": 0,
-    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; without a hash chain over the log, the context digest detects divergence, not tampering. Its git calls (repo root check, worktree add and remove) run through runGit and share config.ts's trust in .git/config.",
+    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. B5-4: task.created (a new Task only) and run.recorded are logged in run.started's transaction, before it; the worktree's Ring 0 link targets are read before them, so the Run's class is final, and a failure of that read still fails the run in connect at its old point. A re-run reuses an identical Task and refuses a changed one (exit 64), checked again in that transaction; two processes racing on one new task ID can orphan a worktree (one writer process per log). A terminal error is escaped once (displayText). The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; until SIG (M1) adds a hash chain over the log, the context digest detects divergence, not tampering. Its git calls run through runGit and share config.ts's trust in .git/config.",
     "evidence": [
       "06 Spine",
       "decisions Q5",
+      "decisions B5-4 owner answers",
       "packages/harness/test/run/run.test.ts",
       "packages/harness/test/e2e/cli.test.ts",
       "packages/harness/test/config/config.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
@@ -273,15 +275,16 @@
   {
     "component": "packages/harness/src/intake/events.ts",
     "ring": 0,
-    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG), whose inputSha256 binds the override's from, to, reason and scopeSha256. After the Ring 0 check the task is classified again with the worktree's Ring 0 link targets added, which can only raise the class; if the rubric refuses that input (over its 1024 Ring 0 paths) the run fails with a fixed reason. intake.overridden logs the effective friction of to, and replay checks it against the config defaults, that intake events come before the first engine step, and that an approved override ask is used.",
+    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG), whose inputSha256 binds the override's from, to, reason and scopeSha256. The task is classified again with the worktree's Ring 0 link targets added, which can only raise the class, before run.started (B5-4), and that class is recorded on the Run; the logging order is unchanged. If the rubric refuses that input (over its 1024 Ring 0 paths) the run fails with a fixed reason. intake.overridden logs the effective friction of to, and replay checks it against the config defaults, that intake events come before the first engine step, and that an approved override ask is used.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
+      "decisions B5-4 owner answers",
       "packages/harness/test/e2e/cli.test.ts",
       "packages/harness/test/permission/faults.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-08",
     "reviewTrigger": ["model", "milestone"]
   },
   {

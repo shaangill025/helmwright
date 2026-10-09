@@ -442,6 +442,27 @@ describe("runLoop", () => {
     expect(result.terminal).toEqual({ kind: "failed", error: "counter broke" });
   });
 
+  it("escapes control characters in a failed terminal's error, once (B5-4)", async () => {
+    const thrown = scripted([new Error("engine\nbroke\u001b\\")]).engine;
+    const engineFailed = (await run(thrown)).result;
+    expect(engineFailed.terminal).toEqual({
+      kind: "failed",
+      error: "engine\\u{a}broke\\u{1b}\\\\",
+    });
+    expect(engineFailed.summary).toBe("FAILED: engine\\u{a}broke\\u{1b}\\\\");
+    const counters: CallCounters = {
+      record: () => {
+        throw new Error("counter\u0007broke");
+      },
+    };
+    const { engine } = scripted([turn("", [read("a")])]);
+    const { result } = await run(engine, { counters });
+    expect(result.terminal).toEqual({
+      kind: "failed",
+      error: "counter\\u{7}broke",
+    });
+  });
+
   it("returns a typed result and records nothing further when emit throws", async () => {
     const timers = manualTimers();
     const types: string[] = [];

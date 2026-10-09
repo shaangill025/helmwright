@@ -364,30 +364,50 @@ function logEvents(): Event[] {
   }
 }
 
+/** The projected record with `id` (B5-3), or undefined. */
+function objectOf(id: string) {
+  const log = openSessionLog(join(stateDir, "session.sqlite"));
+  try {
+    return log.object(id);
+  } finally {
+    log.close();
+  }
+}
+
+/**
+ * The log of one run, the first in its state dir: B5-4 logs `task.created` and
+ * `run.recorded` before `run.started`. Returns its events from `run.started` on.
+ */
 function expectWellFormedLog(runId: string): Event[] {
-  const events = logEvents();
-  expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i));
-  const first = events[0];
-  expect(first?.type).toBe("run.started");
-  for (const e of events) {
+  const all = logEvents();
+  expect(all.map((e) => e.seq)).toEqual(all.map((_, i) => i));
+  expect(all.slice(0, 3).map((e) => e.type)).toEqual([
+    ...["task.created", "run.recorded", "run.started"],
+  ]);
+  const first = all[0];
+  for (const e of all) {
     expect([e.graphId, e.runId, e.nodeId]).toEqual([
       first?.graphId,
       runId,
       first?.nodeId,
     ]);
   }
-  expect(events.filter((e) => e.type === "run.terminated")).toHaveLength(1);
-  expect(events.at(-1)?.type).toBe("run.terminated");
-  return events;
+  expect(all.filter((e) => e.type === "run.terminated")).toHaveLength(1);
+  expect(all.at(-1)?.type).toBe("run.terminated");
+  return all.slice(2);
 }
 
 function expectReplayMatches(runId: string, events: readonly Event[]): void {
   const replay = cli("replay", runId, "--state-dir", stateDir);
   expect(replay.status, replay.stderr).toBe(0);
   const out = JSON.parse(replay.stdout) as Record<string, unknown>;
+  // Replay counts every event of the run, its records (B5-4) too.
+  const all = logEvents().filter((e) => e.runId === runId);
+  expect(all.slice(-events.length)).toEqual(events);
   const recorded = events.at(-1)?.payload["contextDigest"];
   // The digest covers the tools offered (logged in run.started) and the context.
-  const tools = events[0]?.payload["tools"] as ToolSpec[] | undefined;
+  const started = events.find((e) => e.type === "run.started");
+  const tools = started?.payload["tools"] as ToolSpec[] | undefined;
   expect(tools?.map((t) => t.name)).toEqual(["execute"]);
   const messages = deriveMessages(events, runId);
   expect(recorded).toBe(contextDigest(messages, tools ?? []));
@@ -397,7 +417,7 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
     match: true,
     derivedDigest: recorded,
     recordedDigest: recorded,
-    events: events.length,
+    events: all.length,
     permissionFaults: [],
   });
   expect(recorded).toMatch(/^[0-9a-f]{64}$/);
@@ -936,6 +956,8 @@ describe("helmwright CLI (e2e)", () => {
       const evaluated = events.find((e) => e.type === "permission.evaluated");
       const { graphId = "", nodeId = "", payload = {} } = evaluated ?? {};
       const toolCallId = "call-9";
+      // The seq of the first forged event (the run's records come first, B5-4).
+      const next = (events.at(-1)?.seq ?? 0) + 1;
       const log = openSessionLog(join(stateDir, "session.sqlite"));
       for (const [i, { type, payload: p }] of [
         { type: "permission.evaluated", payload: { ...payload, toolCallId } },
@@ -955,10 +977,10 @@ describe("helmwright CLI (e2e)", () => {
       expect(JSON.parse(replay.stdout)).toMatchObject({
         match: true,
         permissionFaults: [
-          `seq ${String(events.length + 2)}: approval without the full view shown to its end`,
-          `seq ${String(events.length)}: permission.evaluated after floor.checked`,
-          `seq ${String(events.length + 1)}: permission.asked after floor.checked`,
-          `seq ${String(events.length + 2)}: permission.answered after floor.checked`,
+          `seq ${String(next + 2)}: approval without the full view shown to its end`,
+          `seq ${String(next)}: permission.evaluated after floor.checked`,
+          `seq ${String(next + 1)}: permission.asked after floor.checked`,
+          `seq ${String(next + 2)}: permission.answered after floor.checked`,
         ],
       });
     },
@@ -1574,9 +1596,9 @@ describe("helmwright.config.json (e2e)", () => {
       expect(tty.status, tty.shown).toBe(0);
       expect(pages(), tty.shown).toBeGreaterThan(0);
       const asked = logEvents().filter((e) => e.runId === tty.out.runId);
-      const to = (asked[0]?.payload["config"] as Record<string, string>)[
-        "ring0Sha256"
-      ];
+      const to = (
+        startedOf(tty.out.runId)?.["config"] as Record<string, string>
+      )["ring0Sha256"];
       expect(tty.shown).toContain("  Ring 0 settings changed: permissions\n");
       expect(tty.shown).toMatch(/ {2}Ring 0 digest: [0-9a-f]{64} -> /);
       expect(tty.shown).toContain(" -> " + (to ?? "none") + "\n");
@@ -1628,7 +1650,7 @@ describe("helmwright.config.json (e2e)", () => {
       const { status, stderr, out } = runTask(turns);
       expect(status, stderr).toBe(0);
       const events = logEvents().filter((e) => e.runId === out.runId);
-      expect(events[0]?.payload).toMatchObject({
+      expect(startedOf(out.runId)).toMatchObject({
         policyVersion: "strict-1",
         config: { source: "file", ring0Sha256: to },
       });
@@ -1786,15 +1808,13 @@ describe("helmwright.config.json (e2e)", () => {
       expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
       const events = logEvents().filter((e) => e.runId === out.runId);
       // Asked before the first message and any tool call; only `permissions` changed.
+      // B5-4: task-1 is recorded by the first run, so only the Run is new.
       expect(events.map((e) => e.type)).toEqual([
-        "run.started",
-        "permission.evaluated",
-        "permission.asked",
-        "permission.answered",
-        "floor.checked",
+        ...["run.recorded", "run.started", "permission.evaluated"],
+        ...["permission.asked", "permission.answered", "floor.checked"],
         "run.terminated",
       ]);
-      expect(events.slice(1, 4).map((e) => e.payload)).toMatchObject([
+      expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
         {
           ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
           ...{ policyVersion: "default-2", target: { value: "permissions" } },
@@ -1964,6 +1984,8 @@ describe("intake (e2e, B10-2)", () => {
       );
       expect(up.status, up.stderr).toBe(0);
       const events = expectWellFormedLog(up.out.runId);
+      // OD-B54-2: the Run records the rubric's class; the override is its own event.
+      expect(objectOf(up.out.runId)).toMatchObject({ class: "chore" });
       expect(events.slice(2, 5).map((e) => e.type)).toEqual([
         ...["intake.classified", "intake.overridden", "message.appended"],
       ]);
@@ -2062,6 +2084,8 @@ describe("intake (e2e, B10-2)", () => {
         answer: "approved",
         by: "tty",
       });
+      // OD-B54-2: the approved downward override does not change the Run's class.
+      expect(objectOf(out.runId)).toMatchObject({ class: "bounded" });
       expect(events[6]?.payload).toMatchObject({
         from: "bounded",
         to: "chore",
@@ -2122,6 +2146,8 @@ describe("intake (e2e, B10-2)", () => {
       expect(status, stderr).toBe(0);
       expect(stderr).toContain("helmwright: intake bounded (ring0Path: ");
       const events = expectWellFormedLog(out.runId);
+      // OD-B54-2: the Run records the class after the link targets raised it.
+      expect(objectOf(out.runId)).toMatchObject({ class: "bounded" });
       expect(payloadsOf(events, "intake.classified")).toMatchObject([
         {
           class: "bounded",
@@ -2215,6 +2241,107 @@ describe("intake (e2e, B10-2)", () => {
       const workspace = join(stateDir, "workspaces", reserved.out.runId);
       expect(existsSync(join(workspace, "a.txt"))).toBe(false);
       expectReplayMatches(reserved.out.runId, later);
+    },
+  );
+});
+
+/** Exit 64 with `message` on stderr, before anything is logged or created. */
+function expectTaskRefused(task: string, message: string): void {
+  const result = cli("run", task, "--state-dir", stateDir);
+  expect(result.status, result.stderr).toBe(64);
+  expect(result.stderr).toContain("helmwright: " + message + "\n");
+  expect(result.stdout).toBe("");
+}
+
+describe("Task and Run records (e2e, B5-4)", () => {
+  it(
+    "records the Task and the Run, and reuses an unchanged Task",
+    { timeout: T },
+    () => {
+      const intake = { scope: ["src/b.ts", "src/a.ts", "src/a.ts"] };
+      const first = runIntake("write-file.turns.json", intake);
+      expect(first.status, first.stderr).toBe(0);
+      const events = expectWellFormedLog(first.out.runId);
+      const [created, recorded] = logEvents();
+      const started = events[0];
+      expect(objectOf("task-1")).toEqual({
+        ...{ id: "task-1", kind: "task", ring: 0, createdAt: created?.at },
+        ...{ createdSeq: 0, repoId: join(repo, ".git"), text: "e2e task" },
+        ...{ scope: ["src/a.ts", "src/b.ts"], status: "open" },
+      });
+      const [classified] = payloadsOf(events, "intake.classified");
+      expect(objectOf(first.out.runId)).toEqual({
+        ...{ id: first.out.runId, kind: "run", ring: 0, taskId: "task-1" },
+        ...{ createdAt: recorded?.at, createdSeq: 1, engine: "scripted" },
+        ...{ graphId: started?.graphId, nodeId: started?.nodeId },
+        baseCommit: started?.payload["baseCommit"],
+        class: classified?.["class"],
+        terminal: first.out.terminal,
+      });
+      expect(classified?.["class"]).toBe("bounded");
+
+      // OD-B54-1: a re-run of the same Task records only a new Run.
+      const second = runIntake("write-file.turns.json", intake);
+      expect(second.status, second.stderr).toBe(0);
+      const later = logEvents().filter((e) => e.runId === second.out.runId);
+      expect(later.slice(0, 2).map((e) => e.type)).toEqual([
+        ...["run.recorded", "run.started"],
+      ]);
+      const types = logEvents().map((e) => e.type);
+      expect(types.filter((t) => t === "task.created")).toHaveLength(1);
+      expect(types.filter((t) => t === "run.recorded")).toHaveLength(2);
+      expect(objectOf(second.out.runId)).toMatchObject({
+        ...{ taskId: "task-1", class: "bounded" },
+        terminal: second.out.terminal,
+      });
+      expectReplayMatches(second.out.runId, later);
+
+      // A changed Task is refused before anything is logged or created.
+      const seq = logEvents().length;
+      const worktrees = git("-C", repo, "worktree", "list", "--porcelain");
+      const workspaces = readdirSync(join(stateDir, "workspaces"));
+      const changed: [object, string][] = [
+        [{ title: "another task", intake }, "title"],
+        [{ intake: { scope: ["src/a.ts"] } }, "intake.scope"],
+      ];
+      for (const [extra, what] of changed) {
+        expectTaskRefused(
+          writeTask("write-file.turns.json", LIMITS, repo, extra),
+          "task.id task-1 is already recorded in this state dir with a different " +
+            what +
+            "; a Task never changes (D-2): give the changed task a new id",
+        );
+      }
+      expect(logEvents()).toHaveLength(seq);
+      expect(git("-C", repo, "worktree", "list", "--porcelain")).toBe(
+        worktrees,
+      );
+      expect(readdirSync(join(stateDir, "workspaces"))).toEqual(workspaces);
+    },
+  );
+
+  it(
+    "exits 64 on a task ID without task- or a title the Task refuses (D-1)",
+    { timeout: T },
+    () => {
+      const turns = "write-file.turns.json";
+      expectTaskRefused(
+        writeTask(turns, LIMITS, repo, { id: "1" }),
+        'task.id must match ^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$ (since B5-4 a task id starts with "task-", e.g. rename "1" to "task-1")',
+      );
+      const titles = [
+        "x".repeat(8193),
+        "left \u202e right",
+        " \n\t",
+        "a\u0000",
+      ];
+      for (const title of titles) {
+        expectTaskRefused(
+          writeTask(turns, LIMITS, repo, { title }),
+          "task.title must be 1 to 8192 characters, not only spaces, without control characters other than tab and line breaks, or bidi controls",
+        );
+      }
+      expect(existsSync(stateDir)).toBe(false);
     },
   );
 });
