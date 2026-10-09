@@ -513,7 +513,7 @@ const schema31 = {
         costIfWrong: {
           $ref: "#/$defs/line",
           description:
-            "The cost if the call is wrong, as one line of at most 200 code points; B5-5 maps the intake event's longer, multi-line `costIfWrong` into this form, or the Ruling write fails.",
+            "The cost if the call is wrong, as one line of at most 200 code points. An intake Ruling's comes from a fixed table keyed by its rubric version.",
         },
         rubricVersion: { $ref: "#/$defs/rubricVersion" },
       },
@@ -3915,7 +3915,7 @@ const schema74 = {
     costIfWrong: {
       $ref: "#/$defs/line",
       description:
-        "The cost if the call is wrong, as one line of at most 200 code points; B5-5 maps the intake event's longer, multi-line `costIfWrong` into this form, or the Ruling write fails.",
+        "The cost if the call is wrong, as one line of at most 200 code points. An intake Ruling's comes from a fixed table keyed by its rubric version.",
     },
     rubricVersion: { $ref: "#/$defs/rubricVersion" },
   },

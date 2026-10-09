@@ -67,11 +67,6 @@ const schema31 = {
             "The sparring default the class sets. Only opt-in exists until A5.",
           const: "optIn",
         },
-        costIfWrong: {
-          description:
-            "What a wrong class would cost, as escaped display text: a misclassification is a ruling the owner can review (03 Intake).",
-          $ref: "#/$defs/text",
-        },
       },
     },
     overridden: {
@@ -98,10 +93,10 @@ const schema31 = {
         from: { $ref: "#/$defs/class" },
         to: { $ref: "#/$defs/class" },
         reason: {
+          $ref: "#/$defs/displayText",
           description:
-            "The owner's reason, escaped: not empty and not only spaces.",
+            "The owner's reason, escaped: display text that is not only spaces.",
           type: "string",
-          pattern: "^[\\s\\S]{1,8192}$",
           not: { pattern: "^\\s*$" },
         },
         by: { const: "cli" },
@@ -146,6 +141,9 @@ const schema31 = {
           minItems: 1,
           maxItems: 256,
           items: {
+            description:
+              "The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.",
+            $comment: "Copy of objects.schema.json's `signalId`.",
             type: "string",
             pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
           },
@@ -176,7 +174,7 @@ const schema31 = {
         entries: {
           type: "array",
           maxItems: 1024,
-          items: { $ref: "#/$defs/text" },
+          items: { $ref: "#/$defs/displayText" },
         },
       },
     },
@@ -273,17 +271,20 @@ const schema31 = {
       type: "string",
       pattern: "^[0-9a-f]{64}$",
     },
-    text: {
-      description: "Escaped display text, at most 8192 code points.",
+    displayText: {
+      description:
+        "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      $comment: "Copy of objects.schema.json's `displayText`.",
       type: "string",
-      pattern: "^[\\s\\S]{0,8192}$",
+      pattern:
+        "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
     },
     taskId: {
-      description: "The task's ID.",
-      $comment:
-        "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
+      description:
+        "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
+      $comment: "Copy of objects.schema.json's `taskId`.",
       type: "string",
-      pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+      pattern: "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$",
     },
     scopeEntry: {
       description:
@@ -347,19 +348,14 @@ const schema32 = {
         "The sparring default the class sets. Only opt-in exists until A5.",
       const: "optIn",
     },
-    costIfWrong: {
-      description:
-        "What a wrong class would cost, as escaped display text: a misclassification is a ruling the owner can review (03 Intake).",
-      $ref: "#/$defs/text",
-    },
   },
 };
 const schema33 = {
-  description: "The task's ID.",
-  $comment:
-    "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
+  description:
+    "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
+  $comment: "Copy of objects.schema.json's `taskId`.",
   type: "string",
-  pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+  pattern: "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$",
 };
 const schema34 = {
   title: "IntakeClass",
@@ -400,13 +396,8 @@ const schema46 = {
     source: { enum: ["default", "choreDowngrade"] },
   },
 };
-const schema38 = {
-  description: "Escaped display text, at most 8192 code points.",
-  type: "string",
-  pattern: "^[\\s\\S]{0,8192}$",
-};
 const func1 = Object.prototype.hasOwnProperty;
-const pattern4 = new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$", "u");
+const pattern4 = new RegExp("^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$", "u");
 const pattern5 = new RegExp("^intake-rubric-[1-9][0-9]{0,5}$", "u");
 const pattern7 = new RegExp("(^|/)\\.{0,2}(/|$)", "u");
 const pattern8 = new RegExp(
@@ -414,7 +405,6 @@ const pattern8 = new RegExp(
   "u",
 );
 const pattern9 = new RegExp("^[0-9a-f]{64}$", "u");
-const pattern6 = new RegExp("^[\\s\\S]{0,8192}$", "u");
 const schema36 = {
   title: "IntakeReason",
   description:
@@ -424,7 +414,11 @@ const schema36 = {
   required: ["rule", "entries"],
   properties: {
     rule: { $ref: "#/$defs/rule" },
-    entries: { type: "array", maxItems: 1024, items: { $ref: "#/$defs/text" } },
+    entries: {
+      type: "array",
+      maxItems: 1024,
+      items: { $ref: "#/$defs/displayText" },
+    },
   },
 };
 const schema37 = {
@@ -443,6 +437,18 @@ const schema37 = {
     "testsOnly",
   ],
 };
+const schema38 = {
+  description:
+    "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+  $comment: "Copy of objects.schema.json's `displayText`.",
+  type: "string",
+  pattern:
+    "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+};
+const pattern6 = new RegExp(
+  "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+  "u",
+);
 function validate22(
   data,
   {
@@ -563,10 +569,16 @@ function validate22(
             if (!pattern6.test(data2)) {
               const err5 = {
                 instancePath: instancePath + "/entries/" + i0,
-                schemaPath: "#/$defs/text/pattern",
+                schemaPath: "#/$defs/displayText/pattern",
                 keyword: "pattern",
-                params: { pattern: "^[\\s\\S]{0,8192}$" },
-                message: 'must match pattern "' + "^[\\s\\S]{0,8192}$" + '"',
+                params: {
+                  pattern:
+                    "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+                },
+                message:
+                  'must match pattern "' +
+                  "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$" +
+                  '"',
               };
               if (vErrors === null) {
                 vErrors = [err5];
@@ -578,7 +590,7 @@ function validate22(
           } else {
             const err6 = {
               instancePath: instancePath + "/entries/" + i0,
-              schemaPath: "#/$defs/text/type",
+              schemaPath: "#/$defs/displayText/type",
               keyword: "type",
               params: { type: "string" },
               message: "must be string",
@@ -1255,10 +1267,10 @@ function validate21(
             instancePath: instancePath + "/taskId",
             schemaPath: "#/$defs/taskId/pattern",
             keyword: "pattern",
-            params: { pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+            params: { pattern: "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" },
             message:
               'must match pattern "' +
-              "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" +
+              "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" +
               '"',
           };
           if (vErrors === null) {
@@ -1730,42 +1742,8 @@ function validate21(
         errors++;
       }
     }
-    if (data.costIfWrong !== undefined) {
-      let data15 = data.costIfWrong;
-      if (typeof data15 === "string") {
-        if (!pattern6.test(data15)) {
-          const err38 = {
-            instancePath: instancePath + "/costIfWrong",
-            schemaPath: "#/$defs/text/pattern",
-            keyword: "pattern",
-            params: { pattern: "^[\\s\\S]{0,8192}$" },
-            message: 'must match pattern "' + "^[\\s\\S]{0,8192}$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err38];
-          } else {
-            vErrors.push(err38);
-          }
-          errors++;
-        }
-      } else {
-        const err39 = {
-          instancePath: instancePath + "/costIfWrong",
-          schemaPath: "#/$defs/text/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
-        };
-        if (vErrors === null) {
-          vErrors = [err39];
-        } else {
-          vErrors.push(err39);
-        }
-        errors++;
-      }
-    }
   } else {
-    const err40 = {
+    const err38 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -1773,9 +1751,9 @@ function validate21(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err40];
+      vErrors = [err38];
     } else {
-      vErrors.push(err40);
+      vErrors.push(err38);
     }
     errors++;
   }
@@ -1787,7 +1765,7 @@ validate21.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema48 = {
+const schema47 = {
   title: "IntakeOverridden",
   description:
     "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.",
@@ -1811,10 +1789,10 @@ const schema48 = {
     from: { $ref: "#/$defs/class" },
     to: { $ref: "#/$defs/class" },
     reason: {
+      $ref: "#/$defs/displayText",
       description:
-        "The owner's reason, escaped: not empty and not only spaces.",
+        "The owner's reason, escaped: display text that is not only spaces.",
       type: "string",
-      pattern: "^[\\s\\S]{1,8192}$",
       not: { pattern: "^\\s*$" },
     },
     by: { const: "cli" },
@@ -1829,7 +1807,6 @@ const schema48 = {
   },
 };
 const pattern15 = new RegExp("^\\s*$", "u");
-const pattern16 = new RegExp("^[\\s\\S]{1,8192}$", "u");
 const schema52 = {
   title: "IntakeAttestation",
   description: "Proof of who overrode. Until slice SIG only `none` exists.",
@@ -2136,7 +2113,7 @@ function validate27(
       errors++;
     }
     for (const key0 in data) {
-      if (!func1.call(schema48.properties, key0)) {
+      if (!func1.call(schema47.properties, key0)) {
         const err10 = {
           instancePath,
           schemaPath: "#/additionalProperties",
@@ -2177,10 +2154,10 @@ function validate27(
             instancePath: instancePath + "/taskId",
             schemaPath: "#/$defs/taskId/pattern",
             keyword: "pattern",
-            params: { pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+            params: { pattern: "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" },
             message:
               'must match pattern "' +
-              "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" +
+              "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" +
               '"',
           };
           if (vErrors === null) {
@@ -2252,62 +2229,8 @@ function validate27(
     }
     if (data.reason !== undefined) {
       let data4 = data.reason;
-      const _errs13 = errors;
-      const _errs14 = errors;
-      if (typeof data4 === "string") {
-        if (!pattern15.test(data4)) {
-          const err16 = {};
-          if (vErrors === null) {
-            vErrors = [err16];
-          } else {
-            vErrors.push(err16);
-          }
-          errors++;
-        }
-      }
-      var valid4 = _errs14 === errors;
-      if (valid4) {
-        const err17 = {
-          instancePath: instancePath + "/reason",
-          schemaPath: "#/properties/reason/not",
-          keyword: "not",
-          params: {},
-          message: "must NOT be valid",
-        };
-        if (vErrors === null) {
-          vErrors = [err17];
-        } else {
-          vErrors.push(err17);
-        }
-        errors++;
-      } else {
-        errors = _errs13;
-        if (vErrors !== null) {
-          if (_errs13) {
-            vErrors.length = _errs13;
-          } else {
-            vErrors = null;
-          }
-        }
-      }
-      if (typeof data4 === "string") {
-        if (!pattern16.test(data4)) {
-          const err18 = {
-            instancePath: instancePath + "/reason",
-            schemaPath: "#/properties/reason/pattern",
-            keyword: "pattern",
-            params: { pattern: "^[\\s\\S]{1,8192}$" },
-            message: 'must match pattern "' + "^[\\s\\S]{1,8192}$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err18];
-          } else {
-            vErrors.push(err18);
-          }
-          errors++;
-        }
-      } else {
-        const err19 = {
+      if (typeof data4 !== "string") {
+        const err16 = {
           instancePath: instancePath + "/reason",
           schemaPath: "#/properties/reason/type",
           keyword: "type",
@@ -2315,16 +2238,91 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err19];
+          vErrors = [err16];
         } else {
-          vErrors.push(err19);
+          vErrors.push(err16);
         }
         errors++;
+      }
+      if (typeof data4 === "string") {
+        if (!pattern6.test(data4)) {
+          const err17 = {
+            instancePath: instancePath + "/reason",
+            schemaPath: "#/$defs/displayText/pattern",
+            keyword: "pattern",
+            params: {
+              pattern:
+                "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+            },
+            message:
+              'must match pattern "' +
+              "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$" +
+              '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err17];
+          } else {
+            vErrors.push(err17);
+          }
+          errors++;
+        }
+      } else {
+        const err18 = {
+          instancePath: instancePath + "/reason",
+          schemaPath: "#/$defs/displayText/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err18];
+        } else {
+          vErrors.push(err18);
+        }
+        errors++;
+      }
+      const _errs16 = errors;
+      const _errs17 = errors;
+      if (typeof data4 === "string") {
+        if (!pattern15.test(data4)) {
+          const err19 = {};
+          if (vErrors === null) {
+            vErrors = [err19];
+          } else {
+            vErrors.push(err19);
+          }
+          errors++;
+        }
+      }
+      var valid5 = _errs17 === errors;
+      if (valid5) {
+        const err20 = {
+          instancePath: instancePath + "/reason",
+          schemaPath: "#/properties/reason/not",
+          keyword: "not",
+          params: {},
+          message: "must NOT be valid",
+        };
+        if (vErrors === null) {
+          vErrors = [err20];
+        } else {
+          vErrors.push(err20);
+        }
+        errors++;
+      } else {
+        errors = _errs16;
+        if (vErrors !== null) {
+          if (_errs16) {
+            vErrors.length = _errs16;
+          } else {
+            vErrors = null;
+          }
+        }
       }
     }
     if (data.by !== undefined) {
       if ("cli" !== data.by) {
-        const err20 = {
+        const err21 = {
           instancePath: instancePath + "/by",
           schemaPath: "#/properties/by/const",
           keyword: "const",
@@ -2332,9 +2330,9 @@ function validate27(
           message: "must be equal to constant",
         };
         if (vErrors === null) {
-          vErrors = [err20];
+          vErrors = [err21];
         } else {
-          vErrors.push(err20);
+          vErrors.push(err21);
         }
         errors++;
       }
@@ -2360,7 +2358,7 @@ function validate27(
       let data7 = data.scopeSha256;
       if (typeof data7 === "string") {
         if (!pattern9.test(data7)) {
-          const err21 = {
+          const err22 = {
             instancePath: instancePath + "/scopeSha256",
             schemaPath: "#/$defs/sha256/pattern",
             keyword: "pattern",
@@ -2368,14 +2366,14 @@ function validate27(
             message: 'must match pattern "' + "^[0-9a-f]{64}$" + '"',
           };
           if (vErrors === null) {
-            vErrors = [err21];
+            vErrors = [err22];
           } else {
-            vErrors.push(err21);
+            vErrors.push(err22);
           }
           errors++;
         }
       } else {
-        const err22 = {
+        const err23 = {
           instancePath: instancePath + "/scopeSha256",
           schemaPath: "#/$defs/sha256/type",
           keyword: "type",
@@ -2383,9 +2381,9 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err22];
+          vErrors = [err23];
         } else {
-          vErrors.push(err22);
+          vErrors.push(err23);
         }
         errors++;
       }
@@ -2394,7 +2392,7 @@ function validate27(
       let data8 = data.rubricVersion;
       if (typeof data8 === "string") {
         if (!pattern5.test(data8)) {
-          const err23 = {
+          const err24 = {
             instancePath: instancePath + "/rubricVersion",
             schemaPath: "#/$defs/rubricVersion/pattern",
             keyword: "pattern",
@@ -2403,14 +2401,14 @@ function validate27(
               'must match pattern "' + "^intake-rubric-[1-9][0-9]{0,5}$" + '"',
           };
           if (vErrors === null) {
-            vErrors = [err23];
+            vErrors = [err24];
           } else {
-            vErrors.push(err23);
+            vErrors.push(err24);
           }
           errors++;
         }
       } else {
-        const err24 = {
+        const err25 = {
           instancePath: instancePath + "/rubricVersion",
           schemaPath: "#/$defs/rubricVersion/type",
           keyword: "type",
@@ -2418,9 +2416,9 @@ function validate27(
           message: "must be string",
         };
         if (vErrors === null) {
-          vErrors = [err24];
+          vErrors = [err25];
         } else {
-          vErrors.push(err24);
+          vErrors.push(err25);
         }
         errors++;
       }
@@ -2429,27 +2427,12 @@ function validate27(
       let data9 = data.friction;
       if (data9 && typeof data9 == "object" && !Array.isArray(data9)) {
         if (data9.intensity === undefined) {
-          const err25 = {
+          const err26 = {
             instancePath: instancePath + "/friction",
             schemaPath: "#/$defs/friction/required",
             keyword: "required",
             params: { missingProperty: "intensity" },
             message: "must have required property '" + "intensity" + "'",
-          };
-          if (vErrors === null) {
-            vErrors = [err25];
-          } else {
-            vErrors.push(err25);
-          }
-          errors++;
-        }
-        if (data9.source === undefined) {
-          const err26 = {
-            instancePath: instancePath + "/friction",
-            schemaPath: "#/$defs/friction/required",
-            keyword: "required",
-            params: { missingProperty: "source" },
-            message: "must have required property '" + "source" + "'",
           };
           if (vErrors === null) {
             vErrors = [err26];
@@ -2458,9 +2441,24 @@ function validate27(
           }
           errors++;
         }
+        if (data9.source === undefined) {
+          const err27 = {
+            instancePath: instancePath + "/friction",
+            schemaPath: "#/$defs/friction/required",
+            keyword: "required",
+            params: { missingProperty: "source" },
+            message: "must have required property '" + "source" + "'",
+          };
+          if (vErrors === null) {
+            vErrors = [err27];
+          } else {
+            vErrors.push(err27);
+          }
+          errors++;
+        }
         for (const key1 in data9) {
           if (!(key1 === "intensity" || key1 === "source")) {
-            const err27 = {
+            const err28 = {
               instancePath: instancePath + "/friction",
               schemaPath: "#/$defs/friction/additionalProperties",
               keyword: "additionalProperties",
@@ -2468,9 +2466,9 @@ function validate27(
               message: "must NOT have additional properties",
             };
             if (vErrors === null) {
-              vErrors = [err27];
+              vErrors = [err28];
             } else {
-              vErrors.push(err27);
+              vErrors.push(err28);
             }
             errors++;
           }
@@ -2483,29 +2481,11 @@ function validate27(
             data10 === "low" ||
             data10 === "high"
           )) {
-            const err28 = {
+            const err29 = {
               instancePath: instancePath + "/friction/intensity",
               schemaPath: "#/$defs/friction/properties/intensity/enum",
               keyword: "enum",
               params: { allowedValues: schema46.properties.intensity.enum },
-              message: "must be equal to one of the allowed values",
-            };
-            if (vErrors === null) {
-              vErrors = [err28];
-            } else {
-              vErrors.push(err28);
-            }
-            errors++;
-          }
-        }
-        if (data9.source !== undefined) {
-          let data11 = data9.source;
-          if (!(data11 === "default" || data11 === "choreDowngrade")) {
-            const err29 = {
-              instancePath: instancePath + "/friction/source",
-              schemaPath: "#/$defs/friction/properties/source/enum",
-              keyword: "enum",
-              params: { allowedValues: schema46.properties.source.enum },
               message: "must be equal to one of the allowed values",
             };
             if (vErrors === null) {
@@ -2516,8 +2496,26 @@ function validate27(
             errors++;
           }
         }
+        if (data9.source !== undefined) {
+          let data11 = data9.source;
+          if (!(data11 === "default" || data11 === "choreDowngrade")) {
+            const err30 = {
+              instancePath: instancePath + "/friction/source",
+              schemaPath: "#/$defs/friction/properties/source/enum",
+              keyword: "enum",
+              params: { allowedValues: schema46.properties.source.enum },
+              message: "must be equal to one of the allowed values",
+            };
+            if (vErrors === null) {
+              vErrors = [err30];
+            } else {
+              vErrors.push(err30);
+            }
+            errors++;
+          }
+        }
       } else {
-        const err30 = {
+        const err31 = {
           instancePath: instancePath + "/friction",
           schemaPath: "#/$defs/friction/type",
           keyword: "type",
@@ -2525,15 +2523,15 @@ function validate27(
           message: "must be object",
         };
         if (vErrors === null) {
-          vErrors = [err30];
+          vErrors = [err31];
         } else {
-          vErrors.push(err30);
+          vErrors.push(err31);
         }
         errors++;
       }
     }
   } else {
-    const err31 = {
+    const err32 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -2541,9 +2539,9 @@ function validate27(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err31];
+      vErrors = [err32];
     } else {
-      vErrors.push(err31);
+      vErrors.push(err32);
     }
     errors++;
   }
@@ -2585,12 +2583,18 @@ const schema57 = {
       type: "array",
       minItems: 1,
       maxItems: 256,
-      items: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$" },
+      items: {
+        description:
+          "The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.",
+        $comment: "Copy of objects.schema.json's `signalId`.",
+        type: "string",
+        pattern: "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+      },
     },
     rubricVersion: { $ref: "#/$defs/rubricVersion" },
   },
 };
-const pattern20 = new RegExp("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", "u");
+const pattern19 = new RegExp("^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", "u");
 function validate31(
   data,
   {
@@ -2766,10 +2770,10 @@ function validate31(
             instancePath: instancePath + "/taskId",
             schemaPath: "#/$defs/taskId/pattern",
             keyword: "pattern",
-            params: { pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" },
+            params: { pattern: "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" },
             message:
               'must match pattern "' +
-              "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" +
+              "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$" +
               '"',
           };
           if (vErrors === null) {
@@ -2894,7 +2898,7 @@ function validate31(
         for (let i0 = 0; i0 < len0; i0++) {
           let data6 = data5[i0];
           if (typeof data6 === "string") {
-            if (!pattern20.test(data6)) {
+            if (!pattern19.test(data6)) {
               const err16 = {
                 instancePath: instancePath + "/signalIds/" + i0,
                 schemaPath: "#/properties/signalIds/items/pattern",

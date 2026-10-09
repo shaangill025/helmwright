@@ -56,10 +56,6 @@
         "sparring": {
           "description": "The sparring default the class sets. Only opt-in exists until A5.",
           "const": "optIn"
-        },
-        "costIfWrong": {
-          "description": "What a wrong class would cost, as escaped display text: a misclassification is a ruling the owner can review (03 Intake).",
-          "$ref": "#/$defs/text"
         }
       }
     },
@@ -86,9 +82,9 @@
         "from": { "$ref": "#/$defs/class" },
         "to": { "$ref": "#/$defs/class" },
         "reason": {
-          "description": "The owner's reason, escaped: not empty and not only spaces.",
+          "$ref": "#/$defs/displayText",
+          "description": "The owner's reason, escaped: display text that is not only spaces.",
           "type": "string",
-          "pattern": "^[\\s\\S]{1,8192}$",
           "not": { "pattern": "^\\s*$" }
         },
         "by": { "const": "cli" },
@@ -130,6 +126,8 @@
           "minItems": 1,
           "maxItems": 256,
           "items": {
+            "description": "The ID of a signal that raised a decision, such as a floor signal ID or the event ID of an `intake.classified` event.",
+            "$comment": "Copy of objects.schema.json's `signalId`.",
             "type": "string",
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
           }
@@ -158,7 +156,7 @@
         "entries": {
           "type": "array",
           "maxItems": 1024,
-          "items": { "$ref": "#/$defs/text" }
+          "items": { "$ref": "#/$defs/displayText" }
         }
       }
     },
@@ -248,16 +246,17 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
-    "text": {
-      "description": "Escaped display text, at most 8192 code points.",
+    "displayText": {
+      "description": "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
+      "$comment": "Copy of objects.schema.json's `displayText`.",
       "type": "string",
-      "pattern": "^[\\s\\S]{0,8192}$"
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$"
     },
     "taskId": {
-      "description": "The task's ID.",
-      "$comment": "Copy of the task ID pattern of run.ts and event.schema.json's `id`.",
+      "description": "Kind-prefixed task ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `taskId`.",
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+      "pattern": "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$"
     },
     "scopeEntry": {
       "description": "A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.",
