@@ -114,4 +114,20 @@ describe("objectFaults (B5-4b)", () => {
       "seq 12: run.started without run.recorded",
     ]);
   });
+
+  it("faults a second end or start, also of a legacy run with no Run row", () => {
+    const old = legacy(logged(0));
+    const again = [
+      ...old,
+      event(7, "run.terminated", {}),
+      event(8, "run.started", started),
+    ];
+    expect(faults(again)).toEqual([
+      "seq 8: more than one run.started in one run",
+      "seq 7: more than one run.terminated in one run",
+    ]);
+    expect(faults([...logged(0), event(9, "run.terminated", {})])).toEqual([
+      "seq 9: more than one run.terminated in one run",
+    ]);
+  });
 });

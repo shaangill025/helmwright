@@ -25,6 +25,12 @@ export function objectFaults(
   const records = events.filter((e) => e.type === "run.recorded");
   const [recorded, ...extra] = records;
   for (const e of extra) fault(e.seq, "more than one run.recorded in one run");
+  // A legacy run has no Run row to refuse a second end: replay must not trust the last.
+  for (const type of ["run.started", "run.terminated"]) {
+    for (const e of events.filter((x) => x.type === type).slice(1)) {
+      fault(e.seq, `more than one ${type} in one run`);
+    }
+  }
   if (recorded === undefined) {
     const first = Math.min(
       ...objects.filter((e) => e.type === "run.recorded").map((e) => e.seq),

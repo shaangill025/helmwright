@@ -179,7 +179,12 @@ function inspect(path: string, page: { fromSeq: number; limit: number }) {
   }
 }
 
-const BAD_EVENT = /(?:corrupt|cannot apply) event at seq /;
+// Anchored, and checked on the error and its causes (a migration wraps it), so text from a
+// path in another message cannot match.
+const BAD_EVENT = /^session log: (?:corrupt|cannot apply) event at seq \d+: /;
+const failedClosed = (error: unknown): boolean =>
+  error instanceof Error &&
+  (BAD_EVENT.test(error.message) || failedClosed(error.cause));
 
 /** `fn()`; if the log fails closed (a forged event), its error with the hint for `name`. */
 function refusing<T>(name: string, fn: () => T): T {
@@ -188,7 +193,7 @@ function refusing<T>(name: string, fn: () => T): T {
   } catch (error) {
     // Only a log that fails closed gets the hint; a lock or a missing file keeps its text.
     const message = errorMessage(error);
-    if (!BAD_EVENT.test(message)) throw error;
+    if (!failedClosed(error)) throw error;
     throw new Error(
       name +
         " refused (see inspect; until SIG a bad event needs a new state dir): " +
