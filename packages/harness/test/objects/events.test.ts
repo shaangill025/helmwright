@@ -383,21 +383,32 @@ describe("object event builders and createdRecord (OD-1, OD-8)", () => {
   });
 });
 
-describe("replay through the real CLI (B5-2, e2e without Docker)", () => {
-  it("fails a replay that includes a raw-inserted owner event", () => {
-    append("run.started", { tools: [] });
-    append("run.terminated", { contextDigest: contextDigest([], []) });
-    const replay = () =>
-      spawnSync(process.execPath, [CLI, "replay", runId, "--state-dir", dir], {
-        encoding: "utf8",
-        timeout: 60_000,
+// It spawns the CLI twice: an explicit timeout, not the 5 s default.
+describe(
+  "replay through the real CLI (B5-2, e2e without Docker)",
+  { timeout: 120_000 },
+  () => {
+    it("fails a replay that includes a raw-inserted owner event", () => {
+      append("run.started", { tools: [] });
+      append("run.terminated", { contextDigest: contextDigest([], []) });
+      const replay = () =>
+        spawnSync(
+          process.execPath,
+          [CLI, "replay", runId, "--state-dir", dir],
+          {
+            encoding: "utf8",
+            timeout: 60_000,
+          },
+        );
+      const control = replay();
+      expect(control.status, control.stderr).toBe(0);
+      rawInsert("decision.owner.precommit", {
+        kind: "decision.owner.precommit",
       });
-    const control = replay();
-    expect(control.status, control.stderr).toBe(0);
-    rawInsert("decision.owner.precommit", { kind: "decision.owner.precommit" });
-    const refused = replay();
-    expect(refused.status).toBe(1);
-    expect(refused.stderr).toMatch(/corrupt event at seq 2/);
-    expect(refused.stdout).toBe("");
-  });
-});
+      const refused = replay();
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toMatch(/corrupt event at seq 2/);
+      expect(refused.stdout).toBe("");
+    });
+  },
+);

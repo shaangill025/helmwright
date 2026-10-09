@@ -23,8 +23,11 @@ const USAGE =
 
 /**
  * run: 0 completed, 2 incomplete, 1 failed (also on a floor finding, OQ-B3-2);
- * replay: 0 match, 3 mismatch (the context digest differs or `permissionFaults`,
- * which includes the floor faults, is not empty), 4 never terminated;
+ * replay, first match wins (B5-4b): 64 bad run ID; 1 no log, no events of the run, or a
+ * bad event anywhere in the log; 3 the objects projection does not match the events
+ * (also for a run that never terminated); 4 never terminated; 3 the context digest
+ * differs, or `permissionFaults` (which includes the floor faults) or `objectFaults` is
+ * not empty; 0 otherwise;
  * reap: 0, 1 if anything could not be reaped; inspect, rebuild: 0, 1 failed; 64 usage.
  */
 const EXIT = {
@@ -151,33 +154,56 @@ function logFile(stateDir: string): string {
  * its recovery is a new state dir.
  */
 function rebuild(stateDir: string): string {
-  try {
+  return refusing("rebuild", () => {
     const log = openSessionLog(logFile(stateDir));
     try {
       return log.rebuildProjections();
     } finally {
       log.close();
     }
+  });
+}
+
+/** inspectEvents, with SQLite's text for a state dir it cannot write explained (B5-4b). */
+function inspect(path: string, page: { fromSeq: number; limit: number }) {
+  try {
+    return inspectEvents(path, page.fromSeq, page.limit);
   } catch (error) {
-    // Only a log that fails closed gets the hint; a lock or a missing file keeps its text.
     const message = errorMessage(error);
-    if (!BAD_EVENT.test(message)) throw error;
+    if (!message.includes("attempt to write a readonly database")) throw error;
     throw new Error(
-      "rebuild refused (see inspect; until SIG a bad event needs a new state dir): " +
+      "inspect needs write access to the state dir, where SQLite creates the log's -shm file (WAL): " +
         message,
       { cause: error },
     );
   }
 }
+
 const BAD_EVENT = /(?:corrupt|cannot apply) event at seq /;
+
+/** `fn()`; if the log fails closed (a forged event), its error with the hint for `name`. */
+function refusing<T>(name: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (error) {
+    // Only a log that fails closed gets the hint; a lock or a missing file keeps its text.
+    const message = errorMessage(error);
+    if (!BAD_EVENT.test(message)) throw error;
+    throw new Error(
+      name +
+        " refused (see inspect; until SIG a bad event needs a new state dir): " +
+        message,
+      { cause: error },
+    );
+  }
+}
 
 async function main(args: readonly string[]): Promise<number> {
   try {
     const { name, target, stateDir, override, page } = command(args);
     if (name === "inspect") {
       // B5-3b decision 2 (A): raw rows, read-only, never migrated or projected.
-      const path = logFile(stateDir);
-      const { events, next } = inspectEvents(path, page.fromSeq, page.limit);
+      const { events, next } = inspect(logFile(stateDir), page);
       for (const event of events) console.log(jsonLine(event));
       if (next !== null) {
         console.error(
@@ -201,11 +227,12 @@ async function main(args: readonly string[]): Promise<number> {
       return result.failures.length === 0 ? EXIT.ok : EXIT.failed;
     }
     if (name === "replay") {
-      const result = replayRun(target, stateDir);
+      const result = refusing("replay", () => replayRun(target, stateDir));
       console.log(jsonLine(result));
+      if (!result.projections.match) return EXIT.mismatch;
       if (!result.terminated) return EXIT.unterminated;
-      const bound = result.permissionFaults.length === 0;
-      return result.match && bound ? EXIT.ok : EXIT.mismatch;
+      const faults = [...result.permissionFaults, ...result.objectFaults];
+      return result.match && faults.length === 0 ? EXIT.ok : EXIT.mismatch;
     }
     const controller = new AbortController();
     const cancel = () => {
