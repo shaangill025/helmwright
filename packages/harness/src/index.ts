@@ -188,6 +188,12 @@ export {
   overrideDirection,
   reclassifyUp,
 } from "./intake/rubric.ts";
+export {
+  INTAKE_COST_IF_WRONG,
+  intakeClassified,
+  intakeRuling,
+  intakeRulingId,
+} from "./intake/events.ts";
 export type { FloorChange } from "./floor/rules.ts";
 export {
   FLOOR_RULES_VERSION,

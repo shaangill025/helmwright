@@ -51,6 +51,10 @@ export type IntakeSurfaceChange = "schema" | "publicApi" | "storage" | "wire";
  * Proof of who overrode. Until slice SIG only `none` exists.
  */
 export type IntakeAttestation = IntakeAttestationNone;
+/**
+ * Kind-prefixed decision ID, also a valid session-log ID (at most 128 characters).
+ */
+export type DecisionId = string;
 
 /**
  * The rubric classified the task. `scopeSha256` is the SHA-256 of the canonical JSON of the sorted scope (of `[]` when the task declared none) and `ring0Sha256` that of the sorted Ring 0 paths the rubric used, so the class is bound to the exact scope and Ring 0 paths it was computed from.
@@ -121,7 +125,7 @@ export interface IntakeFriction {
   source: "default" | "choreDowngrade";
 }
 /**
- * The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.
+ * The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it. `decisionId` is the ID of the run's intake Ruling, which the override overrules (B5-5, Q61); the replay checks it.
  */
 export interface IntakeOverridden {
   kind: "intake.overridden";
@@ -140,6 +144,7 @@ export interface IntakeOverridden {
   scopeSha256: string;
   rubricVersion: RubricVersion;
   friction: IntakeFriction;
+  decisionId: DecisionId;
 }
 export interface IntakeAttestationNone {
   kind: "none";

@@ -233,17 +233,18 @@
   {
     "component": "packages/harness/src/run/run.ts",
     "ring": 0,
-    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. B5-4: task.created (a new Task only) and run.recorded are logged in run.started's transaction, before it; the worktree's Ring 0 link targets are read before them, so the Run's class is final, and a failure of that read still fails the run in connect at its old point. A re-run reuses an identical Task and refuses a changed one (exit 64), checked again in that transaction; two processes racing on one new task ID can orphan a worktree (one writer process per log). A terminal error is escaped once (displayText). The engine receives the context derived from the log, which in dev mode must equal the loop's in-memory messages; until SIG (M1) adds a hash chain over the log, the context digest detects divergence, not tampering. Its git calls run through runGit and share config.ts's trust in .git/config.",
+    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. B5-4: task.created (a new Task only) and run.recorded are logged in run.started's transaction, before it; the worktree's Ring 0 link targets are read before them, so the Run's class is final, and a failure of that read still fails the run in connect at its old point. A re-run reuses an identical Task and refuses a changed one (exit 64), checked again in that transaction; two processes racing on one new task ID can orphan a worktree. B5-5: the run and intake.classified IDs are made first, so a Ruling the log would refuse is exit 64 before the worktree. A terminal error is escaped once (displayText). The engine gets the context derived from the log (in dev mode equal to the loop's messages); until SIG (M1) adds a hash chain, the context digest detects divergence, not tampering. Its git calls run through runGit and share config.ts's trust in .git/config.",
     "evidence": [
       "06 Spine",
       "decisions Q5",
       "decisions B5-4 owner answers",
+      "decisions B5-5 owner answers",
       "packages/harness/test/run/run.test.ts",
       "packages/harness/test/e2e/cli.test.ts",
       "packages/harness/test/config/config.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-08",
+    "lastReviewed": "2026-10-09",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
@@ -277,16 +278,18 @@
   {
     "component": "packages/harness/src/intake/events.ts",
     "ring": 0,
-    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. An override's from is always the class just classified; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG), whose inputSha256 binds the override's from, to, reason and scopeSha256. The task is classified again with the worktree's Ring 0 link targets added, which can only raise the class, before run.started (B5-4), and that class is recorded on the Run; the logging order is unchanged. If the rubric refuses that input (over its 1024 Ring 0 paths) the run fails with a fixed reason. intake.overridden logs the effective friction of to, and replay checks it against the config defaults, that intake events come before the first engine step, and that an approved override ask is used.",
+    "assumption": "Each run is classified once, after the Ring 0 run-start check and before the first engine step, and the class never enters the engine context. B5-5: intake.classified and its intake Ruling (authority harness, class null, its signal the classified event ID) are logged in one transaction; the Ruling's what, why and costIfWrong derive from that event alone and replay recomputes them, so the cost-if-wrong table is keyed by rubric version: new wording is a new version. An override's from is always the class just classified and it names that Ruling; an upward override is logged without an ask, and a downward one only after an approved always-ask on the reserved helmwright.intake.override call ID (attestation none until SIG), bound to its from, to, reason and scopeSha256. Ring 0 link targets only raise the class, before run.started (B5-4); past the rubric's limits the run fails. Replay checks an override's friction, that intake events precede the first engine step and that an approved ask is used.",
     "evidence": [
       "03 Intake",
       "decisions Q52",
       "decisions B5-4 owner answers",
+      "decisions B5-5 owner answers",
+      "packages/harness/test/intake/events.test.ts",
       "packages/harness/test/e2e/cli.test.ts",
       "packages/harness/test/permission/faults.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-08",
+    "lastReviewed": "2026-10-09",
     "reviewTrigger": ["model", "milestone"]
   },
   {
@@ -363,9 +366,10 @@
   {
     "component": "packages/harness/src/objects/faults.ts",
     "ring": 0,
-    "assumption": "Replay's object relations are read from the events, never the rows (B5-4b): a run has at most one run.recorded, before its run.started, with that event's taskId, baseCommit and engine, and the class of its intake.classified when the run logged one (a refused Ring 0 ask or link read logs none); its Task's text is run.started's title. 2026-10-09 (OD-B54-3 i): a run with no run.recorded is legacy, not a fault, only if no run.recorded precedes its run.started in the log, so a B5-3 build that runs in a state dir after a B5-4 one makes runs that replay faults (exit 3): use a new state dir; review at the milestone end.",
+    "assumption": "Replay's object relations are read from the events, never the rows, and only for a terminated run (B5-4b): a run has at most one run.recorded, before its run.started, with that event's taskId, baseCommit and engine, and the class of its intake.classified if it logged one; its Task's text is run.started's title. B5-5: each intake.classified has its intake Ruling at the next seq, equal to the one recomputed from it; the run has no other one, and each intake.overridden after it names it. Legacy (OD-B54-3 i), not a fault: a run with no run.recorded if none precedes its run.started, and a run with no Ruling if none precedes its intake.classified, so an older build that runs in a state dir after a newer one makes runs that replay faults (exit 3): use a new state dir; review at the milestone end.",
     "evidence": [
       "decisions B5-4 owner answers",
+      "decisions B5-5 owner answers",
       "packages/harness/test/objects/faults.test.ts",
       "packages/harness/test/e2e/cli.test.ts"
     ],
@@ -438,7 +442,7 @@
   {
     "component": "packages/schema/schemas/intake-event.schema.json",
     "ring": 0,
-    "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths, and no costIfWrong (the intake Ruling holds it, B5-5); an owner override with the task ID, the scope hash, the rubric version, a reason that is not only spaces and attestation none until slice SIG; and a reclassification with the task ID and its signals. The task ID, signal IDs, reason entries and the override reason are copies of objects.schema.json's taskId, signalId and displayText (B5-5a). Scope, declared and reason entries and the reason exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema. Only the writer validates intake payloads, so older rows (such as a task ID without task-) are not checked again on read.",
+    "assumption": "Each classification is logged with its task ID, rubric version and the SHA-256 of its sorted scope and of its sorted Ring 0 paths, and no costIfWrong (the intake Ruling holds it, B5-5); an owner override with the task ID, the scope hash, the rubric version, a reason that is not only spaces, attestation none until slice SIG and the ID of the run's intake Ruling (B5-5); and a reclassification with the task ID and its signals. The task ID, signal IDs, reason entries and the override reason are copies of objects.schema.json's taskId, signalId and displayText (B5-5a), and decisionId its decisionId (B5-5b). Scope, declared and reason entries and the reason exclude controls and invisible characters; strictly upward is enforced by the harness, not the schema. Only the writer validates intake payloads, so older rows (such as a task ID without task-) are not checked again on read.",
     "evidence": [
       "03 Intake",
       "decisions Q52",

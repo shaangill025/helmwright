@@ -61,7 +61,7 @@
     },
     "overridden": {
       "title": "IntakeOverridden",
-      "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it.",
+      "description": "The owner overrode the class from the CLI with a reason. A downward override is approved at the TTY first; the attestation is none until slice SIG. `friction` is the effective friction of `to` by the rubric's rule under the run's friction config (`minimal` from the chore downgrade for a chore, otherwise the default intensity); the replay checks it. `decisionId` is the ID of the run's intake Ruling, which the override overrules (B5-5, Q61); the replay checks it.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -74,7 +74,8 @@
         "attestation",
         "scopeSha256",
         "rubricVersion",
-        "friction"
+        "friction",
+        "decisionId"
       ],
       "properties": {
         "kind": { "const": "intake.overridden" },
@@ -94,7 +95,8 @@
           "description": "The `scopeSha256` of the classification overridden, so the override is bound to the scope the owner saw."
         },
         "rubricVersion": { "$ref": "#/$defs/rubricVersion" },
-        "friction": { "$ref": "#/$defs/friction" }
+        "friction": { "$ref": "#/$defs/friction" },
+        "decisionId": { "$ref": "#/$defs/decisionId" }
       }
     },
     "reclassified": {
@@ -257,6 +259,12 @@
       "$comment": "Copy of objects.schema.json's `taskId`.",
       "type": "string",
       "pattern": "^task-[A-Za-z0-9][A-Za-z0-9_-]{0,122}$"
+    },
+    "decisionId": {
+      "description": "Kind-prefixed decision ID, also a valid session-log ID (at most 128 characters).",
+      "$comment": "Copy of objects.schema.json's `decisionId`.",
+      "type": "string",
+      "pattern": "^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
     },
     "scopeEntry": {
       "description": "A scope entry: an entry without a backslash, relative (no leading `/`) and without empty, `.` or `..` segments, as the rubric requires.",

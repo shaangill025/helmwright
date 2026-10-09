@@ -40,6 +40,7 @@ import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
   intakeOverridden,
+  intakeRuling,
   type IntakeOverride,
 } from "../intake/events.ts";
 import {
@@ -438,13 +439,14 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     type: string,
     payload: Record<string, unknown>,
     final = false,
+    eventId: string = randomUUID(),
   ): Event => {
     if (ended && !final) {
       throw new Error("the run has ended");
     }
     try {
       return log.append({
-        eventId: randomUUID(),
+        eventId,
         graphId,
         runId,
         nodeId,
@@ -510,7 +512,9 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
         if (ended) throw new Error("the run has ended");
         try {
           log.transaction(() => {
-            for (const { type, payload } of entries) append(type, payload);
+            for (const { type, payload, eventId } of entries) {
+              append(type, payload, false, eventId);
+            }
           });
         } catch (error) {
           logFailure ??= { error };
@@ -696,17 +700,25 @@ export interface IntakeShown {
   readonly friction: IntakeFriction;
 }
 
-/** A run's intake events for `result`, built and checked up front. @throws IntakeError */
+/**
+ * A run's intake events for `result`, built and checked up front. B5-5: `ids` are the
+ * run's ID and the event ID `intake.classified` will have, so its Ruling and the
+ * override's link to it are built and checked here too.
+ * @throws IntakeError
+ */
 function intakeRecords(
   task: Task,
   result: IntakeResult,
   override: IntakeOverride | undefined,
   friction: IntakeInput["friction"],
+  ids: { readonly runId: string; readonly classifiedId: string },
 ) {
   const scope = Array.isArray(task.intake.scope)
     ? (task.intake.scope as string[])
     : [];
   const declared = task.intake.declared as unknown as IntakeDeclared;
+  const classified = intakeClassified(task.id, scope, declared, result);
+  const ruling = intakeRuling(ids.runId, ids.classifiedId, classified);
   const direction =
     override === undefined
       ? "same"
@@ -714,9 +726,8 @@ function intakeRecords(
   const overridden =
     override === undefined || direction === "same"
       ? undefined
-      : intakeOverridden(task.id, result, override, friction);
-  const classified = intakeClassified(task.id, scope, declared, result);
-  return { result, classified, direction, overridden };
+      : intakeOverridden(task.id, result, override, friction, ruling.id);
+  return { result, classified, ruling, direction, overridden };
 }
 
 export interface RunTaskResult extends RunEnd {
@@ -753,9 +764,11 @@ export const RING0_NOT_APPROVED =
  * Ctrl-C or end of input at the prompt) ends the run incomplete. N-d: any other
  * answer that is not an approval, such as one not viewed to its end, fails it.
  * B10-2: the task is classified (intake-rubric-1) after the config is loaded, and
- * `intake.classified` is logged after the Ring 0 check. An upward or downward
- * override logs `intake.overridden`; a downward one is first asked like the Ring 0
- * change, and unless approved the run fails with INTAKE_OVERRIDE_NOT_APPROVED.
+ * `intake.classified` is logged after the Ring 0 check, B5-5 with its intake Ruling
+ * (`intakeRuling`) as the next event in one transaction. An upward or downward
+ * override logs `intake.overridden`, linked to that Ruling; a downward one is first
+ * asked like the Ring 0 change, and unless approved the run fails with
+ * INTAKE_OVERRIDE_NOT_APPROVED.
  * B10-3: a reclassification with the worktree's Ring 0 link targets that the rubric
  * refuses fails the run with INTAKE_LINKS_REFUSED. B5-4: those targets are read before
  * `run.started`, which is logged in one transaction after `task.created` (only for a
@@ -794,10 +807,15 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       ring0Paths: [...ring0Paths, ...links],
       friction,
     });
+  const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
+    (kind) => kind + "-" + randomUUID(),
+  ) as [string, string, string];
+  // B5-5: the Ruling's signal, so it is built with the run's other intake events.
+  const ids = { runId, classifiedId: randomUUID() };
   // Validated before any workspace work; reclassified with the link targets below.
   let intake: ReturnType<typeof intakeRecords>;
   try {
-    intake = intakeRecords(task, classifyWith([]), override, friction);
+    intake = intakeRecords(task, classifyWith([]), override, friction, ids);
   } catch (error) {
     if (!(error instanceof IntakeError)) throw error;
     throw new UsageError("task." + error.message, { cause: error });
@@ -812,7 +830,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       throw new Error(INTAKE_LINKS_REFUSED, { cause: error });
     }
     return overrideDirection(intake.result.class, linked.class) === "up"
-      ? intakeRecords(task, linked, override, friction)
+      ? intakeRecords(task, linked, override, friction, ids)
       : intake;
   };
   // B5-4: the Task's payload, built and checked before anything is created.
@@ -829,9 +847,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     throw new UsageError(error.message, { cause: error });
   }
   const stateDir = resolve(options.stateDir);
-  const [graphId, runId, nodeId] = ["graph", "run", "node"].map(
-    (kind) => kind + "-" + randomUUID(),
-  ) as [string, string, string];
   const workspaceRoot = join(stateDir, WORKSPACES);
   // Every argument is validated before anything is created or any docker work.
   try {
@@ -954,9 +969,17 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           accepted("approved");
         }
         if (linkRead !== undefined && "error" in linkRead) throw linkRead.error;
-        const { result, classified, direction, overridden } = intake;
+        const { result, classified, ruling, direction, overridden } = intake;
         // B10-2: after the Ring 0 check, before the first engine step; never in the context.
-        emit("intake.classified", { ...classified });
+        // B5-5: its intake Ruling is the next event, in the same transaction.
+        emitAll([
+          {
+            type: "intake.classified",
+            payload: { ...classified },
+            eventId: ids.classifiedId,
+          },
+          { type: "decision.opened", payload: { ...ruling } },
+        ]);
         options.onIntake?.({ kind: "classified", ...result });
         if (overridden !== undefined && direction === "down") {
           const { from, to, reason, scopeSha256 } = overridden;
@@ -1073,7 +1096,10 @@ export type ReplayResult =
        * faults (`floorFaults`); empty if none.
        */
       readonly permissionFaults: string[];
-      /** How the run's Task and Run break their relations (B5-4b); empty if none. */
+      /**
+       * How the run's Task and Run (B5-4b) and its intake Ruling (B5-5) break their
+       * relations; empty if none.
+       */
       readonly objectFaults: string[];
       readonly projections: ProjectionCheck;
     }
@@ -1091,7 +1117,8 @@ export type ReplayResult =
  * owner was asked (`permissionFaults`, SF3), and that a completed run has a passing
  * `floor.checked` (`floorFaults`, B3-2). B5-4b: first it verifies the log's object
  * projections (`projections`, also for a run that never terminated), and it checks the
- * run's Task and Run relations (`objectFaults`). The replay passes only if both `match`
+ * run's Task and Run relations and B5-5 its intake Ruling, recomputed from
+ * `intake.classified` (`objectFaults`, only for a terminated run). The replay passes only if both `match`
  * values are true and both fault lists are empty. Executes no effects. Without a hash
  * chain a fully rewritten, self-consistent log can still pass; see
  * `contextDigest`.
@@ -1131,6 +1158,7 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
       objectFaults: objectFaults(events, [
         ...log.events({ type: "task.created" }),
         ...log.events({ type: "run.recorded" }),
+        ...log.events({ type: "decision.opened" }),
       ]),
       projections,
     };
