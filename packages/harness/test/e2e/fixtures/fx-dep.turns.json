@@ -1,0 +1,80 @@
+[
+  {
+    "text": "Adding the vetted duration library from app/vendor/ as a dependency.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/package.json <<'EOF'\n{\n  \"name\": \"fxcli\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"license\": \"Apache-2.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"node scripts/vendor-install.mjs && node --test\"\n  },\n  \"dependencies\": {\n    \"@helmwright/fx-duration\": \"file:vendor/fx-duration\"\n  }\n}\nEOF\n"
+          ]
+        }
+      },
+      {
+        "id": "call-2",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/pnpm-lock.yaml <<'EOF'\nlockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .:\n    dependencies:\n      '@helmwright/fx-duration':\n        specifier: file:vendor/fx-duration\n        version: file:vendor/fx-duration\n\npackages:\n\n  '@helmwright/fx-duration@file:vendor/fx-duration':\n    resolution: {directory: vendor/fx-duration, type: directory}\n\nsnapshots:\n\n  '@helmwright/fx-duration@file:vendor/fx-duration': {}\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Parsing --timeout with the library, with tests.",
+    "toolCalls": [
+      {
+        "id": "call-3",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/src/timeout.js <<'EOF'\nimport { parseDuration } from \"@helmwright/fx-duration\";\n\n/** Parses a --timeout value: whole milliseconds, or a duration such as 90s, 5m or 1h30m. */\nexport function parseTimeout(text) {\n  return /^-?\\d+$/.test(text) ? Number(text) : parseDuration(text);\n}\nEOF\n"
+          ]
+        }
+      },
+      {
+        "id": "call-4",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/test/duration.test.js <<'EOF'\nimport assert from \"node:assert/strict\";\nimport { test } from \"node:test\";\nimport { parseTimeout } from \"../src/timeout.js\";\n\ntest(\"parses durations\", () => {\n  assert.equal(parseTimeout(\"90s\"), 90_000);\n  assert.equal(parseTimeout(\"5m\"), 300_000);\n  assert.equal(parseTimeout(\"1h30m\"), 5_400_000);\n});\n\ntest(\"rejects a malformed duration\", () => {\n  assert.throws(() => parseTimeout(\"5x\"), RangeError);\n  assert.throws(() => parseTimeout(\"30m1h\"), RangeError);\n});\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Running the test script in app/.",
+    "toolCalls": [
+      {
+        "id": "call-5",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cd app && node scripts/vendor-install.mjs && node --test"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Durations are parsed with @helmwright/fx-duration.",
+    "toolCalls": [],
+    "claimsDone": true
+  }
+]
