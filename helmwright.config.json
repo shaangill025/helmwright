@@ -101,7 +101,8 @@
         "packages/harness/src/objects/**",
         "packages/harness/test/objects/**",
         "packages/harness/test/ledger/**",
-        "packages/harness/test/e2e/fixtures/fx-*"
+        "packages/harness/test/e2e/fixtures/fx-*",
+        "packages/harness/test/e2e/fx-repo.ts"
       ],
       "ring0Settings": [
         "intake.classification",

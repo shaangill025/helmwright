@@ -57,6 +57,9 @@ const IDENTITY = {
 const FLAGS = [
   ...["-c", "core.autocrlf=false", "-c", "core.safecrlf=false"],
   ...["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"],
+  // A host's global encoding, excludes or attributes (with a clean filter) must not reach the pin.
+  ...["-c", "i18n.commitEncoding=UTF-8", "-c", "core.excludesFile=/dev/null"],
+  ...["-c", "core.attributesFile=/dev/null"],
 ];
 
 /**
