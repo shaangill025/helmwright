@@ -100,7 +100,8 @@
         "packages/harness/test/config/config.test.ts",
         "packages/harness/src/objects/**",
         "packages/harness/test/objects/**",
-        "packages/harness/test/ledger/**"
+        "packages/harness/test/ledger/**",
+        "packages/harness/test/e2e/fixtures/fx-*"
       ],
       "ring0Settings": [
         "intake.classification",

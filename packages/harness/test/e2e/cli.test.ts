@@ -35,6 +35,14 @@ import {
   type ToolSpec,
 } from "../../src/index.ts";
 import { ring0SettingDigests } from "../../src/config/config.ts";
+import {
+  FX_BASE_COMMIT,
+  FX_BASE_TREE,
+  FX_PATHS,
+  fxTask,
+  materializeFx,
+  type FxKind,
+} from "./fx-repo.ts";
 
 // Real CLI process, real git, real Docker, real node:sqlite. Fails (never skips) without Docker.
 const T = 120_000;
@@ -2730,4 +2738,134 @@ describe("sensor floor (e2e, B3-2)", () => {
     expect(events.at(-2)?.type).toBe("message.appended");
     expectReplayMatches(run.out.runId, events);
   });
+});
+
+/** FX: runs `kind`'s task on a fresh copy of the seeded fixture repo (T-12-06). */
+function runFx(kind: FxKind) {
+  const fx = materializeFx(join(tmp, "fx"));
+  const { title, intake, turns } = fxTask(kind);
+  const result = runWith(writeTask(turns, LIMITS, fx.repo, { title, intake }));
+  const events = expectWellFormedLog(result.out.runId);
+  const tools = deriveMessages(events, result.out.runId).flatMap((m) =>
+    m.role === "tool" ? [m] : [],
+  );
+  const [classified] = payloadsOf(events, "intake.classified");
+  const workspace = join(stateDir, "workspaces", result.out.runId);
+  const floor = floorOf(events);
+  return { ...result, ...floor, events, tools, classified, workspace };
+}
+
+/** The test script's call is the last one: it must pass `pass` tests and fail none. */
+function expectTestsPassed(
+  tools: readonly { status: string; text: string }[],
+  pass: number,
+) {
+  const text = tools.at(-1)?.text ?? "";
+  const statuses = tools.map((m) => m.status);
+  expect(statuses, text).toEqual(tools.map(() => "ok"));
+  expect(text).toContain("pass " + String(pass) + "\n");
+  expect(text).toContain("fail 0\n");
+}
+
+describe("seeded fixture repo (e2e, FX)", () => {
+  it(
+    "materializes at the pinned base, also under core.autocrlf=true (FX-3)",
+    { timeout: T },
+    () => {
+      // A host whose git config converts line endings and refuses irreversible
+      // conversions; without materializeFx's `-c` flags, `git add` fails on it.
+      const crlf = {
+        ...{ GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "core.autocrlf" },
+        ...{ GIT_CONFIG_VALUE_0: "true", GIT_CONFIG_KEY_1: "core.safecrlf" },
+        GIT_CONFIG_VALUE_1: "true",
+      };
+      const hosts = { "fx-a": {}, "fx-b": crlf };
+      for (const [dir, env] of Object.entries(hosts)) {
+        const fx = materializeFx(join(tmp, dir), env);
+        expect(fx).toEqual({
+          repo: join(tmp, dir),
+          baseTree: FX_BASE_TREE,
+          baseCommit: FX_BASE_COMMIT,
+        });
+        const listed = git("-C", fx.repo, "ls-tree", "-r", "--name-only", "@");
+        expect(listed.trim().split("\n")).toEqual(FX_PATHS);
+        expect(git("-C", fx.repo, "status", "--porcelain")).toBe("");
+        expect(existsSync(join(fx.repo, "app", "node_modules"))).toBe(false);
+      }
+    },
+  );
+
+  it(
+    "completes the control task: no dependency, floor pass (FX-1)",
+    { timeout: T },
+    () => {
+      const run = runFx("control");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.out.terminal).toEqual({ kind: "completed" });
+      expect(run.classified).toMatchObject({
+        class: "bounded",
+        reasons: [
+          { rule: "notDocsOrTests", entries: ["app/src/**", "app/test/**"] },
+        ],
+      });
+      expectTestsPassed(run.tools, 4);
+      expect(run.checked).toMatchObject({
+        ...{ rules: "floor-4", baseCommit: FX_BASE_COMMIT, verdict: "pass" },
+        ...{ findings: [], truncated: false },
+      });
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "completes the dependency task in app/: vendored package, floor pass (FX-2)",
+    { timeout: T },
+    () => {
+      // OQ-AD-1 (owner, 2026-10-10; supersedes OQ-FX-1): the fixture's project is in
+      // app/. The floor's "package.json" is the root one only and dependency keys are
+      // not floor keys (OQ-B3-3 unchanged), so this run completes; A-dep adds the
+      // dependency signal and its Brief.
+      const run = runFx("dependency");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.out.terminal).toEqual({ kind: "completed" });
+      // app/package.json is not a Ring 0 path, so no ring0Path reason.
+      expect(run.classified).toMatchObject({
+        class: "bounded",
+        reasons: [
+          {
+            rule: "notDocsOrTests",
+            entries: [
+              "app/package.json",
+              "app/pnpm-lock.yaml",
+              "app/src/**",
+              "app/test/**",
+            ],
+          },
+        ],
+      });
+      // Offline in the sandbox, the vendored package is copied in and the tests pass.
+      expectTestsPassed(run.tools, 5);
+      const app = join(run.workspace, "app");
+      const installed = join(app, "node_modules", "@helmwright");
+      const manifest = join(installed, "fx-duration", "package.json");
+      expect(JSON.parse(readFileSync(manifest, "utf8"))).toMatchObject({
+        name: "@helmwright/fx-duration",
+        license: "Apache-2.0",
+      });
+      const pkg = join(app, "package.json");
+      expect(JSON.parse(readFileSync(pkg, "utf8"))).toMatchObject({
+        dependencies: { "@helmwright/fx-duration": "file:vendor/fx-duration" },
+      });
+      const lock = join(app, "pnpm-lock.yaml");
+      const entry = "'@helmwright/fx-duration@file:vendor/fx-duration'";
+      expect(readFileSync(lock, "utf8")).toContain(entry);
+      // No protected.changed or package.changed for app/package.json, and no finding
+      // for the lockfile or the ignored app/node_modules.
+      expect(run.checked).toMatchObject({
+        ...{ rules: "floor-4", baseCommit: FX_BASE_COMMIT, verdict: "pass" },
+        ...{ findings: [], truncated: false },
+      });
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
 });

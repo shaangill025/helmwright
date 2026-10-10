@@ -134,6 +134,8 @@ const HELMWRIGHT_GLOBS = [
   "packages/harness/src/objects/**",
   "packages/harness/test/objects/**",
   "packages/harness/test/ledger/**",
+  // FX (OQ-FX-3, 2026-10-09): the seeded fixture repo feeds the acceptance and baseline runs.
+  "packages/harness/test/e2e/fixtures/fx-*",
 ];
 const R0_SETTING = "always-ask.ring0-setting";
 const EGRESS = ["push", "pr.open", "pr.merge", "comment", "publish", "deploy"];
