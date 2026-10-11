@@ -1,0 +1,52 @@
+[
+  {
+    "text": "Rejecting zero and negative timeouts, with a test.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/src/timeout.js <<'EOF'\n/** Parses a --timeout value: whole milliseconds, greater than zero. */\nexport function parseTimeout(text) {\n  if (!/^-?\\d+$/.test(text)) {\n    throw new RangeError(`invalid timeout: ${text}`);\n  }\n  const ms = Number(text);\n  if (ms <= 0) throw new RangeError(`timeout must be above zero: ${text}`);\n  return ms;\n}\nEOF\n"
+          ]
+        }
+      },
+      {
+        "id": "call-2",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/test/positive.test.js <<'EOF'\nimport assert from \"node:assert/strict\";\nimport { test } from \"node:test\";\nimport { parseTimeout } from \"../src/timeout.js\";\n\ntest(\"rejects zero and negative values\", () => {\n  assert.throws(() => parseTimeout(\"0\"), RangeError);\n  assert.throws(() => parseTimeout(\"-5\"), RangeError);\n});\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Running the test script in app/.",
+    "toolCalls": [
+      {
+        "id": "call-3",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cd app && node scripts/vendor-install.mjs && node --test"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Zero and negative timeouts exit with code 2.",
+    "toolCalls": [],
+    "claimsDone": true
+  }
+]
