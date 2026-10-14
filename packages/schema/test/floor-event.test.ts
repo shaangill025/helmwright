@@ -3,6 +3,7 @@ import {
   validateFloorEvent as validate,
   type FloorChecked,
   type FloorFinding,
+  type FloorSignalled,
 } from "../src/index.ts";
 
 const finding: FloorFinding = {
@@ -70,6 +71,110 @@ describe("floor-event schema", () => {
     ["a pass with a finding", { ...checked, verdict: "pass" }],
     ["a truncated pass", { ...pass, truncated: true }],
     ["a reject without findings", { ...pass, verdict: "reject" }],
+  ])("rejects %s", (_, event) => {
+    expect(validate(JSON.parse(JSON.stringify(event)))).toBe(false);
+  });
+});
+
+const signalled: FloorSignalled = {
+  kind: "floor.signalled",
+  detector: "dependency-1",
+  phase: "final",
+  baseCommit: "a".repeat(40),
+  candidateTree: "b".repeat(64),
+  materiality: {
+    rubricVersion: "materiality-rubric-1",
+    threshold: "runtimeAddOrMajor",
+  },
+  signals: [
+    {
+      id: "event-1:0",
+      type: "dependency.added",
+      path: "app/package.json",
+      field: "dependencies",
+      name: "@helmwright/fx-duration",
+      runtime: true,
+      from: null,
+      to: "file:vendor/fx-duration",
+    },
+    {
+      id: "event-1:1",
+      type: "dependency.majorBump",
+      path: "package.json",
+      field: "devDependencies",
+      name: "a",
+      runtime: false,
+      from: "^1.0.0",
+      to: "latest",
+      bump: "unknown",
+    },
+    { id: "event-1:2", type: "lockfile.only", path: "pnpm-lock.yaml" },
+  ],
+};
+const [add, major, lock] = signalled.signals as [object, object, object];
+const withSignal = (signal: object) => ({ ...signalled, signals: [signal] });
+
+describe("floor-event schema floor.signalled", () => {
+  it.each([
+    ["three signals", signalled],
+    ["no signals", { ...signalled, signals: [] }],
+    ["an early phase", { ...signalled, phase: "early" }],
+    ["256 signals", { ...signalled, signals: Array(256).fill(lock) }],
+    ["an empty specifier", withSignal({ ...major, from: "" })],
+    ["a major bump", withSignal({ ...major, bump: "major" })],
+    ["a dev add", withSignal({ ...add, field: "devDependencies" })],
+    ["a long event ID", withSignal({ ...lock, id: "e".repeat(123) + ":255" })],
+  ])("accepts %s", (_, event) => {
+    expect(validate(JSON.parse(JSON.stringify(event)))).toBe(true);
+  });
+
+  it.each([
+    ["another detector", { ...signalled, detector: "dependency-2" }],
+    ["another phase", { ...signalled, phase: "late" }],
+    ["a short commit", { ...signalled, baseCommit: "a".repeat(39) }],
+    ["no materiality", without(signalled, "materiality")],
+    [
+      "another rubric",
+      {
+        ...signalled,
+        materiality: { ...signalled.materiality, rubricVersion: "rubric-1" },
+      },
+    ],
+    [
+      "an unknown threshold",
+      {
+        ...signalled,
+        materiality: { ...signalled.materiality, threshold: "never" },
+      },
+    ],
+    [
+      "an extra materiality key",
+      { ...signalled, materiality: { ...signalled.materiality, x: 1 } },
+    ],
+    ["257 signals", { ...signalled, signals: Array(257).fill(lock) }],
+    ["an extra key", { ...signalled, findings: [] }],
+    ["an unknown signal type", withSignal({ ...lock, type: "module.added" })],
+    ["an extra signal key", withSignal({ ...lock, name: "a" })],
+    ["a signal without an ID", withSignal(without(lock, "id"))],
+    ["an ID without an index", withSignal({ ...lock, id: "event-1" })],
+    ["an ID with a leading-zero index", withSignal({ ...lock, id: "e:01" })],
+    [
+      "an ID over 128 code units",
+      withSignal({ ...lock, id: "e".repeat(124) + ":255" }),
+    ],
+    ["an add with a bump", withSignal({ ...add, bump: "major" })],
+    ["an add without a target", withSignal(without(add, "to"))],
+    ["an add from a specifier", withSignal({ ...add, from: "^1.0.0" })],
+    ["a null target", withSignal({ ...add, to: null })],
+    ["a bump without a kind", withSignal(without(major, "bump"))],
+    ["another bump kind", withSignal({ ...major, bump: "minor" })],
+    ["a bump from null", withSignal({ ...major, from: null })],
+    ["another field", withSignal({ ...add, field: "bundleDependencies" })],
+    ["an empty name", withSignal({ ...add, name: "" })],
+    ["a control in a name", withSignal({ ...add, name: "a\u001bb" })],
+    ["a newline in a specifier", withSignal({ ...major, to: "1\n2" })],
+    ["an absolute path", withSignal({ ...lock, path: "/pnpm-lock.yaml" })],
+    ["a lockfile with a field", withSignal({ ...lock, field: "dependencies" })],
   ])("rejects %s", (_, event) => {
     expect(validate(JSON.parse(JSON.stringify(event)))).toBe(false);
   });

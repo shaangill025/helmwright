@@ -4,7 +4,7 @@
   "title": "FloorEvent",
   "description": "Payload of a sensor floor event in the session log (B3), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. The floor is Ring 0 (06 Ring 0 contents): a deterministic rule table on the host compares the candidate tree with the run's base commit, and a candidate cannot pass by adding a suppression, changing config discovery, replacing a test command or deleting a protected assertion.",
   "type": "object",
-  "oneOf": [{ "$ref": "#/$defs/checked" }],
+  "oneOf": [{ "$ref": "#/$defs/checked" }, { "$ref": "#/$defs/signalled" }],
   "$defs": {
     "checked": {
       "title": "FloorChecked",
@@ -55,6 +55,58 @@
         "properties": { "findings": { "type": "array", "minItems": 1 } }
       }
     },
+    "signalled": {
+      "title": "FloorSignalled",
+      "description": "A floor detector's signals from the base-to-candidate changes (Q44): a direct dependency added, a major bump of one, a lockfile-only change. `final` is the authoritative check at the run's end, `early` a warning in the middle of a run that opens no decision. `materiality` is the rubric version and brief threshold that route each signal to a Brief or a Ruling (Q53).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "detector",
+        "phase",
+        "baseCommit",
+        "candidateTree",
+        "materiality",
+        "signals"
+      ],
+      "properties": {
+        "kind": { "const": "floor.signalled" },
+        "detector": {
+          "description": "The detector version.",
+          "const": "dependency-1"
+        },
+        "phase": { "enum": ["final", "early"] },
+        "baseCommit": {
+          "$ref": "#/$defs/oid",
+          "description": "The run's base commit (`run.started.baseCommit`)."
+        },
+        "candidateTree": {
+          "$ref": "#/$defs/oid",
+          "description": "The candidate tree the signals were found in, as in `floor.checked`."
+        },
+        "materiality": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rubricVersion", "threshold"],
+          "properties": {
+            "rubricVersion": {
+              "type": "string",
+              "pattern": "^materiality-rubric-[1-9][0-9]{0,5}$"
+            },
+            "threshold": {
+              "description": "The `decisions.briefThreshold` value used.",
+              "enum": ["runtimeAddOrMajor", "everySignal", "runtimeAddOnly"]
+            }
+          }
+        },
+        "signals": {
+          "description": "The signals, sorted by path, name and type.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/signal" }
+        }
+      }
+    },
     "finding": {
       "title": "FloorFinding",
       "description": "One rule that fired. `path` is absent only for a `floor.limits` finding about the whole change list; `line` is the 1-based line in the candidate file.",
@@ -90,6 +142,115 @@
         "floor.limits"
       ]
     },
+    "signal": {
+      "title": "FloorSignal",
+      "oneOf": [
+        { "$ref": "#/$defs/dependencyAdded" },
+        { "$ref": "#/$defs/dependencyMajorBump" },
+        { "$ref": "#/$defs/lockfileOnly" }
+      ]
+    },
+    "dependencyAdded": {
+      "title": "FloorDependencyAdded",
+      "description": "A direct dependency in `field`: a runtime one in no runtime field of the base (a move from `devDependencies` counts), a dev one in no field of the base. Every specifier kind counts.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "path",
+        "field",
+        "name",
+        "runtime",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/signalId" },
+        "type": { "const": "dependency.added" },
+        "path": {
+          "$ref": "#/$defs/path",
+          "description": "The manifest's path."
+        },
+        "field": { "$ref": "#/$defs/dependencyField" },
+        "name": {
+          "$ref": "#/$defs/text",
+          "description": "The dependency's name."
+        },
+        "runtime": {
+          "description": "Whether `field` is a runtime field (not `devDependencies`).",
+          "type": "boolean"
+        },
+        "from": { "type": "null" },
+        "to": { "$ref": "#/$defs/specifier" }
+      }
+    },
+    "dependencyMajorBump": {
+      "title": "FloorDependencyMajorBump",
+      "description": "A changed specifier of a direct dependency in the same field, whose major key differs (`major`) or which either side's specifier gives none for (`unknown`, OQ-AD-2).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "path",
+        "field",
+        "name",
+        "runtime",
+        "from",
+        "to",
+        "bump"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/signalId" },
+        "type": { "const": "dependency.majorBump" },
+        "path": {
+          "$ref": "#/$defs/path",
+          "description": "The manifest's path."
+        },
+        "field": { "$ref": "#/$defs/dependencyField" },
+        "name": {
+          "$ref": "#/$defs/text",
+          "description": "The dependency's name."
+        },
+        "runtime": {
+          "description": "Whether `field` is a runtime field (not `devDependencies`).",
+          "type": "boolean"
+        },
+        "from": { "$ref": "#/$defs/specifier" },
+        "to": { "$ref": "#/$defs/specifier" },
+        "bump": { "enum": ["major", "unknown"] }
+      }
+    },
+    "lockfileOnly": {
+      "title": "FloorLockfileOnly",
+      "description": "A changed lockfile, when no manifest in the change changed a dependency field.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "path"],
+      "properties": {
+        "id": { "$ref": "#/$defs/signalId" },
+        "type": { "const": "lockfile.only" },
+        "path": {
+          "$ref": "#/$defs/path",
+          "description": "The lockfile's path."
+        }
+      }
+    },
+    "signalId": {
+      "description": "`<floor.signalled eventId>:<index>`; it fits the object events' `signalId` (at most 128 code units).",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,122}:(?:0|[1-9][0-9]{0,2})$"
+    },
+    "dependencyField": {
+      "description": "The manifest field: the runtime fields and `devDependencies`.",
+      "enum": [
+        "dependencies",
+        "optionalDependencies",
+        "peerDependencies",
+        "devDependencies"
+      ]
+    },
     "oid": {
       "description": "A full lowercase hex git object ID (SHA-1 or SHA-256).",
       "type": "string",
@@ -105,6 +266,11 @@
       "description": "Escaped display text: 1 to 8192 code points without C0 or C1 controls, format characters, line or paragraph separators or lone surrogates.",
       "type": "string",
       "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$"
+    },
+    "specifier": {
+      "description": "A dependency specifier escaped for display, as `text` but possibly empty.",
+      "type": "string",
+      "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{0,8192}$"
     }
   }
 }

@@ -223,7 +223,7 @@ const TEST_MARKS = [".test.", ".spec.", ".test-d.", ".e2e-spec."];
 const SYMLINK = "120000";
 const GITLINK = "160000";
 const ABSENT = "000000";
-const REGULAR = new Set(["100644", "100755"]);
+export const REGULAR: ReadonlySet<string> = new Set(["100644", "100755"]);
 const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const LINE_ENDS = /[\r\u2028\u2029]/;
 
@@ -236,8 +236,8 @@ const found = (rule: FloorRule, path: string, detail: string, line?: number) =>
     detail: displayText(detail),
   }) satisfies Finding;
 
-const segments = (path: string) => caseFold(path).split("/");
-const nameOf = (path: string) => segments(path).at(-1) ?? "";
+export const segments = (path: string) => caseFold(path).split("/");
+export const nameOf = (path: string) => segments(path).at(-1) ?? "";
 const norm = (line: string) => caseFold(line).split(/\s+/).join(" ").trim();
 
 function isTestFile(path: string): boolean {
@@ -252,7 +252,7 @@ function isTestFile(path: string): boolean {
 }
 
 /** UTF-8 text without NUL (a UTF-8 BOM is dropped), or undefined for anything else. */
-function decode(bytes: Uint8Array): string | undefined {
+export function decode(bytes: Uint8Array): string | undefined {
   if (bytes.includes(0)) return undefined;
   try {
     return UTF8.decode(bytes);
@@ -369,7 +369,7 @@ export function isConfig(path: string): boolean {
 }
 
 /** The parsed object, `{}` when absent, or undefined if it is not a JSON object. */
-function packageObject(text: string | undefined): object | undefined {
+export function packageObject(text: string | undefined): object | undefined {
   if (text === undefined) return {};
   try {
     const value: unknown = JSON.parse(text);
@@ -382,13 +382,13 @@ function packageObject(text: string | undefined): object | undefined {
 }
 
 /** The value of own key `key`, or undefined. */
-const own = (value: object, key: string): unknown =>
+export const own = (value: object, key: string): unknown =>
   Object.hasOwn(value, key)
     ? (value as Record<string, unknown>)[key]
     : undefined;
 
 /** Equal as canonical JSON; a value canonical cannot write counts as changed. */
-function same(a: unknown, b: unknown): boolean {
+export function same(a: unknown, b: unknown): boolean {
   try {
     return canonical(a ?? null) === canonical(b ?? null);
   } catch {
@@ -475,7 +475,8 @@ function check(
   return findings;
 }
 
-const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+/** Code-unit order. */
+export const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const order = (a: FloorFinding, b: FloorFinding) =>
   compare(a.path ?? "", b.path ?? "") ||
   (a.line ?? 0) - (b.line ?? 0) ||

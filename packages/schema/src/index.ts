@@ -40,10 +40,16 @@ export type {
 } from "../generated/intake-event.ts";
 export { validate as validateIntakeEvent } from "../generated/intake-event.validate.js";
 export type {
+  DependencyField,
   FloorChecked,
+  FloorDependencyAdded,
+  FloorDependencyMajorBump,
   FloorEvent,
   FloorFinding,
+  FloorLockfileOnly,
   FloorRule,
+  FloorSignal,
+  FloorSignalled,
 } from "../generated/floor-event.ts";
 export { validate as validateFloorEvent } from "../generated/floor-event.validate.js";
 export type {
