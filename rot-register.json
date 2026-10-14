@@ -308,7 +308,7 @@
   {
     "component": "packages/harness/src/floor/dependencies.ts",
     "ring": 0,
-    "assumption": "dependency-1 reads the npm, pnpm, yarn and bun manifest and lockfile names and the specifier grammar as of pnpm 10.21: package.json at any depth outside node_modules, the runtime fields dependencies, optionalDependencies and peerDependencies and the dev field devDependencies, and pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock, bun.lock and bun.lockb, which are never parsed. A name added in any field with any specifier kind is dependency.added; a changed specifier whose major key (no regex: npm: alias and workspace: stripped, the max over || alternatives of the first comparator's breaking component) differs is a major bump, and one with no key (a tag, path, git, URL, * or over 256 code units) is bump unknown (OQ-AD-2); a lockfile change is lockfile.only only when no manifest changed a dependency field. Removals give no signal; past 256 manifests or signals it fails closed.",
+    "assumption": "dependency-1 reads manifest and lockfile names and the specifier grammar as of pnpm 10.21: package.json at any depth outside node_modules, the runtime fields dependencies, optionalDependencies and peerDependencies and devDependencies, and pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock, bun.lock and bun.lockb, never parsed. A name added in any field is dependency.added. A changed specifier, against the same base field or for a runtime field the first base runtime field with the name (OQ-AD-10b), is a major bump if its major key (no regex: the max over || alternatives of the first comparator's breaking component) differs, and unknown if a side has no key (tag, path, git, URL, * or over 256 code units), the npm: alias target or workspace: source changed (OQ-AD-10a) or an upper bound or open-endedness changed (OQ-AD-9). lockfile.only needs no manifest dependency-field change. Removals give no signal; past 256 manifests or signals, or for an empty name, it fails closed.",
     "evidence": [
       "decisions Q44",
       "packages/harness/test/floor/dependencies.test.ts"
@@ -463,7 +463,7 @@
       "packages/schema/test/floor-event.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-13",
     "reviewTrigger": ["milestone"]
   },
   {

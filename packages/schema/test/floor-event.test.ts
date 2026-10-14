@@ -159,9 +159,17 @@ describe("floor-event schema floor.signalled", () => {
     ["an ID without an index", withSignal({ ...lock, id: "event-1" })],
     ["an ID with a leading-zero index", withSignal({ ...lock, id: "e:01" })],
     [
-      "an ID over 128 code units",
+      "an event-ID part over 123 code units",
       withSignal({ ...lock, id: "e".repeat(124) + ":255" }),
     ],
+    [
+      "an ID over 128 code units",
+      withSignal({ ...lock, id: "e".repeat(125) + ":255" }),
+    ],
+    ["a bad candidate tree", { ...signalled, candidateTree: "b".repeat(41) }],
+    ["a non-boolean runtime", withSignal({ ...add, runtime: "true" })],
+    ["a .. segment in a signal path", withSignal({ ...lock, path: "a/../b" })],
+    ["an add without from", withSignal(without(add, "from"))],
     ["an add with a bump", withSignal({ ...add, bump: "major" })],
     ["an add without a target", withSignal(without(add, "to"))],
     ["an add from a specifier", withSignal({ ...add, from: "^1.0.0" })],
