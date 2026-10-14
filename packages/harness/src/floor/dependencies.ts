@@ -236,8 +236,9 @@ function bounded<T extends DependencySignal>(signals: T[], sort = true): T[] {
  * add. A runtime add is a name in a runtime field of the candidate and in none of the
  * base (a move from dev counts); a dev add is in `devDependencies` and in no field of the
  * base; a major bump is a changed specifier (see `bumpOf`) against the same field of the
- * base, or for a runtime field without the name in the base, against the first base
- * runtime field with it in FIELDS order (OQ-AD-10b; `from` is that field's specifier).
+ * base, or for a field without the name in the base, against each base runtime field with
+ * it (OQ-AD-10b, OQ-AD-12; fail toward a Brief): any bump beats none, and between bumps
+ * the first such field in FIELDS order is kept, with `from` its specifier.
  * Text is escaped for display; the result is sorted by path, name and type.
  * @throws FloorError past MAX_SIGNALS signals, or for a signal of an empty name
  */
@@ -259,15 +260,18 @@ export function dependencySignals(
         name: displayText(name),
         runtime,
       };
-      const from =
-        before.get(field)?.get(name) ??
-        (runtime
-          ? RUNTIME_FIELDS.map((f) => before.get(f)?.get(name)).find(
-              (specifier) => specifier !== undefined,
-            )
-          : undefined);
-      const bump =
-        from === undefined || from === to ? undefined : bumpOf(from, to);
+      const held = before.get(field)?.get(name);
+      let from: string | undefined;
+      let bump: "major" | "unknown" | undefined;
+      for (const base of held === undefined
+        ? RUNTIME_FIELDS.map((f) => before.get(f)?.get(name))
+        : [held]) {
+        bump = base === undefined || base === to ? undefined : bumpOf(base, to);
+        if (bump !== undefined) {
+          from = base;
+          break;
+        }
+      }
       const add = { ...shown, type: "dependency.added", from: null } as const;
       const found: readonly [number, Dependency] | undefined =
         runtime && !inBase(name, RUNTIME_FIELDS)

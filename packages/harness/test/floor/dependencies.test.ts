@@ -80,6 +80,12 @@ describe("dependencySignals specifiers", () => {
     ["operators with a space", ">= 1.0.0", ">=1.5.0"],
     ["a workspace minor", "workspace:^1.0.0", "workspace:^1.2.0"],
     ["the same specifier", "^1.0.0", "^1.0.0"],
+    // OQ-AD-11: an operator change inside one major is syntactic, so no signal.
+    ["a tilde to a caret", "~1.2.3", "^1.2.3"],
+    ["an exact version to a caret", "1.2.3", "^1.2.3"],
+    ["a minor x range to a major one", "1.2.x", "1.x"],
+    ["an exact version to an x range", "1.2.3", "1.x"],
+    ["a tilde to an x range", "~1.2.3", "1.x"],
   ])("gives no signal for %s", (_, from, to) => {
     expect(deps(from, to)).toEqual([]);
   });
@@ -186,7 +192,7 @@ describe("dependencySignals fields", () => {
     ]);
   });
 
-  it("compares a move with the same field, else the first runtime field", () => {
+  it("compares a move with the same field only, if it held the name", () => {
     const before = {
       dependencies: { a: "^1.0.0", b: "^1.0.0" },
       peerDependencies: { a: "^2.0.0", b: "^2.0.0" },
@@ -200,6 +206,46 @@ describe("dependencySignals fields", () => {
         ...bump("^1.0.0", "^2.0.0", "major")[0],
         field: "optionalDependencies",
         name: "b",
+      },
+    ]);
+  });
+
+  it("compares a move from runtime to dev with the base field (OQ-AD-12)", () => {
+    const before = { dependencies: { a: "^1.0.0", b: "^1.0.0" } };
+    const after = { devDependencies: { a: "^2.0.0", b: "^1.5.0" } };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "devDependencies",
+        runtime: false,
+      },
+    ]);
+  });
+
+  it("compares a move with every base runtime field that held the name", () => {
+    const before = {
+      dependencies: { a: "^1.0.0", b: "^1.0.0", c: "^2.0.0" },
+      peerDependencies: { a: "^2.0.0", b: "^2.0.0", c: "^1.0.0" },
+    };
+    const after = {
+      optionalDependencies: { a: "^1.0.0", c: "^2.0.0" },
+      devDependencies: { b: "^1.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^2.0.0", "^1.0.0", "major")[0],
+        field: "optionalDependencies",
+      },
+      {
+        ...bump("^2.0.0", "^1.0.0", "major")[0],
+        field: "devDependencies",
+        name: "b",
+        runtime: false,
+      },
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "optionalDependencies",
+        name: "c",
       },
     ]);
   });
