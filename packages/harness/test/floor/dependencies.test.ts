@@ -250,6 +250,49 @@ describe("dependencySignals fields", () => {
     ]);
   });
 
+  it("breaks a tie between bumping base fields by field order", () => {
+    const candidate = { optionalDependencies: { a: "^2.0.0" } };
+    expect(
+      dependencySignals(
+        { dependencies: { a: "^1.0.0" }, peerDependencies: { a: "latest" } },
+        candidate,
+        "package.json",
+      ),
+    ).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "optionalDependencies",
+      },
+    ]);
+    expect(
+      dependencySignals(
+        { dependencies: { a: "latest" }, peerDependencies: { a: "^1.0.0" } },
+        candidate,
+        "package.json",
+      ),
+    ).toEqual([
+      {
+        ...bump("latest", "^2.0.0", "unknown")[0],
+        field: "optionalDependencies",
+      },
+    ]);
+  });
+
+  it("compares a new dev entry with an unchanged runtime entry", () => {
+    const before = { dependencies: { a: "^1.0.0" } };
+    const after = {
+      dependencies: { a: "^1.0.0" },
+      devDependencies: { a: "^2.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "devDependencies",
+        runtime: false,
+      },
+    ]);
+  });
+
   it("keeps a runtime add over a dev major bump of the same name", () => {
     const before = { devDependencies: { a: "^1.0.0" } };
     const after = {
