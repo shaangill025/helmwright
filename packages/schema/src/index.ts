@@ -120,6 +120,7 @@ export const CONFIG_DEFAULTS = deepFreeze({
     detection: "floorAndSelfFlag",
     pendingWork: "provisionalExceptArchitecture",
     briefFormat: "terse",
+    briefThreshold: "runtimeAddOrMajor",
     evaluator: "freshContext",
   },
   permissions: {

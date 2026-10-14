@@ -68,6 +68,12 @@
           "enum": ["terse", "fullMemo", "recommendationOnly"],
           "default": "terse"
         },
+        "briefThreshold": {
+          "description": "Which floor signals open an owner Brief; the rest become a harness Ruling: a runtime dependency add or any major bump (default); every signal (stricter); or a runtime dependency add only (looser). The value used is logged in floor.signalled.materiality.",
+          "$comment": "Default \"runtimeAddOrMajor\". Ring 0: no. Consumer: A-dep. 08 row Decisions / Materiality thresholds; Q53.",
+          "enum": ["runtimeAddOrMajor", "everySignal", "runtimeAddOnly"],
+          "default": "runtimeAddOrMajor"
+        },
         "evaluator": {
           "description": "Who decides done: a fresh-context evaluator that only reads and runs, whose verdict flips criteria (default); or generator self-reports (not recommended).",
           "$comment": "Default \"freshContext\". Ring 0: no. Consumer: B15. 08 row Decisions / Evaluator.",
