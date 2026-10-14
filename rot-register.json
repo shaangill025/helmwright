@@ -306,6 +306,18 @@
     "reviewTrigger": ["engine", "milestone"]
   },
   {
+    "component": "packages/harness/src/floor/dependencies.ts",
+    "ring": 0,
+    "assumption": "dependency-1 reads the npm, pnpm, yarn and bun manifest and lockfile names and the specifier grammar as of pnpm 10.21: package.json at any depth outside node_modules, the runtime fields dependencies, optionalDependencies and peerDependencies and the dev field devDependencies, and pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock, bun.lock and bun.lockb, which are never parsed. A name added in any field with any specifier kind is dependency.added; a changed specifier whose major key (no regex: npm: alias and workspace: stripped, the max over || alternatives of the first comparator's breaking component) differs is a major bump, and one with no key (a tag, path, git, URL, * or over 256 code units) is bump unknown (OQ-AD-2); a lockfile change is lockfile.only only when no manifest changed a dependency field. Removals give no signal; past 256 manifests or signals it fails closed.",
+    "evidence": [
+      "decisions Q44",
+      "packages/harness/test/floor/dependencies.test.ts"
+    ],
+    "added": "2026-10-13",
+    "lastReviewed": "2026-10-13",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/floor/events.ts",
     "ring": 0,
     "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed). Replay faults a floor.checked whose base commit is not run.started's or whose rules version this build does not know, and any event but run.terminated after it.",
@@ -445,7 +457,7 @@
   {
     "component": "packages/schema/schemas/floor-event.schema.json",
     "ring": 0,
-    "assumption": "Each floor check is logged once with the rules version, the base commit, the candidate tree, a verdict that is reject exactly when a finding exists, at most 256 escaped findings and a truncated flag; reject-iff-finding is enforced by the harness, not the schema.",
+    "assumption": "Each floor check is logged once with the rules version, the base commit, the candidate tree, a verdict that is reject exactly when a finding exists, at most 256 escaped findings and a truncated flag; reject-iff-finding is enforced by the harness, not the schema. A floor.signalled event logs the dependency-1 detector's phase, base commit, candidate tree, materiality rubric and threshold, and at most 256 escaped signals with IDs <eventId>:<index>; their order and routing are checked by replay, not the schema.",
     "evidence": [
       "06 Ring 0 contents",
       "packages/schema/test/floor-event.test.ts"
