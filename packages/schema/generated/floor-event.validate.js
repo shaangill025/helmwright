@@ -191,7 +191,7 @@ const schema31 = {
     dependencyMajorBump: {
       title: "FloorDependencyMajorBump",
       description:
-        "A changed specifier of a direct dependency in the same field, whose major key differs (`major`) or which either side's specifier gives none for (`unknown`, OQ-AD-2).",
+        "A changed specifier of a direct dependency against the same field of the base or, for a runtime field the base lacks it in, the base's first runtime field with it (OQ-AD-10b): `major` if the major key differs; `unknown` if either side gives none (OQ-AD-2), the `npm:` alias target or `workspace:` source changed (OQ-AD-10a), or an upper bound or open-endedness changed (OQ-AD-9).",
       type: "object",
       additionalProperties: false,
       required: [
@@ -237,6 +237,8 @@ const schema31 = {
     signalId: {
       description:
         "`<floor.signalled eventId>:<index>`; it fits the object events' `signalId` (at most 128 code units).",
+      $comment:
+        "The event-ID part is capped at 123 code units (1 + 122), so with `:` and a 3-digit index the ID fits 128; event IDs are UUIDs today.",
       type: "string",
       pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,122}:(?:0|[1-9][0-9]{0,2})$",
     },
@@ -1468,6 +1470,8 @@ const schema44 = {
 const schema45 = {
   description:
     "`<floor.signalled eventId>:<index>`; it fits the object events' `signalId` (at most 128 code units).",
+  $comment:
+    "The event-ID part is capped at 123 code units (1 + 122), so with `:` and a 3-digit index the ID fits 128; event IDs are UUIDs today.",
   type: "string",
   pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,122}:(?:0|[1-9][0-9]{0,2})$",
 };
@@ -1720,8 +1724,8 @@ function validate27(
     }
     if (data.path !== undefined) {
       let data2 = data.path;
-      const _errs9 = errors;
       const _errs10 = errors;
+      const _errs11 = errors;
       if (typeof data2 === "string") {
         if (!pattern7.test(data2)) {
           const err12 = {};
@@ -1733,7 +1737,7 @@ function validate27(
           errors++;
         }
       }
-      var valid3 = _errs10 === errors;
+      var valid3 = _errs11 === errors;
       if (valid3) {
         const err13 = {
           instancePath: instancePath + "/path",
@@ -1749,10 +1753,10 @@ function validate27(
         }
         errors++;
       } else {
-        errors = _errs9;
+        errors = _errs10;
         if (vErrors !== null) {
-          if (_errs9) {
-            vErrors.length = _errs9;
+          if (_errs10) {
+            vErrors.length = _errs10;
           } else {
             vErrors = null;
           }
@@ -1959,7 +1963,7 @@ validate27.evaluated = {
 const schema50 = {
   title: "FloorDependencyMajorBump",
   description:
-    "A changed specifier of a direct dependency in the same field, whose major key differs (`major`) or which either side's specifier gives none for (`unknown`, OQ-AD-2).",
+    "A changed specifier of a direct dependency against the same field of the base or, for a runtime field the base lacks it in, the base's first runtime field with it (OQ-AD-10b): `major` if the major key differs; `unknown` if either side gives none (OQ-AD-2), the `npm:` alias target or `workspace:` source changed (OQ-AD-10a), or an upper bound or open-endedness changed (OQ-AD-9).",
   type: "object",
   additionalProperties: false,
   required: [
@@ -2221,8 +2225,8 @@ function validate29(
     }
     if (data.path !== undefined) {
       let data2 = data.path;
-      const _errs9 = errors;
       const _errs10 = errors;
+      const _errs11 = errors;
       if (typeof data2 === "string") {
         if (!pattern7.test(data2)) {
           const err13 = {};
@@ -2234,7 +2238,7 @@ function validate29(
           errors++;
         }
       }
-      var valid3 = _errs10 === errors;
+      var valid3 = _errs11 === errors;
       if (valid3) {
         const err14 = {
           instancePath: instancePath + "/path",
@@ -2250,10 +2254,10 @@ function validate29(
         }
         errors++;
       } else {
-        errors = _errs9;
+        errors = _errs10;
         if (vErrors !== null) {
-          if (_errs9) {
-            vErrors.length = _errs9;
+          if (_errs10) {
+            vErrors.length = _errs10;
           } else {
             vErrors = null;
           }
@@ -2652,8 +2656,8 @@ function validate31(
     }
     if (data.path !== undefined) {
       let data2 = data.path;
-      const _errs9 = errors;
       const _errs10 = errors;
+      const _errs11 = errors;
       if (typeof data2 === "string") {
         if (!pattern7.test(data2)) {
           const err7 = {};
@@ -2665,7 +2669,7 @@ function validate31(
           errors++;
         }
       }
-      var valid3 = _errs10 === errors;
+      var valid3 = _errs11 === errors;
       if (valid3) {
         const err8 = {
           instancePath: instancePath + "/path",
@@ -2681,10 +2685,10 @@ function validate31(
         }
         errors++;
       } else {
-        errors = _errs9;
+        errors = _errs10;
         if (vErrors !== null) {
-          if (_errs9) {
-            vErrors.length = _errs9;
+          if (_errs10) {
+            vErrors.length = _errs10;
           } else {
             vErrors = null;
           }

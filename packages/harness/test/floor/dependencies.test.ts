@@ -70,13 +70,22 @@ describe("dependencySignals specifiers", () => {
   it.each([
     ["a caret minor", "^1.2.3", "^1.4.0"],
     ["a tilde minor", "~1.2.3", "~1.3.0"],
-    ["a same-major alternative", "^1.0.0 || ^2.0.0", "^2.1.0"],
-    ["a hyphen range's upper bound", "1.0.0 - 1.9.0", "1.2.0 - 2.0.0"],
+    ["reordered alternatives", "^1.0.0 || ^2.0.0", "^2.1.0 || ^1.2.0"],
+    ["a caret to a tilde", "^1.2.0", "~1.2.0"],
+    ["a bounded range's lower bound", ">=1.0.0 <2.0.0", ">=1.5.0 <2.0.0"],
+    ["a spaced upper bound", ">=1.0.0 <2.0.0", ">= 1.0.0 < 2.0.0"],
     ["a 0.x patch", "^0.2.0", "^0.2.5"],
     ["a prerelease", "1.2.3-beta.1", "1.2.3"],
     ["an npm alias minor", "npm:b@^1.0.0", "npm:b@^1.1.0"],
-    ["operators with a space", ">= 1.0.0", ">=1.5.0 <2.0.0"],
+    ["operators with a space", ">= 1.0.0", ">=1.5.0"],
+    ["a workspace minor", "workspace:^1.0.0", "workspace:^1.2.0"],
     ["the same specifier", "^1.0.0", "^1.0.0"],
+    // OQ-AD-11: an operator change inside one major is syntactic, so no signal.
+    ["a tilde to a caret", "~1.2.3", "^1.2.3"],
+    ["an exact version to a caret", "1.2.3", "^1.2.3"],
+    ["a minor x range to a major one", "1.2.x", "1.x"],
+    ["an exact version to an x range", "1.2.3", "1.x"],
+    ["a tilde to an x range", "~1.2.3", "1.x"],
   ])("gives no signal for %s", (_, from, to) => {
     expect(deps(from, to)).toEqual([]);
   });
@@ -112,6 +121,21 @@ describe("dependencySignals specifiers", () => {
     ["an empty specifier", "", "^1.0.0"],
     ["a specifier over 256 code units", "^1.0.0", "^1.0.0".padEnd(257)],
     ["four components", "1.2.3.4", "1.2.3"],
+    // OQ-AD-10a: the source changed, whatever the major keys.
+    ["an alias retarget", "npm:left-pad@^1.0.0", "npm:evil-pad@^1.0.0"],
+    ["a scoped alias retarget", "npm:@s/b@^1.0.0", "npm:@s/c@^1.0.0"],
+    ["an alias retarget across a major", "npm:b@^1.0.0", "npm:c@^2.0.0"],
+    ["a range to an alias", "^1.0.0", "npm:b@^1.0.0"],
+    ["a workspace range to a registry one", "workspace:^1.0.0", "^1.0.0"],
+    ["a registry range to a workspace one", "^1.0.0", "workspace:^1.0.0"],
+    // OQ-AD-9: an upper bound or open-endedness changed in the same major.
+    ["a raised upper bound", ">=1.0.0 <2.0.0", ">=1.0.0 <3.0.0"],
+    ["a caret to an open range", "^1.0.0", ">=1.0.0"],
+    ["an x range to an open range", "1.x", ">=1"],
+    ["an open range bounded", ">= 1.0.0", ">=1.5.0 <2.0.0"],
+    ["a hyphen range's upper bound", "1.0.0 - 1.9.0", "1.2.0 - 2.0.0"],
+    ["a dropped alternative", "^1.0.0 || ^2.0.0", "^2.1.0"],
+    ["an added open alternative", "^1.0.0", "^1.0.0 || >=1.2.0"],
   ])("gives an unknown bump for %s", (_, from, to) => {
     expect(deps(from, to)).toEqual(bump(from, to, "unknown"));
   });
@@ -150,6 +174,142 @@ describe("dependencySignals fields", () => {
     expect(dependencySignals(before, after, "package.json")).toEqual([
       added("a", "^1.0.0"),
     ]);
+  });
+
+  it("compares a move between runtime fields with the base field (OQ-AD-10b)", () => {
+    const before = { dependencies: { a: "^1.0.0", b: "^1.0.0", c: "^1.0.0" } };
+    const after = {
+      peerDependencies: { a: "^2.0.0", b: "^1.5.0" },
+      optionalDependencies: { c: "npm:d@^1.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      { ...bump("^1.0.0", "^2.0.0", "major")[0], field: "peerDependencies" },
+      {
+        ...bump("^1.0.0", "npm:d@^1.0.0", "unknown")[0],
+        field: "optionalDependencies",
+        name: "c",
+      },
+    ]);
+  });
+
+  it("compares a move with the same field only, if it held the name", () => {
+    const before = {
+      dependencies: { a: "^1.0.0", b: "^1.0.0" },
+      peerDependencies: { a: "^2.0.0", b: "^2.0.0" },
+    };
+    const after = {
+      peerDependencies: { a: "^2.1.0" },
+      optionalDependencies: { b: "^2.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "optionalDependencies",
+        name: "b",
+      },
+    ]);
+  });
+
+  it("compares a move from runtime to dev with the base field (OQ-AD-12)", () => {
+    const before = { dependencies: { a: "^1.0.0", b: "^1.0.0" } };
+    const after = { devDependencies: { a: "^2.0.0", b: "^1.5.0" } };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "devDependencies",
+        runtime: false,
+      },
+    ]);
+  });
+
+  it("compares a move with every base runtime field that held the name", () => {
+    const before = {
+      dependencies: { a: "^1.0.0", b: "^1.0.0", c: "^2.0.0" },
+      peerDependencies: { a: "^2.0.0", b: "^2.0.0", c: "^1.0.0" },
+    };
+    const after = {
+      optionalDependencies: { a: "^1.0.0", c: "^2.0.0" },
+      devDependencies: { b: "^1.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^2.0.0", "^1.0.0", "major")[0],
+        field: "optionalDependencies",
+      },
+      {
+        ...bump("^2.0.0", "^1.0.0", "major")[0],
+        field: "devDependencies",
+        name: "b",
+        runtime: false,
+      },
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "optionalDependencies",
+        name: "c",
+      },
+    ]);
+  });
+
+  it("breaks a tie between bumping base fields by field order", () => {
+    const candidate = { optionalDependencies: { a: "^2.0.0" } };
+    expect(
+      dependencySignals(
+        { dependencies: { a: "^1.0.0" }, peerDependencies: { a: "latest" } },
+        candidate,
+        "package.json",
+      ),
+    ).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "optionalDependencies",
+      },
+    ]);
+    expect(
+      dependencySignals(
+        { dependencies: { a: "latest" }, peerDependencies: { a: "^1.0.0" } },
+        candidate,
+        "package.json",
+      ),
+    ).toEqual([
+      {
+        ...bump("latest", "^2.0.0", "unknown")[0],
+        field: "optionalDependencies",
+      },
+    ]);
+  });
+
+  it("compares a new dev entry with an unchanged runtime entry", () => {
+    const before = { dependencies: { a: "^1.0.0" } };
+    const after = {
+      dependencies: { a: "^1.0.0" },
+      devDependencies: { a: "^2.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      {
+        ...bump("^1.0.0", "^2.0.0", "major")[0],
+        field: "devDependencies",
+        runtime: false,
+      },
+    ]);
+  });
+
+  it("keeps a runtime add over a dev major bump of the same name", () => {
+    const before = { devDependencies: { a: "^1.0.0" } };
+    const after = {
+      dependencies: { a: "^2.0.0" },
+      devDependencies: { a: "^2.0.0" },
+    };
+    expect(dependencySignals(before, after, "package.json")).toEqual([
+      added("a", "^2.0.0"),
+    ]);
+  });
+
+  it("throws for a signal of an empty name, which cannot be logged", () => {
+    const after = { dependencies: { "": "^1.0.0" } };
+    expect(() => dependencySignals({}, after, "package.json")).toThrow(
+      new FloorError("a dependency name is empty"),
+    );
+    expect(dependencySignals(after, after, "package.json")).toEqual([]);
   });
 
   it("gives no signal for a move from runtime to dev or a removal", () => {
@@ -311,6 +471,16 @@ describe("detectDependencies", () => {
         ),
       });
     expect(() => detectDependencies([one(1), one(2)])).toThrow(FloorError);
+  });
+
+  it("reads a deleted manifest as a removal, a non-object one as no change", () => {
+    const lock = change("pnpm-lock.yaml", "a", "b");
+    expect(
+      detectDependencies([change("package.json", pkg, undefined), lock]),
+    ).toEqual([]);
+    expect(
+      detectDependencies([change("package.json", pkg, "[]"), lock]),
+    ).toEqual([{ type: "lockfile.only", path: "pnpm-lock.yaml" }]);
   });
 
   describe("lockfile.only", () => {

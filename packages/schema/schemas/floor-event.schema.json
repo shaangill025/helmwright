@@ -187,7 +187,7 @@
     },
     "dependencyMajorBump": {
       "title": "FloorDependencyMajorBump",
-      "description": "A changed specifier of a direct dependency in the same field, whose major key differs (`major`) or which either side's specifier gives none for (`unknown`, OQ-AD-2).",
+      "description": "A changed specifier of a direct dependency against the same field of the base or, for a runtime field the base lacks it in, the base's first runtime field with it (OQ-AD-10b): `major` if the major key differs; `unknown` if either side gives none (OQ-AD-2), the `npm:` alias target or `workspace:` source changed (OQ-AD-10a), or an upper bound or open-endedness changed (OQ-AD-9).",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -239,6 +239,7 @@
     },
     "signalId": {
       "description": "`<floor.signalled eventId>:<index>`; it fits the object events' `signalId` (at most 128 code units).",
+      "$comment": "The event-ID part is capped at 123 code units (1 + 122), so with `:` and a 3-digit index the ID fits 128; event IDs are UUIDs today.",
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,122}:(?:0|[1-9][0-9]{0,2})$"
     },

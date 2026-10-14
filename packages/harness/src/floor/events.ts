@@ -70,7 +70,11 @@ export function floorFaults(events: readonly Event[]): string[] {
     }
     if (type === "floor.checked") {
       if (checked) fault("more than one floor.checked in one run");
-      if (!validateFloorEvent({ ...payload })) {
+      // A valid floor.signalled payload is a floor event too.
+      if (
+        !validateFloorEvent({ ...payload }) ||
+        payload["kind"] !== "floor.checked"
+      ) {
         fault("floor.checked that is not a valid floor event");
       }
       if (typeof started !== "string" || payload["baseCommit"] !== started) {

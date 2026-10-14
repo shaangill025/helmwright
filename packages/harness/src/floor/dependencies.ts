@@ -108,18 +108,29 @@ function versionKey(version: string): readonly number[] | undefined {
   return minor > 0 ? [0, minor, 0] : [0, 0, patch];
 }
 
-/** The key of one `||` alternative: its first comparator without `^ ~ = > >= v`. */
-function alternativeKey(alternative: string): readonly number[] | undefined {
+/** The comparators of one `||` alternative, split on spaces and tabs. */
+function comparators(alternative: string): string[] {
   const words = alternative
     .split("\t")
     .join(" ")
     .split(" ")
     .filter((word) => word !== "");
-  let first = words[0] ?? "";
-  // A spaced operator, such as `>= 1.2.3`, joins the version after it.
-  if (first !== "" && only(first, OPERATORS)) {
-    first += words[1] ?? "";
+  const joined: string[] = [];
+  for (let i = 0; i < words.length; i += 1) {
+    let word = words[i] ?? "";
+    // A spaced operator, such as `>= 1.2.3`, joins the word after it.
+    if (only(word, OPERATORS)) {
+      i += 1;
+      word += words[i] ?? "";
+    }
+    joined.push(word);
   }
+  return joined;
+}
+
+/** The key of one `||` alternative: its first comparator without `^ ~ = > >= v`. */
+function alternativeKey(alternative: string): readonly number[] | undefined {
+  const first = comparators(alternative)[0] ?? "";
   let at = 0;
   while (at < first.length && "^~=>".includes(first.charAt(at))) at += 1;
   if (first.charAt(at) === "v") at += 1;
@@ -132,21 +143,45 @@ const compareKeys = (a: readonly number[], b: readonly number[]) =>
   (a[2] ?? 0) - (b[2] ?? 0);
 
 /**
- * The major key of `specifier`, the maximum over its `||` alternatives after `npm:<name>@`
- * or `workspace:` is stripped (a hyphen range keys on its lower bound); undefined for
- * one over MAX_SPECIFIER code units, `*`, a tag, a path, git or a URL. No regex.
+ * `specifier` trimmed and split as [source, range]: the source is its `npm:<name>@` or
+ * `workspace:` prefix, else empty; undefined for an alias without a range.
  */
-function majorKey(specifier: string): readonly number[] | undefined {
-  if (specifier.length > MAX_SPECIFIER) return undefined;
-  let range = specifier.trim();
+function sourced(specifier: string): readonly [string, string] | undefined {
+  const range = specifier.trim();
   if (range.startsWith("npm:")) {
     // Past the `@` of a scoped name.
     const at = range.indexOf("@", "npm:".length + 1);
     if (at === -1) return undefined;
-    range = range.slice(at + 1);
-  } else if (range.startsWith("workspace:")) {
-    range = range.slice("workspace:".length);
+    return [range.slice(0, at + 1), range.slice(at + 1)];
   }
+  if (range.startsWith("workspace:")) {
+    return ["workspace:", range.slice("workspace:".length)];
+  }
+  return ["", range];
+}
+
+/**
+ * The upper descriptor of a range (OQ-AD-9): per `||` alternative, its comparators after
+ * the first (a hyphen range's upper bound among them) and whether it is open-ended (a `>`
+ * comparator and no `<` one), sorted. The first comparator is left to the major key, so
+ * `^1.2.0` to `~1.3.0` keeps the descriptor.
+ */
+function upper(range: string): string {
+  const parts = range.split("||").map((alternative) => {
+    const words = comparators(alternative);
+    const open =
+      words.some((w) => w.startsWith(">")) &&
+      !words.some((w) => w.startsWith("<"));
+    return JSON.stringify([open, words.slice(1)]);
+  });
+  return JSON.stringify(parts.sort(compare));
+}
+
+/**
+ * The major key of a range, the maximum over its `||` alternatives (a hyphen range keys
+ * on its lower bound); undefined for `*`, a tag, a path, git or a URL. No regex.
+ */
+function majorKey(range: string): readonly number[] | undefined {
   let best: readonly number[] | undefined;
   for (const alternative of range.split("||")) {
     const key = alternativeKey(alternative);
@@ -156,11 +191,22 @@ function majorKey(specifier: string): readonly number[] | undefined {
   return best;
 }
 
-/** The bump of a changed specifier, or undefined for one in the same major (OQ-AD-2). */
+/**
+ * The bump of a changed specifier, or undefined for one in the same major (OQ-AD-2):
+ * `unknown` if either side has no major key or is over MAX_SPECIFIER code units, or the
+ * source changed (OQ-AD-10a); else `major` if the major keys differ; else `unknown` if the
+ * upper descriptors differ (OQ-AD-9).
+ */
 function bumpOf(from: string, to: string): "major" | "unknown" | undefined {
-  const [before, after] = [majorKey(from), majorKey(to)];
+  if (from.length > MAX_SPECIFIER || to.length > MAX_SPECIFIER)
+    return "unknown";
+  const [base, candidate] = [sourced(from), sourced(to)];
+  if (base === undefined || candidate === undefined) return "unknown";
+  if (base[0] !== candidate[0]) return "unknown";
+  const [before, after] = [majorKey(base[1]), majorKey(candidate[1])];
   if (before === undefined || after === undefined) return "unknown";
-  return compareKeys(before, after) === 0 ? undefined : "major";
+  if (compareKeys(before, after) !== 0) return "major";
+  return upper(base[1]) === upper(candidate[1]) ? undefined : "unknown";
 }
 
 const sortKey = (s: DependencySignal) =>
@@ -189,10 +235,12 @@ function bounded<T extends DependencySignal>(signals: T[], sort = true): T[] {
  * Per name the most material one is kept: a runtime add, then a major bump, then a dev
  * add. A runtime add is a name in a runtime field of the candidate and in none of the
  * base (a move from dev counts); a dev add is in `devDependencies` and in no field of the
- * base; a major bump is a changed specifier in the same field whose major key differs, or
- * which either side has no key for (`unknown`). Text is escaped for display; the result
- * is sorted by path, name and type.
- * @throws FloorError past MAX_SIGNALS signals
+ * base; a major bump is a changed specifier (see `bumpOf`) against the same field of the
+ * base, or for a field without the name in the base, against each base runtime field with
+ * it (OQ-AD-10b, OQ-AD-12; fail toward a Brief): any bump beats none, and between bumps
+ * the first such field in FIELDS order is kept, with `from` its specifier.
+ * Text is escaped for display; the result is sorted by path, name and type.
+ * @throws FloorError past MAX_SIGNALS signals, or for a signal of an empty name
  */
 export function dependencySignals(
   baseManifest: object,
@@ -212,9 +260,18 @@ export function dependencySignals(
         name: displayText(name),
         runtime,
       };
-      const from = before.get(field)?.get(name);
-      const bump =
-        from === undefined || from === to ? undefined : bumpOf(from, to);
+      const held = before.get(field)?.get(name);
+      let from: string | undefined;
+      let bump: "major" | "unknown" | undefined;
+      for (const base of held === undefined
+        ? RUNTIME_FIELDS.map((f) => before.get(f)?.get(name))
+        : [held]) {
+        bump = base === undefined || base === to ? undefined : bumpOf(base, to);
+        if (bump !== undefined) {
+          from = base;
+          break;
+        }
+      }
       const add = { ...shown, type: "dependency.added", from: null } as const;
       const found: readonly [number, Dependency] | undefined =
         runtime && !inBase(name, RUNTIME_FIELDS)
@@ -233,6 +290,10 @@ export function dependencySignals(
                   },
                 ]
               : undefined;
+      // The schema's `text` cannot hold it (fail closed).
+      if (found !== undefined && name === "") {
+        throw new FloorError("a dependency name is empty");
+      }
       const kept = best.get(name);
       if (found !== undefined && (kept === undefined || found[0] < kept[0])) {
         best.set(name, found);

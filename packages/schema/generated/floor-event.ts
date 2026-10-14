@@ -134,7 +134,7 @@ export interface FloorDependencyAdded {
   to: Specifier;
 }
 /**
- * A changed specifier of a direct dependency in the same field, whose major key differs (`major`) or which either side's specifier gives none for (`unknown`, OQ-AD-2).
+ * A changed specifier of a direct dependency against the same field of the base or, for a runtime field the base lacks it in, the base's first runtime field with it (OQ-AD-10b): `major` if the major key differs; `unknown` if either side gives none (OQ-AD-2), the `npm:` alias target or `workspace:` source changed (OQ-AD-10a), or an upper bound or open-endedness changed (OQ-AD-9).
  */
 export interface FloorDependencyMajorBump {
   id: SignalId;

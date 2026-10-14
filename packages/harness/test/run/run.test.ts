@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FloorFinding } from "@helmwright/schema";
+import { validateFloorEvent, type FloorFinding } from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SANDBOX_CLEANUP_FAILED,
@@ -734,6 +734,35 @@ describe("executeRun's sensor floor (B3-2)", () => {
         "seq " + String(late.seq) + ": " + type + " after floor.checked",
       ]);
     }
+  });
+
+  it("faults a floor.checked whose payload is another floor event", async () => {
+    await run(mutatingEngine(0).engine, true, log, undefined, { floor: pass });
+    const events = log.events({ runId: "run-1" });
+    const at = events.findIndex((e) => e.type === "floor.checked");
+    const floor = events[at];
+    if (floor === undefined) throw new Error("no event");
+    const { baseCommit, candidateTree } = floor.payload;
+    const payload = {
+      kind: "floor.signalled",
+      detector: "dependency-1",
+      phase: "final",
+      baseCommit,
+      candidateTree,
+      materiality: {
+        rubricVersion: "materiality-rubric-1",
+        threshold: "runtimeAddOrMajor",
+      },
+      signals: [],
+    };
+    expect(validateFloorEvent(payload)).toBe(true);
+    const seq = "seq " + String(floor.seq) + ": floor.checked ";
+    expect(
+      floorFaults([...events.slice(0, at), { ...floor, payload }]),
+    ).toEqual([
+      seq + "that is not a valid floor event",
+      seq + "rules version is not known",
+    ]);
   });
 
   it("faults any event but run.terminated after floor.checked (F5)", async () => {
