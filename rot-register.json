@@ -426,7 +426,7 @@
   {
     "component": "packages/harness/test/e2e/fixtures/fx-repo.json",
     "ring": 0,
-    "assumption": "The FX fixture (this tree, its fx-*.turns.json files and test/e2e/fx-repo.ts) is a plain ESM JavaScript project in app/, run by node --test (Node 22 or later default globs) in app/ in the sandbox, with no network and no package manager; its one dependency, the self-authored Apache-2.0 @helmwright/fx-duration, is copied from app/vendor/ by its app/scripts/vendor-install.mjs; its lockfiles are pnpm 10.21 output (lockfile v9, directory resolution), never hand-written; the base tree and commit are pinned (git 2.29 or later, autocrlf and safecrlf off); and the floor's Ring 0 package.json is the root one only and its package keys exclude the dependency keys (OQ-B3-3, OQ-AD-1), so the dependency run completes with a floor pass until A-dep adds its Brief; a change to either floor rule changes FX-2.",
+    "assumption": "The FX fixture (this tree, its fx-*.turns.json files and test/e2e/fx-repo.ts) is a plain ESM JavaScript project in app/, run by node --test (Node 22 or later default globs) in app/ in the sandbox, with no network and no package manager; its one dependency, the self-authored Apache-2.0 @helmwright/fx-duration, is copied from app/vendor/ by its app/scripts/vendor-install.mjs; its lockfiles are pnpm 10.21 output (lockfile v9, directory resolution), never hand-written; the base tree and commit are pinned (git 2.29 or later, autocrlf and safecrlf off); and the floor's Ring 0 package.json is the root one only and its package keys exclude the dependency keys (OQ-B3-3, OQ-AD-1), so the dependency run completes with a floor pass and one pending owner Brief; a change to either floor rule changes FX-2.",
     "evidence": [
       "decisions Dogfood targets",
       "decisions FX owner answers",
@@ -435,7 +435,7 @@
       "packages/harness/test/e2e/cli.test.ts"
     ],
     "added": "2026-10-09",
-    "lastReviewed": "2026-10-10",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["engine", "milestone"]
   },
   {

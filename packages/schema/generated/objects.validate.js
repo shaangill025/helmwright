@@ -494,7 +494,7 @@ const schema31 = {
         recommendationSha256: {
           $ref: "#/$defs/sha256",
           description:
-            "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 64 lowercase hex digits (256 bits), derived as HMAC-SHA256 of the decision ID under the harness's recommendation key (OQ-AD-3), and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
+            "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 64 lowercase hex digits (256 bits; for a floor Brief, derived as HMAC-SHA256 of the decision ID under the harness's recommendation key, OQ-AD-3), and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
         },
         optionOrderSeed: {
           $ref: "#/$defs/seed",
@@ -5689,7 +5689,7 @@ const schema90 = {
     recommendationSha256: {
       $ref: "#/$defs/sha256",
       description:
-        "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 64 lowercase hex digits (256 bits), derived as HMAC-SHA256 of the decision ID under the harness's recommendation key (OQ-AD-3), and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
+        "The recommendation as a salted commitment: SHA-256 of the UTF-8 bytes of `JSON.stringify([decisionId, optionId, nonce])` (no whitespace), where the nonce is 64 lowercase hex digits (256 bits; for a floor Brief, derived as HMAC-SHA256 of the decision ID under the harness's recommendation key, OQ-AD-3), and the nonce and option are revealed later in `decision.recommendation.revealed` (B5-2 reserves it, A3 writes it).",
     },
     optionOrderSeed: {
       $ref: "#/$defs/seed",
