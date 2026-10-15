@@ -23,10 +23,15 @@ import {
 import { runGit } from "../config/config.ts";
 import { caseFold, isRing0Path } from "../permission/normalize.ts";
 import { deepFreeze, displayText } from "../permission/policy.ts";
-import { DEPENDENCY_DETECTOR, detectDependencies } from "./dependencies.ts";
+import {
+  DEPENDENCY_DETECTOR,
+  MAX_SIGNALS,
+  detectDependencies,
+  isLockfilePath,
+} from "./dependencies.ts";
 import { FloorError, floorChecked } from "./events.ts";
 import { MATERIALITY_RUBRIC, type BriefThreshold } from "./materiality.ts";
-import { floorFindings, isConfig, nameOf, type FloorChange } from "./rules.ts";
+import { floorFindings, isConfig, type FloorChange } from "./rules.ts";
 
 /** The run's repo as the host knows it, never discovered from inside the worktree. */
 export interface FloorRepo {
@@ -623,8 +628,10 @@ export function checkCandidate(
 
 /**
  * The final `floor.signalled` payload (Q44, A-dep): the `dependency-1` signals of
- * `changes`, signal `i` with the ID `<eventId>:<i>`, and the materiality the run's
- * decisions are routed by (OQ-AD-5).
+ * `changes`, signal `i` with the ID `<eventId>:<i>`, the materiality the run's
+ * decisions are routed by (OQ-AD-5), and the changed lockfiles (`changedLockfiles`,
+ * sorted without repeats): the run's Briefs are given these, and replay recomputes
+ * each Brief's footprint from them.
  * @throws FloorError with fixed text if the detector fails or the payload is not valid
  */
 export function floorSignalled(
@@ -633,8 +640,8 @@ export function floorSignalled(
   candidateTree: string,
   threshold: BriefThreshold,
   changes: readonly FloorChange[],
-): FloorSignalled {
-  const payload: FloorSignalled = {
+): FloorSignalled & { readonly lockfiles: string[] } {
+  const payload: FloorSignalled & { readonly lockfiles: string[] } = {
     kind: "floor.signalled",
     detector: DEPENDENCY_DETECTOR,
     phase: "final",
@@ -645,6 +652,7 @@ export function floorSignalled(
       ...signal,
       id: eventId + ":" + String(i),
     })),
+    lockfiles: [...new Set(changedLockfiles(changes))].sort(),
   };
   if (!validateFloorEvent({ ...payload })) {
     throw new FloorError("floor.signalled cannot be logged");
@@ -655,9 +663,12 @@ export function floorSignalled(
 /**
  * The changed lockfiles of `changes` as shown text, as the detector names them: with no
  * manifest among the changes, each changed lockfile is a `lockfile.only` signal.
+ * @throws FloorError past MAX_SIGNALS changed lockfiles (fail closed)
  */
 export function changedLockfiles(changes: readonly FloorChange[]): string[] {
-  return detectDependencies(
-    changes.filter((change) => nameOf(change.path) !== "package.json"),
-  ).map((signal) => signal.path);
+  const lockfiles = changes.filter((change) => isLockfilePath(change.path));
+  if (lockfiles.length > MAX_SIGNALS) {
+    throw new FloorError("more than 256 changed lockfiles");
+  }
+  return detectDependencies(lockfiles).map((signal) => signal.path);
 }

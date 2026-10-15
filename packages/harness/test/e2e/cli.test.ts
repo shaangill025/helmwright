@@ -2844,7 +2844,10 @@ describe("seeded fixture repo (e2e, FX)", () => {
       // A-dep: the detector runs and finds nothing, so no decision opens.
       const { signalled, decisions } = floorSignalsOf(run.events);
       expect(decisions, "floor decisions").toEqual([]);
-      expect(signalled).toMatchObject({ phase: "final", signals: [] });
+      expect(signalled).toMatchObject({
+        ...{ phase: "final", signals: [] },
+        lockfiles: [],
+      });
       expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
     },
@@ -2920,6 +2923,8 @@ describe("seeded fixture repo (e2e, FX)", () => {
             to: "file:vendor/fx-duration",
           },
         ],
+        // The changed lockfile, so replay recomputes the Brief's whole footprint.
+        lockfiles: ["app/pnpm-lock.yaml"],
       });
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const repoId = join(tmp, "fx", ".git");
@@ -2976,6 +2981,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(signalled?.["signals"]).toEqual([
         { id: signalId, type: "lockfile.only", path: "app/pnpm-lock.yaml" },
       ]);
+      expect(signalled?.["lockfiles"]).toEqual(["app/pnpm-lock.yaml"]);
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const why =
         "materiality-rubric-1, threshold runtimeAddOrMajor: a lockfile-only change is under the brief threshold";
