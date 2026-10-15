@@ -108,15 +108,25 @@ const ARTIFACT = /^artifact-[0-9a-f]{64}$/;
 /** Replay cannot know the key; a Brief's commitment is checked for format only. */
 const REPLAY_KEY = new Uint8Array(32);
 
+/** A legacy Brief's footprint: the recomputed IDs, then any footprint IDs. */
+const isLegacyFootprint = (footprint: unknown, fixed: readonly string[]) =>
+  Array.isArray(footprint) &&
+  fixed.every((id, i) => footprint[i] === id) &&
+  footprint
+    .slice(fixed.length)
+    .every((id) => typeof id === "string" && ARTIFACT.test(id));
+
 /**
  * Whether `logged` is the floor decision of `input` (A-dep): its route, a Ruling's body
- * and every Brief field recomputed, but the seed and the commitment, which are checked
- * for format only, and the proposed footprints of changed lockfiles, which the log does
- * not name: past the recomputed ones, any footprint ID.
+ * and every Brief field recomputed, with the proposed footprints of `floor.signalled`'s
+ * `lockfiles`, but the seed and the commitment, which are checked for format only. A
+ * legacy `floor.signalled` (`lockfiles` undefined) names no lockfiles, so past the
+ * recomputed footprints its Briefs may hold any footprint ID.
  */
 function isFloorDecisionOf(
   logged: Record<string, unknown>,
   input: Omit<FloorDecisionInput, "lockfiles" | "seed" | "key">,
+  lockfiles: readonly string[] | undefined,
 ): boolean {
   const brief = logged["brief"];
   const seed = isRecord(brief) ? brief["optionOrderSeed"] : undefined;
@@ -124,8 +134,8 @@ function isFloorDecisionOf(
   let expected;
   try {
     expected = floorDecision({
-      ...input,
-      ...{ lockfiles: [], seed: given ?? "0".repeat(32), key: REPLAY_KEY },
+      ...{ ...input, lockfiles: lockfiles ?? [] },
+      ...{ seed: given ?? "0".repeat(32), key: REPLAY_KEY },
     });
   } catch (error) {
     if (error instanceof FloorError) return false;
@@ -138,20 +148,17 @@ function isFloorDecisionOf(
   const { recommendationSha256: commitment, proposedFootprint: footprint } =
     brief;
   const fixed = expected.brief.proposedFootprint;
+  const legacy = lockfiles === undefined;
   return (
     typeof commitment === "string" &&
     SHA256.test(commitment) &&
-    Array.isArray(footprint) &&
-    fixed.every((id, i) => footprint[i] === id) &&
-    footprint
-      .slice(fixed.length)
-      .every((id) => typeof id === "string" && ARTIFACT.test(id)) &&
+    (!legacy || isLegacyFootprint(footprint, fixed)) &&
     isDeepStrictEqual(logged, {
       ...expected,
       brief: {
         ...expected.brief,
         recommendationSha256: commitment,
-        proposedFootprint: footprint,
+        proposedFootprint: legacy ? footprint : fixed,
       },
     })
   );
@@ -160,12 +167,17 @@ function isFloorDecisionOf(
 /**
  * A-dep replay faults of a run's floor decisions: at most one final `floor.signalled`,
  * valid, of a known rubric, with `run.started`'s base commit and `floor.checked`'s
- * candidate tree, signal `i` with the ID `<eventId>:<i>`; then each signal's decision at
- * the next seqs in signal order, in this run's envelope and equal to the recomputed one
- * (`isFloorDecisionOf`), and `floor.checked` right after them; and no other floor
- * decision of the run (in its events or naming it). A run with `floor.checked` and no
- * `floor.signalled` is legacy, and so not a fault, only if no `floor.signalled` precedes
- * that event in the log.
+ * candidate tree, signal `i` with the ID `<eventId>:<i>`, and `lockfiles` sorted without
+ * repeats and, with a `lockfile.only` signal, those signals' paths; then each signal's
+ * decision at the next seqs in signal order, in this run's envelope and equal to the
+ * recomputed one (`isFloorDecisionOf`), and `floor.checked` right after them; and no
+ * other floor decision of the run (in its events or naming it). A run with
+ * `floor.checked` and no `floor.signalled` is legacy, and so not a fault, only if no
+ * `floor.signalled` precedes that event in the log; likewise a `floor.signalled` without
+ * `lockfiles` (written before the field) is legacy, its Briefs' lockfile footprints
+ * checked for format only, only if no `floor.signalled` with it precedes it in the log.
+ * Legacy is keyed on the field, not a detector version: the signals are the same
+ * `dependency-1` ones.
  */
 function floorDecisionFaults(
   events: readonly Event[],
@@ -196,8 +208,26 @@ function floorDecisionFaults(
       at("that is not a valid floor event");
       return;
     }
-    const { signals, materiality } = payload as FloorSignalled;
+    const { signals, materiality, lockfiles } = payload as FloorSignalled;
     if (checked === undefined) at("without floor.checked");
+    if (lockfiles === undefined) {
+      const named = (e: Event) =>
+        e.type === "floor.signalled" &&
+        e.seq < signalled.seq &&
+        e.payload["lockfiles"] !== undefined;
+      if (objects.some(named)) at("without lockfiles");
+    } else {
+      if (!isDeepStrictEqual(lockfiles, [...new Set(lockfiles)].sort())) {
+        at("lockfiles are not sorted without repeats");
+      }
+      const only = signals.flatMap((s) =>
+        s.type === "lockfile.only" ? [s.path] : [],
+      );
+      const paths = [...new Set(only)].sort();
+      if (paths.length > 0 && !isDeepStrictEqual(paths, lockfiles)) {
+        at("lockfiles are not its lockfile.only paths");
+      }
+    }
     if (signalled.payload["baseCommit"] !== started?.payload["baseCommit"]) {
       at("base commit is not run.started's");
     }
@@ -234,7 +264,7 @@ function floorDecisionFaults(
         repoId: String(task?.payload["repoId"]),
         threshold: materiality.threshold,
       };
-      if (!isFloorDecisionOf(e.payload, input)) {
+      if (!isFloorDecisionOf(e.payload, input, lockfiles)) {
         fault(seq, "floor decision is not its signal's");
       }
     }

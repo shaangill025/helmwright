@@ -37,11 +37,7 @@ import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
 import { floorDecision, route } from "../floor/materiality.ts";
-import {
-  changedLockfiles,
-  checkCandidate,
-  floorSignalled,
-} from "../floor/tree.ts";
+import { checkCandidate, floorSignalled } from "../floor/tree.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
@@ -1050,8 +1046,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           threshold,
           changes,
         );
-        const { signals } = signalled;
-        const lockfiles = changedLockfiles(changes);
+        // The logged lockfiles, so replay recomputes each Brief's footprint from them.
+        const { signals, lockfiles } = signalled;
         // OQ-AD-3: only a Brief commits to a recommendation, so only it needs the key.
         const briefs = signals.some((s) => route(s, threshold) === "brief");
         const key = briefs ? recommendationKey(stateDir) : new Uint8Array();

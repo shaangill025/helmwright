@@ -524,6 +524,7 @@ describe("floorSignalled and changedLockfiles (A-dep)", () => {
       { id: "evt-1:0", type: "lockfile.only", path: "pnpm-lock.yaml" },
     ]);
     expect(changedLockfiles(changes)).toEqual(["pnpm-lock.yaml"]);
+    expect(payload.lockfiles).toEqual(["pnpm-lock.yaml"]);
   });
 
   it("gives each of several lockfiles, sorted, with IDs in signal order", () => {
@@ -554,9 +555,21 @@ describe("floorSignalled and changedLockfiles (A-dep)", () => {
       lockfile("docs/\u001b/yarn.lock"),
     ];
     expect(signalsOf(changes).map((s) => s.type)).toEqual(["dependency.added"]);
-    expect(changedLockfiles(changes)).toEqual([
-      "docs/\\u{1b}/yarn.lock",
-      "pnpm-lock.yaml",
-    ]);
+    const shown = ["docs/\\u{1b}/yarn.lock", "pnpm-lock.yaml"];
+    expect(changedLockfiles(changes)).toEqual(shown);
+    // Logged, so replay recomputes each Brief's lockfile footprints.
+    const payload = floorSignalled("e", OID, OID, "everySignal", changes);
+    expect(payload.lockfiles).toEqual(shown);
+  });
+
+  it("logs the lockfiles sorted, and none for a change without one", () => {
+    const changes = [
+      manifest("package.json", {}, { dependencies: { a: "1" } }),
+    ];
+    const payload = floorSignalled("e", OID, OID, "everySignal", changes);
+    expect(payload.lockfiles).toEqual([]);
+    const several = ["web/yarn.lock", "bun.lock"].map(lockfile);
+    const logged = floorSignalled("e", OID, OID, "everySignal", several);
+    expect(logged.lockfiles).toEqual(["bun.lock", "web/yarn.lock"]);
   });
 });

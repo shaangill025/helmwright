@@ -110,6 +110,12 @@ export interface FloorSignalled {
    * @maxItems 256
    */
   signals: FloorSignal[];
+  /**
+   * The changed lockfiles as shown text, sorted by code unit without repeats: each Brief proposes one `footprint.file` for each, so replay recomputes its whole footprint.
+   *
+   * @maxItems 256
+   */
+  lockfiles?: Path[];
 }
 /**
  * A direct dependency in `field`: a runtime one in no runtime field of the base (a move from `devDependencies` counts), a dev one in no field of the base. Every specifier kind counts.

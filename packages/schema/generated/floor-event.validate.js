@@ -112,6 +112,15 @@ const schema31 = {
           maxItems: 256,
           items: { $ref: "#/$defs/signal" },
         },
+        lockfiles: {
+          description:
+            "The changed lockfiles as shown text, sorted by code unit without repeats: each Brief proposes one `footprint.file` for each, so replay recomputes its whole footprint.",
+          $comment:
+            "Optional only for logs written before it (A-dep): replay checks a Brief's footprints past its dependency and manifest ones for format only when this is absent, and only if no `floor.signalled` with it precedes that event in the log. The writer always gives it. Order and repeats are replay's check: standalone validators take no uniqueItems.",
+          type: "array",
+          maxItems: 256,
+          items: { $ref: "#/$defs/path" },
+        },
       },
     },
     finding: {
@@ -1433,6 +1442,15 @@ const schema40 = {
       type: "array",
       maxItems: 256,
       items: { $ref: "#/$defs/signal" },
+    },
+    lockfiles: {
+      description:
+        "The changed lockfiles as shown text, sorted by code unit without repeats: each Brief proposes one `footprint.file` for each, so replay recomputes its whole footprint.",
+      $comment:
+        "Optional only for logs written before it (A-dep): replay checks a Brief's footprints past its dependency and manifest ones for format only when this is absent, and only if no `floor.signalled` with it precedes that event in the log. The writer always gives it. Order and repeats are replay's check: standalone validators take no uniqueItems.",
+      type: "array",
+      maxItems: 256,
+      items: { $ref: "#/$defs/path" },
     },
   },
 };
@@ -3015,7 +3033,8 @@ function validate25(
         key0 === "baseCommit" ||
         key0 === "candidateTree" ||
         key0 === "materiality" ||
-        key0 === "signals"
+        key0 === "signals" ||
+        key0 === "lockfiles"
       )) {
         const err7 = {
           instancePath,
@@ -3336,8 +3355,121 @@ function validate25(
         errors++;
       }
     }
+    if (data.lockfiles !== undefined) {
+      let data10 = data.lockfiles;
+      if (Array.isArray(data10)) {
+        if (data10.length > 256) {
+          const err24 = {
+            instancePath: instancePath + "/lockfiles",
+            schemaPath: "#/properties/lockfiles/maxItems",
+            keyword: "maxItems",
+            params: { limit: 256 },
+            message: "must NOT have more than 256 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err24];
+          } else {
+            vErrors.push(err24);
+          }
+          errors++;
+        }
+        const len1 = data10.length;
+        for (let i1 = 0; i1 < len1; i1++) {
+          let data11 = data10[i1];
+          const _errs26 = errors;
+          const _errs27 = errors;
+          if (typeof data11 === "string") {
+            if (!pattern7.test(data11)) {
+              const err25 = {};
+              if (vErrors === null) {
+                vErrors = [err25];
+              } else {
+                vErrors.push(err25);
+              }
+              errors++;
+            }
+          }
+          var valid9 = _errs27 === errors;
+          if (valid9) {
+            const err26 = {
+              instancePath: instancePath + "/lockfiles/" + i1,
+              schemaPath: "#/$defs/path/not",
+              keyword: "not",
+              params: {},
+              message: "must NOT be valid",
+            };
+            if (vErrors === null) {
+              vErrors = [err26];
+            } else {
+              vErrors.push(err26);
+            }
+            errors++;
+          } else {
+            errors = _errs26;
+            if (vErrors !== null) {
+              if (_errs26) {
+                vErrors.length = _errs26;
+              } else {
+                vErrors = null;
+              }
+            }
+          }
+          if (typeof data11 === "string") {
+            if (!pattern8.test(data11)) {
+              const err27 = {
+                instancePath: instancePath + "/lockfiles/" + i1,
+                schemaPath: "#/$defs/path/pattern",
+                keyword: "pattern",
+                params: {
+                  pattern:
+                    "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$",
+                },
+                message:
+                  'must match pattern "' +
+                  "^[^\\u0000-\\u001f\\u007f-\\u009f\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]{1,8192}$" +
+                  '"',
+              };
+              if (vErrors === null) {
+                vErrors = [err27];
+              } else {
+                vErrors.push(err27);
+              }
+              errors++;
+            }
+          } else {
+            const err28 = {
+              instancePath: instancePath + "/lockfiles/" + i1,
+              schemaPath: "#/$defs/path/type",
+              keyword: "type",
+              params: { type: "string" },
+              message: "must be string",
+            };
+            if (vErrors === null) {
+              vErrors = [err28];
+            } else {
+              vErrors.push(err28);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err29 = {
+          instancePath: instancePath + "/lockfiles",
+          schemaPath: "#/properties/lockfiles/type",
+          keyword: "type",
+          params: { type: "array" },
+          message: "must be array",
+        };
+        if (vErrors === null) {
+          vErrors = [err29];
+        } else {
+          vErrors.push(err29);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err24 = {
+    const err30 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -3345,9 +3477,9 @@ function validate25(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err24];
+      vErrors = [err30];
     } else {
-      vErrors.push(err24);
+      vErrors.push(err30);
     }
     errors++;
   }

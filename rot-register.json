@@ -400,7 +400,7 @@
   {
     "component": "packages/harness/src/objects/faults.ts",
     "ring": 0,
-    "assumption": "Replay's object relations are read from the events, never the rows, and only for a terminated run (B5-4b): a run has at most one run.recorded, before its run.started, with that event's taskId, baseCommit and engine, and the class of its intake.classified if it logged one; its Task's text is run.started's title. B5-5: each intake.classified has its intake Ruling at the next seq, equal to the one recomputed from it; the run has no other one, and each intake.overridden after it names it. Legacy (OD-B54-3 i), not a fault: a run with no run.recorded if none precedes its run.started, and a run with no Ruling if none precedes its intake.classified, so an older build that runs in a state dir after a newer one makes runs that replay faults (exit 3): use a new state dir; review at the milestone end.",
+    "assumption": "Replay's object relations are read from the events, never the rows, and only for a terminated run (B5-4b): a run has at most one run.recorded, before its run.started, with that event's taskId, baseCommit and engine, and the class of its intake.classified if it logged one; its Task's text is run.started's title. B5-5: each intake.classified has its intake Ruling at the next seq, equal to the one recomputed from it; the run has no other one, and each intake.overridden after it names it. Legacy (OD-B54-3 i), not a fault: a run with no run.recorded if none precedes its run.started, and a run with no Ruling if none precedes its intake.classified, so an older build that runs in a state dir after a newer one makes runs that replay faults (exit 3): use a new state dir; review at the milestone end. A-dep: a Brief's footprint is recomputed from floor.signalled's lockfiles; one without them is legacy (format-only lockfile footprints) if none with them precedes it.",
     "evidence": [
       "decisions B5-4 owner answers",
       "decisions B5-5 owner answers",
@@ -408,7 +408,7 @@
       "packages/harness/test/e2e/cli.test.ts"
     ],
     "added": "2026-10-09",
-    "lastReviewed": "2026-10-09",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["milestone"]
   },
   {
@@ -480,13 +480,13 @@
   {
     "component": "packages/schema/schemas/floor-event.schema.json",
     "ring": 0,
-    "assumption": "Each floor check is logged once with the rules version, the base commit, the candidate tree, a verdict that is reject exactly when a finding exists, at most 256 escaped findings and a truncated flag; reject-iff-finding is enforced by the harness, not the schema. A floor.signalled event logs the dependency-1 detector's phase, base commit, candidate tree, materiality rubric and threshold, and at most 256 escaped signals with IDs <eventId>:<index>; their order and routing are checked by replay, not the schema.",
+    "assumption": "Each floor check is logged once with the rules version, the base commit, the candidate tree, a verdict that is reject exactly when a finding exists, at most 256 escaped findings and a truncated flag; reject-iff-finding is enforced by the harness, not the schema. A floor.signalled event logs the dependency-1 detector's phase, base commit, candidate tree, materiality rubric and threshold, at most 256 escaped signals with IDs <eventId>:<index>, and at most 256 changed lockfile paths (absent only in older logs); their order, repeats and routing are checked by replay, not the schema.",
     "evidence": [
       "06 Ring 0 contents",
       "packages/schema/test/floor-event.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-13",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["milestone"]
   },
   {

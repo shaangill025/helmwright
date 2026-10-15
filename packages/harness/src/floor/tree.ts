@@ -623,8 +623,10 @@ export function checkCandidate(
 
 /**
  * The final `floor.signalled` payload (Q44, A-dep): the `dependency-1` signals of
- * `changes`, signal `i` with the ID `<eventId>:<i>`, and the materiality the run's
- * decisions are routed by (OQ-AD-5).
+ * `changes`, signal `i` with the ID `<eventId>:<i>`, the materiality the run's
+ * decisions are routed by (OQ-AD-5), and the changed lockfiles (`changedLockfiles`,
+ * sorted without repeats): the run's Briefs are given these, and replay recomputes
+ * each Brief's footprint from them.
  * @throws FloorError with fixed text if the detector fails or the payload is not valid
  */
 export function floorSignalled(
@@ -633,8 +635,8 @@ export function floorSignalled(
   candidateTree: string,
   threshold: BriefThreshold,
   changes: readonly FloorChange[],
-): FloorSignalled {
-  const payload: FloorSignalled = {
+): FloorSignalled & { readonly lockfiles: string[] } {
+  const payload: FloorSignalled & { readonly lockfiles: string[] } = {
     kind: "floor.signalled",
     detector: DEPENDENCY_DETECTOR,
     phase: "final",
@@ -645,6 +647,7 @@ export function floorSignalled(
       ...signal,
       id: eventId + ":" + String(i),
     })),
+    lockfiles: [...new Set(changedLockfiles(changes))].sort(),
   };
   if (!validateFloorEvent({ ...payload })) {
     throw new FloorError("floor.signalled cannot be logged");

@@ -357,7 +357,11 @@ const devAdd: FloorSignal = {
   name: "vitest",
   runtime: false,
 };
-const signalled = (signals: readonly FloorSignal[]): FloorSignalled => ({
+const LOCKFILES = ["app/pnpm-lock.yaml"];
+const signalled = (
+  signals: readonly FloorSignal[],
+  lockfiles: readonly string[] | null = LOCKFILES,
+): FloorSignalled => ({
   ...{ kind: "floor.signalled", detector: "dependency-1", phase: "final" },
   ...{ baseCommit: BASE, candidateTree: TREE },
   materiality: {
@@ -365,11 +369,12 @@ const signalled = (signals: readonly FloorSignal[]): FloorSignalled => ({
     threshold: "runtimeAddOrMajor",
   },
   signals: [...signals],
+  ...(lockfiles === null ? {} : { lockfiles: [...lockfiles] }),
 });
 const opened = (signal: FloorSignal, index: number, runId = "run-1") =>
   floorDecision({
     ...{ runId, taskId: "task-1", repoId: "/r/.git", index, signal },
-    ...{ threshold: "runtimeAddOrMajor", lockfiles: ["app/pnpm-lock.yaml"] },
+    ...{ threshold: "runtimeAddOrMajor", lockfiles: LOCKFILES },
     ...{ seed: SEED, key: new Uint8Array(32).fill(7) },
   });
 
@@ -406,7 +411,7 @@ describe("objectFaults: floor decisions (A-dep)", () => {
     expect(floor(signalledRun([]))).toEqual([]);
   });
 
-  it("checks a Brief's seed and commitment, and its lockfile footprints, for format only", () => {
+  it("checks a Brief's seed and commitment for format only", () => {
     const seeded = edit(signalledRun(), 4, (e) =>
       withBrief(e, {
         optionOrderSeed: "f".repeat(32),
@@ -414,10 +419,80 @@ describe("objectFaults: floor decisions (A-dep)", () => {
       }),
     );
     expect(floor(seeded)).toEqual([]);
-    const noLockfile = edit(signalledRun(), 4, (e) =>
+  });
+
+  it("pins a Brief's lockfile footprints to floor.signalled's lockfiles", () => {
+    const extra = "artifact-" + "d".repeat(64);
+    const added = edit(signalledRun(), 4, (e) =>
+      withBrief(e, { proposedFootprint: [...footprintOf(e), extra] }),
+    );
+    expect(floor(added)).toEqual([NOT_ITS]);
+    const dropped = edit(signalledRun(), 4, (e) =>
       withBrief(e, { proposedFootprint: footprintOf(e).slice(0, 2) }),
     );
-    expect(floor(noLockfile)).toEqual([]);
+    expect(floor(dropped)).toEqual([NOT_ITS]);
+    const renamed = edit(signalledRun(), 3, (e) =>
+      withPayload(e, signalled([runtimeAdd, devAdd], ["pnpm-lock.yaml"])),
+    );
+    expect(floor(renamed)).toEqual([NOT_ITS]);
+  });
+
+  it.each([
+    ["unsorted", ["b/pnpm-lock.yaml", "app/pnpm-lock.yaml"]],
+    ["repeated", ["app/pnpm-lock.yaml", "app/pnpm-lock.yaml"]],
+  ])("faults %s lockfiles", (_key, lockfiles) => {
+    const events = edit(signalledRun([]), 3, (e) =>
+      withPayload(e, signalled([], lockfiles)),
+    );
+    expect(floor(events)).toEqual([
+      "seq 3: floor.signalled lockfiles are not sorted without repeats",
+    ]);
+  });
+
+  it("faults lockfiles that are not the lockfile.only signals' paths", () => {
+    const lockOnly: FloorSignal = {
+      ...{ id: "evt-3:0", type: "lockfile.only", path: "app/pnpm-lock.yaml" },
+    };
+    expect(floor(signalledRun([lockOnly]))).toEqual([]);
+    const events = edit(signalledRun([lockOnly]), 3, (e) =>
+      withPayload(e, signalled([lockOnly], [])),
+    );
+    expect(floor(events)).toEqual([
+      "seq 3: floor.signalled lockfiles are not its lockfile.only paths",
+    ]);
+  });
+
+  it("checks a legacy Brief's lockfile footprints for format only, before the first lockfiles", () => {
+    const legacy = (events: Event[]) =>
+      edit(events, 3, (e) =>
+        withPayload(e, signalled([runtimeAdd, devAdd], null)),
+      );
+    const extra = "artifact-" + "d".repeat(64);
+    const added = legacy(
+      edit(signalledRun(), 4, (e) =>
+        withBrief(e, { proposedFootprint: [...footprintOf(e), extra] }),
+      ),
+    );
+    expect(floor(added)).toEqual([]);
+    const dropped = legacy(
+      edit(signalledRun(), 4, (e) =>
+        withBrief(e, { proposedFootprint: footprintOf(e).slice(0, 2) }),
+      ),
+    );
+    expect(floor(dropped)).toEqual([]);
+    const badFormat = legacy(
+      edit(signalledRun(), 4, (e) =>
+        withBrief(e, { proposedFootprint: [...footprintOf(e), "artifact-x"] }),
+      ),
+    );
+    expect(floor(badFormat)).toEqual([NOT_ITS]);
+    const earlier = withPayload(
+      event(-1, "floor.signalled", {}, "run-0"),
+      signalled([]),
+    );
+    expect(floor(added, [earlier, ...added])).toEqual([
+      "seq 3: floor.signalled without lockfiles",
+    ]);
   });
 
   it.each<[string, (e: Event) => Event]>([

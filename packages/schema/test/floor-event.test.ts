@@ -110,13 +110,19 @@ const signalled: FloorSignalled = {
     },
     { id: "event-1:2", type: "lockfile.only", path: "pnpm-lock.yaml" },
   ],
+  lockfiles: ["app/pnpm-lock.yaml", "pnpm-lock.yaml"],
 };
 const [add, major, lock] = signalled.signals as [object, object, object];
 const withSignal = (signal: object) => ({ ...signalled, signals: [signal] });
+const files = (n: number) =>
+  Array.from({ length: n }, (_, i) => `${String(i)}/a.lock`);
 
 describe("floor-event schema floor.signalled", () => {
   it.each([
     ["three signals", signalled],
+    ["no lockfiles field (legacy)", without(signalled, "lockfiles")],
+    ["no changed lockfiles", { ...signalled, lockfiles: [] }],
+    ["256 lockfiles", { ...signalled, lockfiles: files(256) }],
     ["no signals", { ...signalled, signals: [] }],
     ["an early phase", { ...signalled, phase: "early" }],
     ["256 signals", { ...signalled, signals: Array(256).fill(lock) }],
@@ -153,6 +159,10 @@ describe("floor-event schema floor.signalled", () => {
     ],
     ["257 signals", { ...signalled, signals: Array(257).fill(lock) }],
     ["an extra key", { ...signalled, findings: [] }],
+    ["257 lockfiles", { ...signalled, lockfiles: files(257) }],
+    ["an absolute lockfile", { ...signalled, lockfiles: ["/pnpm-lock.yaml"] }],
+    ["a lockfile with a control", { ...signalled, lockfiles: ["a\u0007b"] }],
+    ["a lockfile that is not text", { ...signalled, lockfiles: [1] }],
     ["an unknown signal type", withSignal({ ...lock, type: "module.added" })],
     ["an extra signal key", withSignal({ ...lock, name: "a" })],
     ["a signal without an ID", withSignal(without(lock, "id"))],

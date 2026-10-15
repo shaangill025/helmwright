@@ -104,6 +104,13 @@
           "type": "array",
           "maxItems": 256,
           "items": { "$ref": "#/$defs/signal" }
+        },
+        "lockfiles": {
+          "description": "The changed lockfiles as shown text, sorted by code unit without repeats: each Brief proposes one `footprint.file` for each, so replay recomputes its whole footprint.",
+          "$comment": "Optional only for logs written before it (A-dep): replay checks a Brief's footprints past its dependency and manifest ones for format only when this is absent, and only if no `floor.signalled` with it precedes that event in the log. The writer always gives it. Order and repeats are replay's check: standalone validators take no uniqueItems.",
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/path" }
         }
       }
     },
