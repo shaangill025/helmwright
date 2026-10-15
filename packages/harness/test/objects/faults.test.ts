@@ -1,11 +1,18 @@
-import type { Event, IntakeClassified } from "@helmwright/schema";
+import type {
+  Event,
+  FloorSignal,
+  FloorSignalled,
+  IntakeClassified,
+} from "@helmwright/schema";
 import { describe, expect, it } from "vitest";
 import {
+  floorChecked,
   intakeRuling,
   objectFaults,
   runRecorded,
   taskCreated,
 } from "../../src/index.ts";
+import { floorDecision } from "../../src/floor/materiality.ts";
 
 // B5-4b: replay's object relations of one run, over plain events (no log needed).
 const BASE = "a".repeat(40);
@@ -327,5 +334,206 @@ describe("objectFaults: the intake Ruling (B5-5)", () => {
     expect(intake(old, [...old, ...ruled(7, "run-2")])).toEqual([]);
     // The B5-4b tests' runs (intake.classified, no Ruling) stay legacy too.
     expect(intake(logged(0))).toEqual([]);
+  });
+});
+
+// A-dep: replay recomputes each floor decision from its floor.signalled signal.
+const TREE = "c".repeat(40);
+const SEED = "0123456789abcdef0123456789abcdef";
+const runtimeAdd: FloorSignal = {
+  id: "evt-3:0",
+  type: "dependency.added",
+  path: "app/package.json",
+  field: "dependencies",
+  name: "left-pad",
+  runtime: true,
+  from: null,
+  to: "^1.3.0",
+};
+const devAdd: FloorSignal = {
+  ...runtimeAdd,
+  id: "evt-3:1",
+  field: "devDependencies",
+  name: "vitest",
+  runtime: false,
+};
+const signalled = (signals: readonly FloorSignal[]): FloorSignalled => ({
+  ...{ kind: "floor.signalled", detector: "dependency-1", phase: "final" },
+  ...{ baseCommit: BASE, candidateTree: TREE },
+  materiality: {
+    rubricVersion: "materiality-rubric-1",
+    threshold: "runtimeAddOrMajor",
+  },
+  signals: [...signals],
+});
+const opened = (signal: FloorSignal, index: number, runId = "run-1") =>
+  floorDecision({
+    ...{ runId, taskId: "task-1", repoId: "/r/.git", index, signal },
+    ...{ threshold: "runtimeAddOrMajor", lockfiles: ["app/pnpm-lock.yaml"] },
+    ...{ seed: SEED, key: new Uint8Array(32).fill(7) },
+  });
+
+/** A run as A-dep logs it: Task, Run, start, floor.signalled (seq 3), its decisions, floor.checked, end. */
+function signalledRun(
+  signals: readonly FloorSignal[] = [runtimeAdd, devAdd],
+): Event[] {
+  const n = signals.length;
+  return [
+    event(0, "task.created", task),
+    event(1, "run.recorded", run),
+    event(2, "run.started", started),
+    event(3, "floor.signalled", signalled(signals)),
+    ...signals.map((s, i) => event(4 + i, "decision.opened", opened(s, i))),
+    event(4 + n, "floor.checked", floorChecked(BASE, TREE, [])),
+    event(5 + n, "run.terminated", {}),
+  ];
+}
+const FLOOR_OBJECTS = ["task.created", "run.recorded", "decision.opened"];
+const floor = (events: readonly Event[], log: readonly Event[] = events) =>
+  objectFaults(
+    events.filter((e) => e.runId === "run-1"),
+    log.filter((e) => [...FLOOR_OBJECTS, "floor.signalled"].includes(e.type)),
+  );
+const briefOf = (e: Event) => e.payload["brief"] as Record<string, unknown>;
+const footprintOf = (e: Event) => briefOf(e)["proposedFootprint"] as string[];
+const withBrief = (e: Event, brief: object) =>
+  withPayload(e, { ...e.payload, brief: { ...briefOf(e), ...brief } });
+const NOT_ITS = "seq 4: floor decision is not its signal's";
+
+describe("objectFaults: floor decisions (A-dep)", () => {
+  it("passes a Brief and a Ruling, and a run with no signal", () => {
+    expect(floor(signalledRun())).toEqual([]);
+    expect(floor(signalledRun([]))).toEqual([]);
+  });
+
+  it("checks a Brief's seed and commitment, and its lockfile footprints, for format only", () => {
+    const seeded = edit(signalledRun(), 4, (e) =>
+      withBrief(e, {
+        optionOrderSeed: "f".repeat(32),
+        recommendationSha256: "e".repeat(64),
+      }),
+    );
+    expect(floor(seeded)).toEqual([]);
+    const noLockfile = edit(signalledRun(), 4, (e) =>
+      withBrief(e, { proposedFootprint: footprintOf(e).slice(0, 2) }),
+    );
+    expect(floor(noLockfile)).toEqual([]);
+  });
+
+  it.each<[string, (e: Event) => Event]>([
+    ["question", (e) => withBrief(e, { question: "Add it?" })],
+    ["confidence", (e) => withBrief(e, { confidence: "high" })],
+    ["seed format", (e) => withBrief(e, { optionOrderSeed: "x" })],
+    ["commitment format", (e) => withBrief(e, { recommendationSha256: "x" })],
+    [
+      "dependency footprint",
+      (e) => withBrief(e, { proposedFootprint: footprintOf(e).slice(1) }),
+    ],
+    [
+      "extra footprint format",
+      (e) =>
+        withBrief(e, { proposedFootprint: [...footprintOf(e), "artifact-x"] }),
+    ],
+    ["class", (e) => withPayload(e, { ...e.payload, class: "scope" })],
+    ["taskId", (e) => withPayload(e, { ...e.payload, taskId: "task-2" })],
+    ["ID", (e) => withPayload(e, { ...e.payload, id: "decision-floor-1-9" })],
+    [
+      "route",
+      (e) => withPayload(e, opened({ ...devAdd, id: runtimeAdd.id }, 0)),
+    ],
+  ])("faults a Brief whose %s is not the recomputed one", (_key, change) => {
+    expect(floor(edit(signalledRun(), 4, change))).toEqual([NOT_ITS]);
+  });
+
+  it("faults a Ruling that is not the recomputed one", () => {
+    const events = edit(signalledRun(), 5, (e) => {
+      const ruling = e.payload["ruling"] as object;
+      return withPayload(e, { ...e.payload, ruling: { ...ruling, why: "x" } });
+    });
+    expect(floor(events)).toEqual([
+      "seq 5: floor decision is not its signal's",
+    ]);
+  });
+
+  it("faults a floor.signalled that breaks its relations", () => {
+    const change = (payload: object) =>
+      edit(signalledRun(), 3, (e) =>
+        withPayload(e, { ...signalled([runtimeAdd, devAdd]), ...payload }),
+      );
+    expect(floor(change({ baseCommit: "b".repeat(40) }))).toEqual([
+      "seq 3: floor.signalled base commit is not run.started's",
+    ]);
+    expect(floor(change({ candidateTree: "b".repeat(40) }))).toEqual([
+      "seq 3: floor.signalled candidate tree is not floor.checked's",
+    ]);
+    const rubric = { rubricVersion: "materiality-rubric-9" };
+    const materiality = { threshold: "runtimeAddOrMajor", ...rubric };
+    expect(floor(change({ materiality }))).toEqual([
+      "seq 3: floor.signalled rubric version is not known",
+    ]);
+    expect(floor(change({ detector: "dependency-9" }))).toEqual([
+      "seq 3: floor.signalled that is not a valid floor event",
+    ]);
+    const renumbered = [runtimeAdd, { ...devAdd, id: "evt-3:7" }];
+    expect(floor(change({ signals: renumbered }))).toEqual([
+      "seq 3: floor.signalled signal ID is not <eventId>:<index>",
+      "seq 5: floor decision is not its signal's",
+    ]);
+  });
+
+  it("faults a signal without its decision, and a decision without its signal", () => {
+    const dropped = edit(signalledRun(), 5, () => undefined);
+    expect(floor(dropped)).toEqual([
+      "seq 3: floor.signalled signal 1 without its floor decision",
+    ]);
+    const stray = event(4, "decision.opened", opened(runtimeAdd, 0));
+    const unsignalled = [
+      ...signalledRun([]).slice(0, 4),
+      stray,
+      event(5, "floor.checked", floorChecked(BASE, TREE, [])),
+      event(6, "run.terminated", {}),
+    ];
+    expect(floor(unsignalled)).toEqual([
+      "seq 3: floor.signalled and its decisions are not just before floor.checked",
+      "seq 4: floor decision without its signal",
+    ]);
+    // Logged in another run for this one, it is not this run's decision.
+    const elsewhere = edit(signalledRun(), 4, (e) => ({
+      ...e,
+      runId: "run-9",
+    }));
+    expect(floor(elsewhere)).toEqual([
+      "seq 3: floor.signalled signal 0 without its floor decision",
+      "seq 4: floor decision without its signal",
+    ]);
+  });
+
+  it("faults a second floor.signalled, and one with no floor.checked after it", () => {
+    const events = signalledRun([]);
+    const again = [
+      ...events.slice(0, 4),
+      event(4, "floor.signalled", signalled([])),
+      ...events.slice(4).map((e) => ({ ...e, seq: e.seq + 1 })),
+    ];
+    expect(floor(again)).toEqual([
+      "seq 4: more than one floor.signalled",
+      "seq 3: floor.signalled and its decisions are not just before floor.checked",
+    ]);
+    const unchecked = events.filter((e) => e.type !== "floor.checked");
+    expect(floor(unchecked)).toEqual([
+      "seq 3: floor.signalled without floor.checked",
+    ]);
+  });
+
+  it("treats floor.checked without floor.signalled as legacy only before the first one", () => {
+    const old = signalledRun([]).filter((e) => e.type !== "floor.signalled");
+    expect(floor(old)).toEqual([]);
+    const earlier = withPayload(
+      event(-1, "floor.signalled", {}, "run-0"),
+      signalled([]),
+    );
+    expect(floor(old, [earlier, ...old])).toEqual([
+      "seq 4: floor.checked without floor.signalled",
+    ]);
   });
 });

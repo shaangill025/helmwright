@@ -21,7 +21,7 @@ const FIXTURE = fileURLToPath(
 export const FX_BASE_TREE = "9bb04ccfe86dd1925cc55cefcef3ce95d19b0ecf";
 export const FX_BASE_COMMIT = "397baa60d318f2548b7b68f6b450ca0098ad9d9e";
 
-export type FxKind = "dependency" | "control";
+export type FxKind = "dependency" | "control" | "lockfile";
 
 export interface FxTask {
   /** The task text, also the baseline arm's prompt (Q57). */
@@ -41,7 +41,7 @@ const fixture = JSON.parse(readFileSync(FIXTURE, "utf8")) as FxFixture;
 /** The fixture's paths, sorted. */
 export const FX_PATHS: readonly string[] = Object.keys(fixture.files).sort();
 
-/** The dependency task (it needs @helmwright/fx-duration) or the control task (it needs none). */
+/** The dependency task (it needs @helmwright/fx-duration), the control task (it needs none) or the lockfile task (AC3: only app/pnpm-lock.yaml changes). */
 export function fxTask(kind: FxKind): FxTask {
   return fixture.tasks[kind];
 }

@@ -14,12 +14,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, posix } from "node:path";
-import type { FloorChecked, FloorFinding } from "@helmwright/schema";
+import {
+  validateFloorEvent,
+  type FloorChecked,
+  type FloorFinding,
+  type FloorSignalled,
+} from "@helmwright/schema";
 import { runGit } from "../config/config.ts";
 import { caseFold, isRing0Path } from "../permission/normalize.ts";
 import { deepFreeze, displayText } from "../permission/policy.ts";
+import { DEPENDENCY_DETECTOR, detectDependencies } from "./dependencies.ts";
 import { FloorError, floorChecked } from "./events.ts";
-import { floorFindings, isConfig, type FloorChange } from "./rules.ts";
+import { MATERIALITY_RUBRIC, type BriefThreshold } from "./materiality.ts";
+import { floorFindings, isConfig, nameOf, type FloorChange } from "./rules.ts";
 
 /** The run's repo as the host knows it, never discovered from inside the worktree. */
 export interface FloorRepo {
@@ -588,7 +595,8 @@ function entries(output: Buffer): string[] {
 }
 
 /**
- * Checks the candidate of `repo` against `baseCommit` with the floor's rules.
+ * Checks the candidate of `repo` against `baseCommit` with the floor's rules, and gives
+ * the changes it checked, so the run's end reads the candidate once (A-dep).
  * `protectedGlobs` are the run's Ring 0 paths (the resolved policy's and the floor's).
  * @throws FloorError or a git error; the caller fails the run (fail closed).
  */
@@ -597,14 +605,59 @@ export function checkCandidate(
   baseCommit: string,
   protectedGlobs: readonly string[],
   limits: FloorLimits = FLOOR_LIMITS,
-): FloorChecked {
+): {
+  readonly checked: FloorChecked;
+  readonly changes: readonly FloorChange[];
+} {
   const { candidateTree, changes, findings, chain } = candidateChanges(
     repo,
     baseCommit,
     limits,
   );
-  return floorChecked(baseCommit, candidateTree, [
+  const checked = floorChecked(baseCommit, candidateTree, [
     ...findings,
     ...floorFindings(changes, protectedGlobs, chain),
   ]);
+  return { checked, changes };
+}
+
+/**
+ * The final `floor.signalled` payload (Q44, A-dep): the `dependency-1` signals of
+ * `changes`, signal `i` with the ID `<eventId>:<i>`, and the materiality the run's
+ * decisions are routed by (OQ-AD-5).
+ * @throws FloorError with fixed text if the detector fails or the payload is not valid
+ */
+export function floorSignalled(
+  eventId: string,
+  baseCommit: string,
+  candidateTree: string,
+  threshold: BriefThreshold,
+  changes: readonly FloorChange[],
+): FloorSignalled {
+  const payload: FloorSignalled = {
+    kind: "floor.signalled",
+    detector: DEPENDENCY_DETECTOR,
+    phase: "final",
+    baseCommit,
+    candidateTree,
+    materiality: { rubricVersion: MATERIALITY_RUBRIC, threshold },
+    signals: detectDependencies(changes).map((signal, i) => ({
+      ...signal,
+      id: eventId + ":" + String(i),
+    })),
+  };
+  if (!validateFloorEvent({ ...payload })) {
+    throw new FloorError("floor.signalled cannot be logged");
+  }
+  return payload;
+}
+
+/**
+ * The changed lockfiles of `changes` as shown text, as the detector names them: with no
+ * manifest among the changes, each changed lockfile is a `lockfile.only` signal.
+ */
+export function changedLockfiles(changes: readonly FloorChange[]): string[] {
+  return detectDependencies(
+    changes.filter((change) => nameOf(change.path) !== "package.json"),
+  ).map((signal) => signal.path);
 }

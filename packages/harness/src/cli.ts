@@ -22,7 +22,8 @@ const USAGE =
   "       cli.ts rebuild --state-dir <dir>";
 
 /**
- * run: 0 completed, 2 incomplete, 1 failed (also on a floor finding, OQ-B3-2);
+ * run: 0 completed (not done while it lists pending owner decisions, A-dep), 2
+ * incomplete, 1 failed (also on a floor finding, OQ-B3-2);
  * replay, first match wins (B5-4b): 64 bad run ID; 1 no log, no events of the run, or a
  * bad event anywhere in the log; 3 the objects projection does not match the events
  * (also for a run that never terminated); 4 never terminated; 3 the context digest
@@ -247,7 +248,7 @@ async function main(args: readonly string[]): Promise<number> {
     // The owner is present only at an interactive terminal: asks go to stderr, so
     // stdout stays one JSON line. Otherwise every ask is denied (nobody present).
     const present = process.stdin.isTTY && process.stderr.isTTY;
-    const { runId, terminal, summary, floor } = await runTask({
+    const { runId, terminal, summary, floor, pending } = await runTask({
       taskFile: target,
       stateDir,
       signal: controller.signal,
@@ -268,6 +269,11 @@ async function main(args: readonly string[]): Promise<number> {
         : {}),
     });
     console.error("helmwright: " + displayText(floorLine(floor)));
+    // A-dep: a completed run with a pending owner decision is not done.
+    if (pending.length > 0) {
+      const ids = pending.join(", ");
+      console.error("helmwright: pending owner decisions: " + displayText(ids));
+    }
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
   } catch (error) {

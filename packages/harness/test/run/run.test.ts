@@ -20,6 +20,7 @@ import {
   type RunSetup,
   type SessionLog,
 } from "../../src/index.ts";
+import { floorDecision } from "../../src/floor/materiality.ts";
 import {
   FLOOR_REJECTED,
   FLOOR_UNCHECKED,
@@ -97,7 +98,10 @@ function run(
     connect,
     checkDesync,
     // SF-2: a run with no floor cannot complete; tests that omit it get a pass.
-    floor: () => floorChecked("a".repeat(40), "a".repeat(40), []),
+    floor: () => ({
+      checked: floorChecked("a".repeat(40), "a".repeat(40), []),
+      before: [],
+    }),
     ...more,
   });
 }
@@ -533,6 +537,63 @@ describe("executeRun's Task and Run records (B5-4)", () => {
     expectRunEnded(outcome.terminal);
   });
 
+  // A-dep: floor.signalled, its decisions and floor.checked commit together, or none do.
+  const oid = "a".repeat(40);
+  const signalled = {
+    type: "floor.signalled",
+    payload: { kind: "floor.signalled" },
+    eventId: "evt-signalled",
+  };
+  const decision = floorDecision({
+    ...{ runId: "run-1", taskId: "task-1", repoId: "/r/.git", index: 0 },
+    signal: {
+      ...{ id: "evt-signalled:0", type: "dependency.added" },
+      ...{ path: "package.json", field: "dependencies", name: "left-pad" },
+      ...{ runtime: true, from: null, to: "^1.0.0" },
+    },
+    ...{ threshold: "runtimeAddOrMajor", lockfiles: [], seed: "0".repeat(32) },
+    key: new Uint8Array(32),
+  });
+  const floorWith = (before: readonly object[]) => () => ({
+    checked: floorChecked(oid, oid, []),
+    before: before as { type: string; payload: Record<string, unknown> }[],
+  });
+
+  it("logs the floor's events, then floor.checked, in one transaction (A-dep)", async () => {
+    const opened = { type: "decision.opened", payload: { ...decision } };
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      records,
+      floor: floorWith([signalled, opened]),
+    });
+    expect(outcome).toMatchObject({
+      terminal: { kind: "completed" },
+      pending: [decision.id],
+    });
+    const events = log.events({ runId: "run-1" });
+    expect(events.slice(-4).map((e) => e.type)).toEqual([
+      ...["floor.signalled", "decision.opened", "floor.checked"],
+      "run.terminated",
+    ]);
+    expect(events.at(-4)?.eventId).toBe("evt-signalled");
+    expect(log.object(decision.id)).toMatchObject({ status: "pending" });
+  });
+
+  it("logs none of them and fails closed if the transaction fails (A-dep)", async () => {
+    const refused = { type: "decision.opened", payload: { kind: "x" } };
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      records,
+      floor: floorWith([signalled, refused]),
+    });
+    expect(outcome.pending).toEqual([]);
+    expect(outcome.terminal).toMatchObject({ kind: "failed" });
+    const { error } = outcome.terminal as { error: string };
+    expect(error.startsWith(FLOOR_UNCHECKED + ": ")).toBe(true);
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types.at(-2)).toBe("message.appended");
+    expect(types).not.toContain("floor.signalled");
+    expectRunEnded(outcome.terminal);
+  });
+
   it("logs nothing and rejects if records throws", async () => {
     log.append({
       ...{ eventId: "e0", graphId: "graph-0", runId: "run-0" },
@@ -636,8 +697,11 @@ describe("executeRun's sensor floor (B3-2)", () => {
     ...{ rule: "suppression.added", path: "src/a.ts" },
     ...{ line: 1, detail: "marker" },
   };
-  const pass = () => floorChecked(oid, oid, []);
-  const reject = () => floorChecked(oid, oid, [finding]);
+  const pass = () => ({ checked: floorChecked(oid, oid, []), before: [] });
+  const reject = () => ({
+    checked: floorChecked(oid, oid, [finding]),
+    before: [],
+  });
   const types = () => log.events({ runId: "run-1" }).map((e) => e.type);
 
   it("logs floor.checked just before run.terminated; a pass completes", async () => {
@@ -705,7 +769,10 @@ describe("executeRun's sensor floor (B3-2)", () => {
 
   it("faults a floor.checked for another base commit (S5)", async () => {
     await run(mutatingEngine(0).engine, true, log, undefined, {
-      floor: () => floorChecked("b".repeat(40), oid, []),
+      floor: () => ({
+        checked: floorChecked("b".repeat(40), oid, []),
+        before: [],
+      }),
     });
     const events = log.events({ runId: "run-1" });
     const seq = String(events.find((e) => e.type === "floor.checked")?.seq);

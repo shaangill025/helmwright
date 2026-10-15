@@ -1,5 +1,16 @@
 import { isDeepStrictEqual } from "node:util";
-import { validateIntakeEvent, type Event } from "@helmwright/schema";
+import {
+  validateFloorEvent,
+  validateIntakeEvent,
+  type Event,
+  type FloorSignalled,
+} from "@helmwright/schema";
+import { FloorError } from "../floor/events.ts";
+import {
+  MATERIALITY_RUBRIC,
+  floorDecision,
+  type FloorDecisionInput,
+} from "../floor/materiality.ts";
 import { intakeRuling } from "../intake/events.ts";
 import { IntakeError } from "../intake/rubric.ts";
 
@@ -87,15 +98,173 @@ function intakeFaults(
   }
 }
 
+const isFloorDecision = (e: Event) =>
+  e.type === "decision.opened" && e.payload["source"] === "floor";
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const SEED = /^[0-9a-f]{32}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const ARTIFACT = /^artifact-[0-9a-f]{64}$/;
+/** Replay cannot know the key; a Brief's commitment is checked for format only. */
+const REPLAY_KEY = new Uint8Array(32);
+
+/**
+ * Whether `logged` is the floor decision of `input` (A-dep): its route, a Ruling's body
+ * and every Brief field recomputed, but the seed and the commitment, which are checked
+ * for format only, and the proposed footprints of changed lockfiles, which the log does
+ * not name: past the recomputed ones, any footprint ID.
+ */
+function isFloorDecisionOf(
+  logged: Record<string, unknown>,
+  input: Omit<FloorDecisionInput, "lockfiles" | "seed" | "key">,
+): boolean {
+  const brief = logged["brief"];
+  const seed = isRecord(brief) ? brief["optionOrderSeed"] : undefined;
+  const given = typeof seed === "string" && SEED.test(seed) ? seed : undefined;
+  let expected;
+  try {
+    expected = floorDecision({
+      ...input,
+      ...{ lockfiles: [], seed: given ?? "0".repeat(32), key: REPLAY_KEY },
+    });
+  } catch (error) {
+    if (error instanceof FloorError) return false;
+    throw error;
+  }
+  if (expected.authority === "harness") {
+    return isDeepStrictEqual(logged, expected);
+  }
+  if (!isRecord(brief) || given === undefined) return false;
+  const { recommendationSha256: commitment, proposedFootprint: footprint } =
+    brief;
+  const fixed = expected.brief.proposedFootprint;
+  return (
+    typeof commitment === "string" &&
+    SHA256.test(commitment) &&
+    Array.isArray(footprint) &&
+    fixed.every((id, i) => footprint[i] === id) &&
+    footprint
+      .slice(fixed.length)
+      .every((id) => typeof id === "string" && ARTIFACT.test(id)) &&
+    isDeepStrictEqual(logged, {
+      ...expected,
+      brief: {
+        ...expected.brief,
+        recommendationSha256: commitment,
+        proposedFootprint: footprint,
+      },
+    })
+  );
+}
+
+/**
+ * A-dep replay faults of a run's floor decisions: at most one final `floor.signalled`,
+ * valid, of a known rubric, with `run.started`'s base commit and `floor.checked`'s
+ * candidate tree, signal `i` with the ID `<eventId>:<i>`; then each signal's decision at
+ * the next seqs in signal order, in this run's envelope and equal to the recomputed one
+ * (`isFloorDecisionOf`), and `floor.checked` right after them; and no other floor
+ * decision of the run (in its events or naming it). A run with `floor.checked` and no
+ * `floor.signalled` is legacy, and so not a fault, only if no `floor.signalled` precedes
+ * that event in the log.
+ */
+function floorDecisionFaults(
+  events: readonly Event[],
+  objects: readonly Event[],
+  fault: (seq: number, text: string) => void,
+): void {
+  const started = events.find((e) => e.type === "run.started");
+  const runId = started?.runId ?? events[0]?.runId ?? "";
+  const checked = events.find((e) => e.type === "floor.checked");
+  const [signalled, ...extra] = events.filter(
+    (e) => e.type === "floor.signalled" && e.payload["phase"] !== "early",
+  );
+  for (const e of extra) fault(e.seq, "more than one floor.signalled");
+  // Seqs, as the run's events and `objects` hold copies of one event.
+  const matched = new Set<number>();
+  if (signalled === undefined) {
+    const before = checked?.seq ?? -1;
+    if (objects.some((e) => e.type === "floor.signalled" && e.seq < before)) {
+      fault(before, "floor.checked without floor.signalled");
+    }
+  } else {
+    const at = (text: string) => {
+      fault(signalled.seq, "floor.signalled " + text);
+    };
+    const payload = { ...signalled.payload };
+    if (!validateFloorEvent(payload) || payload.kind !== "floor.signalled") {
+      // Its decisions cannot be recomputed, so this one fault stands for them.
+      at("that is not a valid floor event");
+      return;
+    }
+    const { signals, materiality } = payload as FloorSignalled;
+    if (checked === undefined) at("without floor.checked");
+    if (signalled.payload["baseCommit"] !== started?.payload["baseCommit"]) {
+      at("base commit is not run.started's");
+    }
+    const tree = signalled.payload["candidateTree"];
+    if (checked !== undefined && tree !== checked.payload["candidateTree"]) {
+      at("candidate tree is not floor.checked's");
+    }
+    if (materiality.rubricVersion !== MATERIALITY_RUBRIC) {
+      at("rubric version is not known");
+    }
+    if (signals.some((s, i) => s.id !== `${signalled.eventId}:${String(i)}`)) {
+      at("signal ID is not <eventId>:<index>");
+    }
+    const recorded = events.find((e) => e.type === "run.recorded");
+    const taskId = recorded?.payload["taskId"] ?? started?.payload["taskId"];
+    const task = objects.find(
+      (e) => e.type === "task.created" && e.payload["id"] === taskId,
+    );
+    for (const [index, signal] of signals.entries()) {
+      const seq = signalled.seq + 1 + index;
+      const e = events.find((x) => x.seq === seq);
+      if (
+        e === undefined ||
+        !isFloorDecision(e) ||
+        e.graphId !== signalled.graphId ||
+        e.nodeId !== signalled.nodeId
+      ) {
+        at(`signal ${String(index)} without its floor decision`);
+        continue;
+      }
+      matched.add(seq);
+      const input = {
+        ...{ runId, taskId: String(taskId), index, signal },
+        repoId: String(task?.payload["repoId"]),
+        threshold: materiality.threshold,
+      };
+      if (!isFloorDecisionOf(e.payload, input)) {
+        fault(seq, "floor decision is not its signal's");
+      }
+    }
+    if (
+      checked !== undefined &&
+      checked.seq !== signalled.seq + 1 + signals.length
+    ) {
+      at("and its decisions are not just before floor.checked");
+    }
+  }
+  const own = (e: Event) =>
+    isFloorDecision(e) &&
+    (e.runId === runId || e.payload["runId"] === runId) &&
+    !matched.has(e.seq);
+  const unmatched = [...events, ...objects].filter(own);
+  for (const seq of new Set(unmatched.map((e) => e.seq))) {
+    fault(seq, "floor decision without its signal");
+  }
+}
+
 /**
  * B5-4b replay faults of one run's `events`, given `objects`: the log's `task.created`,
- * `run.recorded` and (B5-5) `decision.opened` events (any order). The run has at most
+ * `run.recorded`, (B5-5) `decision.opened` and (A-dep) `floor.signalled` events (any order). The run has at most
  * one `run.recorded`, before its `run.started`, with that event's taskId, baseCommit
  * and engine, and the class of its `intake.classified` if it has one (a refused run
  * may log none); its Task's text is `run.started`'s title. OD-B54-3 (i): a run with no
  * `run.recorded` is legacy, and so not a fault, only if the log has no `run.recorded`
  * before its `run.started`. B5-5: also the faults of its intake Ruling
- * (`intakeFaults`). Each fault is fixed text and the event's `seq`, like `floorFaults`.
+ * (`intakeFaults`), and A-dep of its floor decisions (`floorDecisionFaults`). Each
+ * fault is fixed text and the event's `seq`, like `floorFaults`.
  */
 export function objectFaults(
   events: readonly Event[],
@@ -115,6 +284,7 @@ export function objectFaults(
     }
   }
   intakeFaults(events, objects, fault);
+  floorDecisionFaults(events, objects, fault);
   if (recorded === undefined) {
     const first = Math.min(
       ...objects.filter((e) => e.type === "run.recorded").map((e) => e.seq),

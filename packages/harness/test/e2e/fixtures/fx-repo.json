@@ -199,6 +199,13 @@
         "scope": ["app/src/**", "app/test/**"]
       },
       "turns": "fx-control.turns.json"
+    },
+    "lockfile": {
+      "title": "Record `autoInstallPeers: false` in the settings of app/pnpm-lock.yaml, to match the project's pnpm settings. Change nothing else.",
+      "intake": {
+        "scope": ["app/pnpm-lock.yaml"]
+      },
+      "turns": "fx-lock.turns.json"
     }
   }
 }

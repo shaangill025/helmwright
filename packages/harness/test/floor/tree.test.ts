@@ -69,7 +69,7 @@ afterEach(() => {
 const changes = (limits?: FloorLimits) =>
   candidateChanges({ worktree: wt, commonDir: common }, base, limits);
 const checked = (limits?: FloorLimits) =>
-  checkCandidate({ worktree: wt, commonDir: common }, base, [], limits);
+  checkCandidate({ worktree: wt, commonDir: common }, base, [], limits).checked;
 const paths = () => changes().changes.map((c) => c.path);
 const rules = () => checked().findings.map((f) => [f.rule, f.path]);
 
