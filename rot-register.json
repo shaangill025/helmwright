@@ -331,6 +331,15 @@
     "reviewTrigger": ["engine", "milestone"]
   },
   {
+    "component": "packages/harness/src/floor/key.ts",
+    "ring": 0,
+    "assumption": "The recommendation key (OQ-AD-3) is 32 random bytes in <stateDir>/recommendation.key, created on first Brief by a wx temp file set to 0600, fsynced and hard-linked into place (never replacing a key), and refused unless the opened file (O_NOFOLLOW) is a regular 0600 file of the current user and 32 bytes; every refusal is fixed text and fails the floor closed. It assumes a POSIX state dir that keeps modes and supports hard links (macOS and Linux), inside the 0700 dir the session log makes, and never mounted into the sandbox. The commitment binds the recommendation but does not hide it from the owner, who runs as the same user and can read the key; it hides it only from a holder of the log. Review at B11's brief step or when the state dir moves.",
+    "evidence": ["decisions Q48", "packages/harness/test/floor/key.test.ts"],
+    "added": "2026-10-14",
+    "lastReviewed": "2026-10-14",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/floor/events.ts",
     "ring": 0,
     "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed). Replay faults a floor.checked whose base commit is not run.started's or whose rules version this build does not know, and any event but run.terminated after it.",
