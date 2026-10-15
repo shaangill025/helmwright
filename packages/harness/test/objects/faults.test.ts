@@ -508,6 +508,17 @@ describe("objectFaults: floor decisions (A-dep)", () => {
     ]);
   });
 
+  it.each([{ graphId: "graph-9" }, { nodeId: "node-9" }])(
+    "faults a decision in this run's events outside its envelope (%o)",
+    (envelope) => {
+      const moved = edit(signalledRun(), 4, (e) => ({ ...e, ...envelope }));
+      expect(floor(moved)).toEqual([
+        "seq 3: floor.signalled signal 0 without its floor decision",
+        "seq 4: floor decision without its signal",
+      ]);
+    },
+  );
+
   it("faults a second floor.signalled, and one with no floor.checked after it", () => {
     const events = signalledRun([]);
     const again = [

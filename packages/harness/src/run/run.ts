@@ -1062,6 +1062,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             seed: randomBytes(16).toString("hex"),
           }),
         );
+        // L6: the commitments are made, so this copy of the key is zeroed.
+        key.fill(0);
         return {
           checked,
           before: [

@@ -1,5 +1,9 @@
+import { spawnSync } from "node:child_process";
+import type * as Fs from "node:fs";
 import {
   chmodSync,
+  linkSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -10,11 +14,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FloorError } from "../../src/floor/events.ts";
 import { KEY_FILE, recommendationKey } from "../../src/floor/key.ts";
 
-// OQ-AD-3: the state dir's recommendation key, created on first use.
+// OQ-AD-3: the state dir's recommendation key, created on first use. linkSync is the
+// real one unless a test replaces one call.
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof Fs>();
+  return { ...fs, linkSync: vi.fn(fs.linkSync) };
+});
+const realFs = await vi.importActual<typeof Fs>("node:fs");
 let dir: string;
 let path: string;
 beforeEach(() => {
@@ -63,5 +73,76 @@ describe("recommendationKey (OQ-AD-3)", () => {
     expect(() => recommendationKey(join(dir, "missing"))).toThrow(
       "the recommendation key cannot be read safely",
     );
+  });
+
+  it("refuses a FIFO without blocking, a directory and a dangling symlink", () => {
+    const made = spawnSync("mkfifo", [path]);
+    expect(made.status).toBe(0);
+    refused();
+    rmSync(path);
+    mkdirSync(path);
+    refused();
+    rmSync(path, { recursive: true });
+    symlinkSync(join(dir, "nowhere"), path);
+    refused();
+  });
+
+  it.each([0o400, 0o640, 0o700])("refuses a key of mode %o", (mode) => {
+    writeFileSync(path, Buffer.alloc(32, 9), { mode: 0o600 });
+    chmodSync(path, mode);
+    refused();
+  });
+
+  it("refuses a key with a second hard link", () => {
+    writeFileSync(path, Buffer.alloc(32, 9), { mode: 0o600 });
+    realFs.linkSync(path, join(dir, "copy"));
+    refused();
+  });
+
+  it("refuses a state dir that group or other can use", () => {
+    chmodSync(dir, 0o750);
+    refused();
+    chmodSync(dir, 0o701);
+    refused();
+    // Nothing was created in it.
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it.each([0o000, 0o077])("creates a 0600 key under umask %o", (umask) => {
+    const old = process.umask(umask);
+    try {
+      recommendationKey(dir);
+    } finally {
+      process.umask(old);
+    }
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it("removes the temporary name and names only the code if linking fails", () => {
+    vi.mocked(linkSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EPERM: " + dir), { code: "EPERM" });
+    });
+    expect(() => recommendationKey(dir)).toThrow(
+      new FloorError("the recommendation key cannot be read safely (EPERM)"),
+    );
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("reads the key another run linked first, leaving no temporary name", async () => {
+    let other: Buffer | undefined;
+    vi.mocked(linkSync).mockImplementationOnce((temp, target) => {
+      // Another run creates and links its key between this one's write and link.
+      other = recommendationKey(dir);
+      realFs.linkSync(temp, target);
+    });
+    const [first, second] = await Promise.all([
+      Promise.resolve().then(() => recommendationKey(dir)),
+      Promise.resolve().then(() => recommendationKey(dir)),
+    ]);
+    expect(other).toHaveLength(32);
+    expect(first).toEqual(other);
+    expect(second).toEqual(other);
+    expect(readFileSync(path)).toEqual(other);
+    expect(readdirSync(dir)).toEqual([KEY_FILE]);
   });
 });
