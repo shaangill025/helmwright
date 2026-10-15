@@ -220,7 +220,7 @@ export function intakeRuling(
  * ID the run's intake Ruling ID with `-r1` (the floor's is the run's only one in M1),
  * what the move, why the rule floorSignal and each signal ID, and costIfWrong the
  * approved line of the class it is raised to. It adds to the run's intake Ruling and
- * supersedes nothing.
+ * supersedes nothing. Only a chore's floor reclassification has approved wording.
  * @throws IntakeError with fixed text if the Ruling is not a valid `decision.opened`
  */
 export function intakeReclassifiedRuling(
@@ -231,6 +231,10 @@ export function intakeReclassifiedRuling(
   const { from, to, signalIds } = reclassified;
   if (reclassified.source !== "floor") {
     throw new IntakeError("decision.opened cannot be logged: not the floor's");
+  }
+  // OQ-AD3-3: the approved wording is a chore's only.
+  if (from !== "chore") {
+    throw new IntakeError("decision.opened cannot be logged: not a chore");
   }
   return harnessRuling(intakeRulingId(runId) + "-r1", runId, eventId, {
     taskId: reclassified.taskId,

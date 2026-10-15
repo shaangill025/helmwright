@@ -58,7 +58,8 @@ function recomputed(runId: string, e: Event): unknown {
  * one at the next seq, equal to `intakeRuling` of it; the run has no other one (in its
  * events or naming it); each `intake.overridden` comes after it and has its ID. A run
  * whose `intake.classified` has none is legacy, and so not a fault, only if no intake
- * Ruling precedes that event in the log and none is the run's. A-dep-3: the Ruling of
+ * Ruling precedes that event in the log, none is the run's and (A-dep-3) the run has no
+ * `intake.reclassified`. A-dep-3: the Ruling of
  * one of the run's `intake.reclassified` events is checked by `reclassificationFaults`.
  */
 function intakeFaults(
@@ -78,9 +79,11 @@ function intakeFaults(
     .sort((a, b) => a.seq - b.seq);
   const classified = events.filter((e) => e.type === "intake.classified");
   const [first] = classified;
+  // A-dep-3: an own intake.reclassified is from a build that logs intake Rulings.
   const legacy =
     first !== undefined &&
     rulings.length === 0 &&
+    reclassified.length === 0 &&
     !objects.some((e) => isIntakeRuling(e) && e.seq < first.seq);
   if (legacy) return;
   const next = new Set(classified.map((e) => e.seq + 1));

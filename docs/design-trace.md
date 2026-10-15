@@ -245,7 +245,7 @@ The milestone-1 build order. A slice can ship as more than one PR (for example B
 | CI1      | Scanning jobs move to `pull_request_target`                                                                                   | —        |
 | A1       | Ledger store; the harness cannot write owner fields                                                                           | —        |
 | A2       | Structural floor (dependency detector) and materiality (AC1, AC3)                                                             | —        |
-| A-dep    | A2's dependency detector, materiality-rubric-1, floor Briefs and Rulings with replay, chore reclassification; A-dep-4 open    | #71–#75  |
+| A-dep    | A2's dependency detector, materiality-rubric-1, floor Briefs and Rulings with replay, chore reclassification; A-dep-4 open    | #71–#78+ |
 | A3       | Brief card, first answer wins, TUI pre-commitment (AC4)                                                                       | —        |
 | A4       | Plan-time pass and `declare_decision` (AC2)                                                                                   | —        |
 | A5       | Pending-decision behavior                                                                                                     | —        |

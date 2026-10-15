@@ -665,14 +665,16 @@ const ARCHITECTURAL =
 /**
  * A run as A-dep-3 logs it: Task, Run, start, intake.classified (`classes.classified`)
  * and its Ruling, any override to `classes.overridden`, then (if `reclassify`)
- * intake.reclassified and its Ruling, floor.signalled with two signals, their
- * decisions, floor.checked and the end.
+ * intake.reclassified and its Ruling, floor.signalled with two signals (none if
+ * `floor.quiet`), their decisions, floor.checked and the end. `floor.early` adds an
+ * early floor.signalled with one signal, before or after the reclassification.
  */
 function choreRun(
   classes: { classified: IntakeClass; overridden?: IntakeClass } = {
     classified: "chore",
   },
   reclassify = true,
+  floor: { early?: "before" | "after"; quiet?: boolean } = {},
 ): Event[] {
   const cl = classes.classified === "chore" ? chore : classified;
   const { overridden } = classes;
@@ -687,8 +689,21 @@ function choreRun(
     const linked = override("decision-intake-1");
     head.push(["intake.overridden", { ...linked, to: overridden }]);
   }
-  const at = head.length + (reclassify ? 2 : 0);
-  const signals = [runtimeAdd, devAdd].map((s, i) => ({
+  const upAt = head.length + (floor.early === "before" ? 1 : 0);
+  const after = floor.early === "after" ? 1 : 0;
+  const at = upAt + (reclassify ? 2 : 0) + after;
+  const earlyAt = floor.early === "before" ? head.length : at - 1;
+  const early: [string, object][] = [
+    [
+      "floor.signalled",
+      {
+        ...signalled([{ ...runtimeAdd, id: `evt-${String(earlyAt)}:0` }]),
+        phase: "early",
+      },
+    ],
+  ];
+  const all = floor.quiet === true ? [] : [runtimeAdd, devAdd];
+  const signals = all.map((s, i) => ({
     ...s,
     id: `evt-${String(at)}:${String(i)}`,
   }));
@@ -701,7 +716,7 @@ function choreRun(
   const r1 = {
     ...{ kind: "decision.opened", id: "decision-intake-1-r1" },
     ...{ authority: "harness", taskId: "task-1", runId: "run-1" },
-    ...{ signalIds: ["evt-" + String(at - 2)], class: null, source: "intake" },
+    ...{ signalIds: ["evt-" + String(upAt)], class: null, source: "intake" },
     ruling: {
       what: "Reclassified the task from chore to architectural",
       why: ["floorSignal", ...ids.map((id) => "  " + id)].join("\n"),
@@ -710,12 +725,14 @@ function choreRun(
     },
   };
   const tail: [string, object][] = [
+    ...(floor.early === "before" ? early : []),
     ...(reclassify
       ? ([
           ["intake.reclassified", up],
           ["decision.opened", r1],
         ] as [string, object][])
       : []),
+    ...(after === 1 ? early : []),
     ["floor.signalled", signalled(signals)],
     ...signals.map((s, i): [string, object] => [
       "decision.opened",
@@ -809,6 +826,26 @@ describe("objectFaults: intake reclassification (A-dep-3)", () => {
       "seq 5: intake.reclassified without floor.signalled",
       "seq 8: floor decision without its signal",
       "seq 9: floor decision without its signal",
+    ]);
+  });
+
+  it("never reclassifies on an early signal, only the final check's (OQ-AD3-6)", () => {
+    const earlier = event(-1, "intake.reclassified", {}, "run-0");
+    const quiet = choreRun({ classified: "chore" }, false, {
+      ...{ early: "before", quiet: true },
+    });
+    expect(reclass(quiet)).toEqual([]);
+    expect(reclass(quiet, [earlier, ...quiet])).toEqual([]);
+    // With final signals too, the reclassification is two seqs before the final one.
+    expect(reclass(choreRun(undefined, true, { early: "before" }))).toEqual([]);
+    expect(reclass(choreRun(undefined, true, { early: "after" }))).toEqual([
+      "seq 5: intake.reclassified is not just before floor.signalled",
+    ]);
+  });
+
+  it("faults a reclassified run without its intake Ruling: r1 is no legacy run", () => {
+    expect(reclass(edit(choreRun(), 4, () => undefined))).toEqual([
+      "seq 3: intake.classified without its intake Ruling",
     ]);
   });
 

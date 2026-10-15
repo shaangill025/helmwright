@@ -252,5 +252,11 @@ describe("intakeReclassified and its Ruling (A-dep-3)", () => {
         intakeReclassifiedRuling(RUN, "evt-9", { ...up(1), source: "plan" }),
       "decision.opened cannot be logged: not the floor's",
     );
+    // OQ-AD3-3: the approved wording covers a chore only.
+    const bounded = { ...up(1), from: "bounded" as const };
+    refused(
+      () => intakeReclassifiedRuling(RUN, "evt-9", bounded),
+      "decision.opened cannot be logged: not a chore",
+    );
   });
 });
