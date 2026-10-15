@@ -12,7 +12,11 @@ import {
   floorDecision,
   type FloorDecisionInput,
 } from "../floor/materiality.ts";
-import { intakeRuling } from "../intake/events.ts";
+import {
+  intakeReclassified,
+  intakeReclassifiedRuling,
+  intakeRuling,
+} from "../intake/events.ts";
 import { IntakeError } from "../intake/rubric.ts";
 
 // Ring 0 (B5-4b): replay's object relations; this module reads events only.
@@ -24,6 +28,21 @@ const isIntakeRuling = (e: Event) =>
   e.type === "decision.opened" &&
   e.payload["authority"] === "harness" &&
   e.payload["source"] === "intake";
+const sameEnvelope = (a: Event, b: Event) =>
+  a.graphId === b.graphId && a.runId === b.runId && a.nodeId === b.nodeId;
+/** A-dep-3: whether `e` is the intake Ruling of the `intake.reclassified` event `r`. */
+const isRulingOf = (r: Event, e: Event) =>
+  isIntakeRuling(e) && e.seq === r.seq + 1 && sameEnvelope(r, e);
+
+/** What `build` gives, or undefined if it throws IntakeError. */
+function unlessIntakeError<T>(build: () => T): T | undefined {
+  try {
+    return build();
+  } catch (error) {
+    if (error instanceof IntakeError) return undefined;
+    throw error;
+  }
+}
 
 /** The intake Ruling replay derives from the `intake.classified` event `e`, if any. */
 function recomputed(runId: string, e: Event): unknown {
@@ -31,12 +50,7 @@ function recomputed(runId: string, e: Event): unknown {
   if (!validateIntakeEvent(payload) || payload.kind !== "intake.classified") {
     return undefined;
   }
-  try {
-    return intakeRuling(runId, e.eventId, payload);
-  } catch (error) {
-    if (error instanceof IntakeError) return undefined;
-    throw error;
-  }
+  return unlessIntakeError(() => intakeRuling(runId, e.eventId, payload));
 }
 
 /**
@@ -44,7 +58,8 @@ function recomputed(runId: string, e: Event): unknown {
  * one at the next seq, equal to `intakeRuling` of it; the run has no other one (in its
  * events or naming it); each `intake.overridden` comes after it and has its ID. A run
  * whose `intake.classified` has none is legacy, and so not a fault, only if no intake
- * Ruling precedes that event in the log and none is the run's.
+ * Ruling precedes that event in the log and none is the run's. A-dep-3: the Ruling of
+ * one of the run's `intake.reclassified` events is checked by `reclassificationFaults`.
  */
 function intakeFaults(
   events: readonly Event[],
@@ -52,11 +67,13 @@ function intakeFaults(
   fault: (seq: number, text: string) => void,
 ): void {
   const runId = events[0]?.runId ?? "";
+  const reclassified = events.filter((e) => e.type === "intake.reclassified");
   const rulings = objects
     .filter(
       (e) =>
         isIntakeRuling(e) &&
-        (e.runId === runId || e.payload["runId"] === runId),
+        (e.runId === runId || e.payload["runId"] === runId) &&
+        !reclassified.some((r) => isRulingOf(r, e)),
     )
     .sort((a, b) => a.seq - b.seq);
   const classified = events.filter((e) => e.type === "intake.classified");
@@ -292,14 +309,104 @@ function floorDecisionFaults(
 }
 
 /**
+ * A-dep-3 (OQ-AD-7, OQ-AD3-1 to OQ-AD3-6) replay faults of a run's reclassification: a
+ * run that logged `intake.classified`, whose effective class (the last
+ * `intake.overridden`'s `to`, else the classified class) is chore and whose final
+ * `floor.signalled` has a signal, has one `intake.reclassified` two seqs before that
+ * event in its envelope, equal to the recomputed one (`intakeReclassified`, every
+ * signal ID in order), and its intake Ruling at the next seq in its envelope, equal to
+ * `intakeReclassifiedRuling` of it; in a run that needs none, one is a fault. A
+ * run that needs one and has none is legacy, and so not a fault, only if no
+ * `intake.reclassified` precedes its `floor.signalled` in the log.
+ */
+function reclassificationFaults(
+  events: readonly Event[],
+  objects: readonly Event[],
+  fault: (seq: number, text: string) => void,
+): void {
+  const runId = events[0]?.runId ?? "";
+  const classified = events.find((e) => e.type === "intake.classified");
+  const overridden = events.findLast((e) => e.type === "intake.overridden");
+  const effective = overridden?.payload["to"] ?? classified?.payload["class"];
+  const signalled = events.find(
+    (e) => e.type === "floor.signalled" && e.payload["phase"] !== "early",
+  );
+  const signals = signalled?.payload["signals"];
+  const ids: unknown[] = Array.isArray(signals)
+    ? signals.map((s: unknown) => (isRecord(s) ? s["id"] : s))
+    : [];
+  const due =
+    classified !== undefined && effective === "chore" && ids.length > 0;
+  const [reclassified, ...extra] = events.filter(
+    (e) => e.type === "intake.reclassified",
+  );
+  for (const e of extra) {
+    fault(e.seq, "more than one intake.reclassified in one run");
+  }
+  if (reclassified === undefined) {
+    const before = signalled?.seq ?? -1;
+    const earlier = (e: Event) =>
+      e.type === "intake.reclassified" && e.seq < before;
+    if (due && signalled !== undefined && objects.some(earlier)) {
+      fault(
+        signalled.seq,
+        "floor signal on a chore without intake.reclassified",
+      );
+    }
+    return;
+  }
+  if (signalled === undefined) {
+    fault(reclassified.seq, "intake.reclassified without floor.signalled");
+  } else {
+    if (
+      reclassified.seq !== signalled.seq - 2 ||
+      !sameEnvelope(reclassified, signalled)
+    ) {
+      fault(
+        reclassified.seq,
+        "intake.reclassified is not just before floor.signalled",
+      );
+    }
+    const expected = unlessIntakeError(() =>
+      due
+        ? intakeReclassified(
+            String(classified.payload["taskId"]),
+            "chore",
+            ids as string[],
+            String(classified.payload["rubricVersion"]),
+          )
+        : undefined,
+    );
+    if (!isDeepStrictEqual(reclassified.payload, expected)) {
+      fault(reclassified.seq, "intake.reclassified is not the floor's");
+    }
+  }
+  const ruling = events.find((e) => isRulingOf(reclassified, e));
+  const { payload } = reclassified;
+  const recomputedRuling =
+    validateIntakeEvent(payload) && payload.kind === "intake.reclassified"
+      ? unlessIntakeError(() =>
+          intakeReclassifiedRuling(runId, reclassified.eventId, payload),
+        )
+      : undefined;
+  if (ruling === undefined) {
+    fault(reclassified.seq, "intake.reclassified without its intake Ruling");
+  } else if (!isDeepStrictEqual(ruling.payload, recomputedRuling)) {
+    fault(ruling.seq, "intake Ruling is not intake.reclassified's");
+  }
+}
+
+/**
  * B5-4b replay faults of one run's `events`, given `objects`: the log's `task.created`,
- * `run.recorded`, (B5-5) `decision.opened` and (A-dep) `floor.signalled` events (any order). The run has at most
+ * `run.recorded`, (B5-5) `decision.opened`, (A-dep) `floor.signalled` and (A-dep-3)
+ * `intake.reclassified` events (any order). The run has at most
  * one `run.recorded`, before its `run.started`, with that event's taskId, baseCommit
  * and engine, and the class of its `intake.classified` if it has one (a refused run
  * may log none); its Task's text is `run.started`'s title. OD-B54-3 (i): a run with no
  * `run.recorded` is legacy, and so not a fault, only if the log has no `run.recorded`
  * before its `run.started`. B5-5: also the faults of its intake Ruling
- * (`intakeFaults`), and A-dep of its floor decisions (`floorDecisionFaults`). Each
+ * (`intakeFaults`), A-dep-3 of its reclassification (`reclassificationFaults`), and
+ * A-dep of its floor decisions (`floorDecisionFaults`). Each
  * fault is fixed text and the event's `seq`, like `floorFaults`.
  */
 export function objectFaults(
@@ -320,6 +427,7 @@ export function objectFaults(
     }
   }
   intakeFaults(events, objects, fault);
+  reclassificationFaults(events, objects, fault);
   floorDecisionFaults(events, objects, fault);
   if (recorded === undefined) {
     const first = Math.min(

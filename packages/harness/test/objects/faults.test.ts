@@ -2,6 +2,7 @@ import type {
   Event,
   FloorSignal,
   FloorSignalled,
+  IntakeClass,
   IntakeClassified,
 } from "@helmwright/schema";
 import { describe, expect, it } from "vitest";
@@ -646,6 +647,201 @@ describe("objectFaults: floor decisions (A-dep)", () => {
     );
     expect(floor(old, [earlier, ...old])).toEqual([
       "seq 4: floor.checked without floor.signalled",
+    ]);
+  });
+});
+
+// A-dep-3 (OQ-AD-7): a final floor signal on a chore reclassifies it first.
+const chore: IntakeClassified = {
+  ...classified,
+  class: "chore",
+  reasons: [{ rule: "testsOnly", entries: ["test/a.test.ts"] }],
+  scope: ["test/a.test.ts"],
+  friction: { intensity: "minimal", source: "choreDowngrade" },
+};
+const ARCHITECTURAL =
+  "If the task is smaller, the run has more friction and owner attention than it needs.";
+
+/**
+ * A run as A-dep-3 logs it: Task, Run, start, intake.classified (`classes.classified`)
+ * and its Ruling, any override to `classes.overridden`, then (if `reclassify`)
+ * intake.reclassified and its Ruling, floor.signalled with two signals, their
+ * decisions, floor.checked and the end.
+ */
+function choreRun(
+  classes: { classified: IntakeClass; overridden?: IntakeClass } = {
+    classified: "chore",
+  },
+  reclassify = true,
+): Event[] {
+  const cl = classes.classified === "chore" ? chore : classified;
+  const { overridden } = classes;
+  const head: [string, object][] = [
+    ["task.created", task],
+    ["run.recorded", { ...run, class: classes.classified }],
+    ["run.started", started],
+    ["intake.classified", cl],
+    ["decision.opened", intakeRuling("run-1", "evt-3", cl)],
+  ];
+  if (overridden !== undefined) {
+    const linked = override("decision-intake-1");
+    head.push(["intake.overridden", { ...linked, to: overridden }]);
+  }
+  const at = head.length + (reclassify ? 2 : 0);
+  const signals = [runtimeAdd, devAdd].map((s, i) => ({
+    ...s,
+    id: `evt-${String(at)}:${String(i)}`,
+  }));
+  const ids = signals.map((s) => s.id);
+  const up = {
+    ...{ kind: "intake.reclassified", taskId: "task-1" },
+    ...{ from: "chore", to: "architectural", source: "floor" },
+    ...{ signalIds: ids, rubricVersion: "intake-rubric-1" },
+  };
+  const r1 = {
+    ...{ kind: "decision.opened", id: "decision-intake-1-r1" },
+    ...{ authority: "harness", taskId: "task-1", runId: "run-1" },
+    ...{ signalIds: ["evt-" + String(at - 2)], class: null, source: "intake" },
+    ruling: {
+      what: "Reclassified the task from chore to architectural",
+      why: ["floorSignal", ...ids.map((id) => "  " + id)].join("\n"),
+      costIfWrong: ARCHITECTURAL,
+      rubricVersion: "intake-rubric-1",
+    },
+  };
+  const tail: [string, object][] = [
+    ...(reclassify
+      ? ([
+          ["intake.reclassified", up],
+          ["decision.opened", r1],
+        ] as [string, object][])
+      : []),
+    ["floor.signalled", signalled(signals)],
+    ...signals.map((s, i): [string, object] => [
+      "decision.opened",
+      opened(s, i),
+    ]),
+    ["floor.checked", floorChecked(BASE, TREE, [])],
+    ["run.terminated", {}],
+  ];
+  return [...head, ...tail].map(([type, payload], seq) =>
+    event(seq, type, payload),
+  );
+}
+const RECLASSIFY_OBJECTS = [
+  ...FLOOR_OBJECTS,
+  "floor.signalled",
+  "intake.reclassified",
+];
+const reclass = (events: readonly Event[], log: readonly Event[] = events) =>
+  objectFaults(
+    events.filter((e) => e.runId === "run-1"),
+    log.filter((e) => RECLASSIFY_OBJECTS.includes(e.type)),
+  );
+
+describe("objectFaults: intake reclassification (A-dep-3)", () => {
+  it("passes a chore reclassified by its final floor signals", () => {
+    expect(reclass(choreRun())).toEqual([]);
+  });
+
+  it.each<[string, object]>([
+    ["from", { from: "bounded" }],
+    ["to", { to: "bounded" }],
+    ["source", { source: "plan" }],
+    ["signalIds", { signalIds: ["evt-7:0"] }],
+    ["taskId", { taskId: "task-2" }],
+  ])("faults a reclassification whose %s is wrong", (_key, change) => {
+    const events = edit(choreRun(), 5, (e) =>
+      withPayload(e, { ...e.payload, ...change }),
+    );
+    // Its Ruling is recomputed from the logged event, so it is not that one's either.
+    expect(reclass(events)).toEqual([
+      "seq 5: intake.reclassified is not the floor's",
+      "seq 6: intake Ruling is not intake.reclassified's",
+    ]);
+  });
+
+  it.each([["why"], ["costIfWrong"], ["what"]])(
+    "faults a reclassification Ruling whose %s is edited",
+    (key) => {
+      const events = edit(choreRun(), 6, (e) => {
+        const ruling = e.payload["ruling"] as object;
+        return withPayload(e, {
+          ...e.payload,
+          ruling: { ...ruling, [key]: "x" },
+        });
+      });
+      expect(reclass(events)).toEqual([
+        "seq 6: intake Ruling is not intake.reclassified's",
+      ]);
+    },
+  );
+
+  it("faults a reclassification out of place, or without its Ruling", () => {
+    const swapped = choreRun().map((e) =>
+      e.seq === 5 || e.seq === 6 ? { ...e, seq: 11 - e.seq } : e,
+    );
+    expect(reclass(swapped)).toEqual([
+      "seq 5: more than one intake Ruling in one run",
+      "seq 6: intake.reclassified is not just before floor.signalled",
+      "seq 6: intake.reclassified without its intake Ruling",
+    ]);
+    const moved = edit(choreRun(), 5, (e) => ({ ...e, nodeId: "node-9" }));
+    expect(reclass(moved)).toEqual([
+      "seq 6: more than one intake Ruling in one run",
+      "seq 5: intake.reclassified is not just before floor.signalled",
+      "seq 5: intake.reclassified without its intake Ruling",
+    ]);
+    const alone = edit(choreRun(), 6, () => undefined);
+    expect(reclass(alone)).toEqual([
+      "seq 5: intake.reclassified without its intake Ruling",
+    ]);
+  });
+
+  it("faults a second reclassification, and one without floor.signalled", () => {
+    const events = choreRun();
+    const again = event(12, "intake.reclassified", events[5]?.payload ?? {});
+    expect(reclass([...events, again])).toEqual([
+      "seq 12: more than one intake.reclassified in one run",
+    ]);
+    const unsignalled = events.filter((e) => e.type !== "floor.signalled");
+    expect(reclass(unsignalled)).toEqual([
+      "seq 5: intake.reclassified without floor.signalled",
+      "seq 8: floor decision without its signal",
+      "seq 9: floor decision without its signal",
+    ]);
+  });
+
+  it("treats a chore without a reclassification as legacy only before the first one", () => {
+    const old = choreRun({ classified: "chore" }, false);
+    expect(reclass(old)).toEqual([]);
+    const earlier = event(-1, "intake.reclassified", {}, "run-0");
+    expect(reclass(old, [earlier, ...old])).toEqual([
+      "seq 5: floor signal on a chore without intake.reclassified",
+    ]);
+  });
+
+  it("reclassifies by the effective class only (OQ-AD3-1, OQ-AD3-3)", () => {
+    const earlier = event(-1, "intake.reclassified", {}, "run-0");
+    // A bounded task, or a chore overridden up, is not reclassified.
+    for (const classes of [
+      { classified: "bounded" },
+      { classified: "chore", overridden: "bounded" },
+    ] as const) {
+      const run = choreRun(classes, false);
+      expect(reclass(run, [earlier, ...run])).toEqual([]);
+      expect(reclass(choreRun(classes))).toEqual([
+        "seq " +
+          String(classes.classified === "chore" ? 6 : 5) +
+          ": intake.reclassified is not the floor's",
+      ]);
+    }
+    // A downward override to chore is a chore, so it needs one.
+    const down = { classified: "bounded", overridden: "chore" } as const;
+    expect(reclass(choreRun(down))).toEqual([]);
+    const missing = choreRun(down, false);
+    expect(reclass(missing, [earlier, ...missing])).toEqual([
+      "seq 6: floor signal on a chore without intake.reclassified",
     ]);
   });
 });

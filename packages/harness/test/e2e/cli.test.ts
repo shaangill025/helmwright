@@ -2849,6 +2849,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
         lockfiles: [],
       });
       expect(run.stderr).not.toContain(PENDING);
+      expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -2963,6 +2964,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
         status: "pending",
       });
       expect(run.stderr).toContain(PENDING + id + "\n");
+      expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3006,6 +3008,74 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(objectOf(id)).toMatchObject({ status: "resolved" });
       // A Ruling needs no recommendation key.
       expect(existsSync(join(stateDir, KEY_FILE))).toBe(false);
+      expect(run.stderr).not.toContain(PENDING);
+      // OQ-AD3-3: a bounded task is not reclassified.
+      expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "reclassifies a chore whose final floor signals, and completes (FX-chore, A-dep-3)",
+    { timeout: T },
+    () => {
+      const run = runFx("chore");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.out.terminal).toEqual({ kind: "completed" });
+      expect(run.classified).toMatchObject({
+        class: "chore",
+        reasons: [{ rule: "testsOnly", entries: ["app/test/timeout.test.js"] }],
+      });
+      expectTestsPassed(run.tools, 4);
+      expect(run.checked).toMatchObject({ verdict: "pass", findings: [] });
+      const reclassified = run.events.filter(
+        (e) => e.type === "intake.reclassified",
+      );
+      expect(reclassified.length, "intake.reclassified events").toBe(1);
+      // In the floor's transaction, before floor.signalled (OQ-AD3-4).
+      const at = run.events.findIndex((e) => e.type === "floor.signalled");
+      expect(run.events.slice(at - 2, at + 3).map((e) => e.type)).toEqual([
+        ...["intake.reclassified", "decision.opened", "floor.signalled"],
+        ...["decision.opened", "floor.checked"],
+      ]);
+      const { eventId, signalled, decisions } = floorSignalsOf(run.events);
+      const signalId = eventId + ":0";
+      expect(signalled?.["signals"]).toEqual([
+        {
+          ...{ id: signalId, type: "dependency.added" },
+          ...{ path: "app/package.json", field: "devDependencies" },
+          ...{ name: "@helmwright/fx-duration", runtime: false, from: null },
+          to: "file:vendor/fx-duration",
+        },
+      ]);
+      // A dev add is under the brief threshold: one floor Ruling, no Brief.
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({ authority: "harness" });
+      expect(reclassified[0]?.payload).toEqual({
+        ...{ kind: "intake.reclassified", taskId: "task-1" },
+        ...{ from: "chore", to: "architectural", source: "floor" },
+        ...{ signalIds: [signalId], rubricVersion: "intake-rubric-1" },
+      });
+      const id = "decision-intake-" + run.out.runId.slice("run-".length);
+      expect(run.events[at - 1]?.payload).toEqual({
+        ...{ kind: "decision.opened", id: id + "-r1", taskId: "task-1" },
+        ...{ runId: run.out.runId, signalIds: [reclassified[0]?.eventId] },
+        ...{ class: null, source: "intake", authority: "harness" },
+        ruling: {
+          what: "Reclassified the task from chore to architectural",
+          why: "floorSignal\n  " + signalId,
+          costIfWrong:
+            "If the task is smaller, the run has more friction and owner attention than it needs.",
+          rubricVersion: "intake-rubric-1",
+        },
+      });
+      // r1 adds to the intake Ruling, which stays resolved; the Run keeps its class.
+      expect(objectOf(id)).toMatchObject({ status: "resolved" });
+      expect(objectOf(id + "-r1")).toMatchObject({ status: "resolved" });
+      expect(objectOf(run.out.runId)).toMatchObject({ class: "chore" });
+      expect(run.stderr).toContain(
+        "helmwright: intake reclassified chore -> architectural (floor signals)\n",
+      );
       expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
     },

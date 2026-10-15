@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   INTAKE_COST_IF_WRONG,
   IntakeError,
+  intakeReclassified,
+  intakeReclassifiedRuling,
   intakeRuling,
   intakeRulingId,
 } from "../../src/index.ts";
@@ -167,6 +169,88 @@ describe("intakeRuling (B5-5)", () => {
     );
     expect(() => intakeRuling(RUN, "evt 1", classified)).toThrow(
       new IntakeError("decision.opened cannot be logged"),
+    );
+  });
+});
+
+// A-dep-3 (OQ-AD-7): a final floor signal on a chore reclassifies it to architectural.
+const signalId = (i: number) => uuid + ":" + String(i);
+const up = (n: number) =>
+  intakeReclassified(
+    "task-1",
+    "chore",
+    Array.from({ length: n }, (_, i) => signalId(i)),
+    "intake-rubric-1",
+  );
+
+describe("intakeReclassified and its Ruling (A-dep-3)", () => {
+  it("logs every signal ID in order, raised to architectural", () => {
+    expect(up(2)).toEqual({
+      kind: "intake.reclassified",
+      taskId: "task-1",
+      from: "chore",
+      to: "architectural",
+      source: "floor",
+      signalIds: [signalId(0), signalId(1)],
+      rubricVersion: "intake-rubric-1",
+    });
+  });
+
+  it("maps it to the r1 Ruling as the owner approved it (OQ-AD3-4, OQ-AD3-5)", () => {
+    expect(intakeReclassifiedRuling(RUN, "evt-9", up(2))).toEqual({
+      kind: "decision.opened",
+      id: "decision-intake-" + uuid + "-r1",
+      authority: "harness",
+      taskId: "task-1",
+      runId: RUN,
+      signalIds: ["evt-9"],
+      class: null,
+      source: "intake",
+      ruling: {
+        what: "Reclassified the task from chore to architectural",
+        why: "floorSignal\n  " + signalId(0) + "\n  " + signalId(1),
+        costIfWrong: APPROVED.architectural,
+        rubricVersion: "intake-rubric-1",
+      },
+    });
+  });
+
+  it("cuts 256 signal IDs at whole entries, with its own marker", () => {
+    const ruling = intakeReclassifiedRuling(RUN, "evt-9", up(256));
+    const why = ruling.authority === "harness" ? ruling.ruling.why : "";
+    expect(size(why)).toBeLessThanOrEqual(8192);
+    const lines = why.split("\n");
+    const kept = lines.slice(1, -1);
+    expect(lines[0]).toBe("floorSignal");
+    expect(kept).toEqual(kept.map((_, i) => "  " + signalId(i)));
+    // 8192 - "floorSignal" - the longest marker leaves 8135: 10 lines of 41, 90 of 42, 91 of 43.
+    expect(kept).toHaveLength(191);
+    expect(lines.at(-1)).toBe(
+      "…[+" + String(256 - 191) + " more entries; see intake.reclassified]",
+    );
+  });
+
+  it("refuses a class it cannot raise, no signal, a bad run ID or another source", () => {
+    const refused = (fn: () => unknown, message: string) => {
+      expect(fn).toThrow(new IntakeError(message));
+    };
+    refused(
+      () =>
+        intakeReclassified("task-1", "architectural", ["s"], "intake-rubric-1"),
+      'the harness may only reclassify up, not "architectural" to "architectural"',
+    );
+    refused(
+      () => intakeReclassified("task-1", "chore", [], "intake-rubric-1"),
+      "intake.reclassified cannot be logged",
+    );
+    refused(
+      () => intakeReclassifiedRuling("graph-1", "evt-9", up(1)),
+      "decision.opened cannot be logged: not a run ID",
+    );
+    refused(
+      () =>
+        intakeReclassifiedRuling(RUN, "evt-9", { ...up(1), source: "plan" }),
+      "decision.opened cannot be logged: not the floor's",
     );
   });
 });

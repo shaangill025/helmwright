@@ -191,6 +191,8 @@ export {
 export {
   INTAKE_COST_IF_WRONG,
   intakeClassified,
+  intakeReclassified,
+  intakeReclassifiedRuling,
   intakeRuling,
   intakeRulingId,
 } from "./intake/events.ts";

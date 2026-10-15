@@ -248,7 +248,7 @@ async function main(args: readonly string[]): Promise<number> {
     // The owner is present only at an interactive terminal: asks go to stderr, so
     // stdout stays one JSON line. Otherwise every ask is denied (nobody present).
     const present = process.stdin.isTTY && process.stderr.isTTY;
-    const { runId, terminal, summary, floor, pending } = await runTask({
+    const end = await runTask({
       taskFile: target,
       stateDir,
       signal: controller.signal,
@@ -268,6 +268,13 @@ async function main(args: readonly string[]): Promise<number> {
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
         : {}),
     });
+    const { runId, terminal, summary, floor, pending, reclassified } = end;
+    // A-dep-3: the floor's signals raised the task's class (a record only in M1).
+    if (reclassified !== null) {
+      const { from, to } = reclassified;
+      const line = "intake reclassified " + from + " -> " + to;
+      console.error("helmwright: " + line + " (floor signals)");
+    }
     console.error("helmwright: " + displayText(floorLine(floor)));
     // A-dep: a completed run with a pending owner decision is not done.
     if (pending.length > 0) {

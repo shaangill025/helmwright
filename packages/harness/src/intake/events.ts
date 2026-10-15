@@ -5,11 +5,13 @@ import {
   type IntakeClassified,
   type IntakeDeclared,
   type IntakeOverridden,
+  type IntakeReclassified,
 } from "@helmwright/schema";
 import { ObjectEventError, decisionOpened } from "../objects/events.ts";
 import {
   IntakeError,
   frictionFor,
+  reclassifyUp,
   type IntakeInput,
   type IntakeResult,
 } from "./rubric.ts";
@@ -25,7 +27,9 @@ export interface IntakeOverride {
 }
 
 /** `payload` if it is a valid intake event of its kind. @throws IntakeError with fixed text */
-function checked<P extends IntakeClassified | IntakeOverridden>(payload: P): P {
+function checked<
+  P extends IntakeClassified | IntakeOverridden | IntakeReclassified,
+>(payload: P): P {
   // A copy, so the guard does not narrow `payload` itself.
   if (!validateIntakeEvent({ ...payload })) {
     throw new IntakeError(payload.kind + " cannot be logged");
@@ -92,6 +96,30 @@ export function intakeOverridden(
 }
 
 /**
+ * A-dep-3 (OQ-AD-7, Q52): the `intake.reclassified` payload of a run whose effective
+ * class `from` is raised to architectural by its final floor signals `signalIds` (in
+ * signal order), under the run's intake rubric version.
+ * @throws IntakeError if architectural does not rank above `from`, or the payload is not
+ * a valid intake event (such as no signal)
+ */
+export function intakeReclassified(
+  taskId: string,
+  from: IntakeClass,
+  signalIds: readonly string[],
+  rubricVersion: string,
+): IntakeReclassified {
+  return checked({
+    kind: "intake.reclassified",
+    taskId,
+    from,
+    to: reclassifyUp(from, "architectural"),
+    source: "floor",
+    signalIds: [...signalIds] as IntakeReclassified["signalIds"],
+    rubricVersion,
+  });
+}
+
+/**
  * B5-5 (Q53, OQ-B55-1): the cost if an intake Ruling is wrong, per rubric version and
  * class, as the owner approved it. Ring 0: replay recomputes the Ruling, so a change of
  * wording is a new rubric version.
@@ -127,9 +155,16 @@ export function intakeRulingId(runId: string): string {
 /**
  * Each rule on its own line, then each of its entries, already escaped, on its own
  * indented line. Over MAX_WHY code points, entries are kept in order while they and the
- * marker fit; the rest are counted in the marker, so the text can be rule names only.
+ * marker fit; the rest are counted in the marker, which names the event `see` that
+ * holds them all, so the text can be rule names only.
  */
-function rulingWhy(reasons: IntakeClassified["reasons"]): string {
+function rulingWhy(
+  reasons: readonly {
+    readonly rule: string;
+    readonly entries: readonly string[];
+  }[],
+  see: string,
+): string {
   const size = (text: string) => Array.from(text).length;
   const text = (entries: readonly (readonly string[])[]) =>
     reasons
@@ -139,7 +174,7 @@ function rulingWhy(reasons: IntakeClassified["reasons"]): string {
   if (size(text(all)) <= MAX_WHY) return text(all);
   const total = all.reduce((n, lines) => n + lines.length, 0);
   const marker = (k: number) =>
-    "\n…[+" + String(k) + " more entries; see intake.classified]";
+    "\n…[+" + String(k) + " more entries; see " + see + "]";
   // The marker counts at most `total` entries, so this reserves its longest form.
   let room = MAX_WHY - size(text([])) - size(marker(total));
   let stopped = false;
@@ -170,24 +205,76 @@ export function intakeRuling(
   eventId: string,
   classified: IntakeClassified,
 ): DecisionOpened {
-  const costs = INTAKE_COST_IF_WRONG.get(classified.rubricVersion);
+  return harnessRuling(intakeRulingId(runId), runId, eventId, {
+    taskId: classified.taskId,
+    what: "Classified the task as " + classified.class,
+    why: rulingWhy(classified.reasons, "intake.classified"),
+    class: classified.class,
+    rubricVersion: classified.rubricVersion,
+  });
+}
+
+/**
+ * A-dep-3 (OQ-AD3-4, OQ-AD3-5): the intake Ruling of `reclassified`, the
+ * `intake.reclassified` event `eventId` of the run `runId`, built like `intakeRuling`:
+ * ID the run's intake Ruling ID with `-r1` (the floor's is the run's only one in M1),
+ * what the move, why the rule floorSignal and each signal ID, and costIfWrong the
+ * approved line of the class it is raised to. It adds to the run's intake Ruling and
+ * supersedes nothing.
+ * @throws IntakeError with fixed text if the Ruling is not a valid `decision.opened`
+ */
+export function intakeReclassifiedRuling(
+  runId: string,
+  eventId: string,
+  reclassified: IntakeReclassified,
+): DecisionOpened {
+  const { from, to, signalIds } = reclassified;
+  if (reclassified.source !== "floor") {
+    throw new IntakeError("decision.opened cannot be logged: not the floor's");
+  }
+  return harnessRuling(intakeRulingId(runId) + "-r1", runId, eventId, {
+    taskId: reclassified.taskId,
+    what: "Reclassified the task from " + from + " to " + to,
+    why: rulingWhy(
+      [{ rule: "floorSignal", entries: signalIds }],
+      "intake.reclassified",
+    ),
+    class: to,
+    rubricVersion: reclassified.rubricVersion,
+  });
+}
+
+/** An intake Ruling `id` of the run `runId`, its only signal the event `eventId`. */
+function harnessRuling(
+  id: string,
+  runId: string,
+  eventId: string,
+  body: {
+    readonly taskId: string;
+    readonly what: string;
+    readonly why: string;
+    readonly class: IntakeClass;
+    readonly rubricVersion: string;
+  },
+): DecisionOpened {
+  const costs = INTAKE_COST_IF_WRONG.get(body.rubricVersion);
   if (costs === undefined) {
     throw new IntakeError("decision.opened cannot be logged: no cost if wrong");
   }
   try {
     return decisionOpened({
-      id: intakeRulingId(runId),
+      id,
       authority: "harness",
-      taskId: classified.taskId,
+      taskId: body.taskId,
       runId,
       signalIds: [eventId],
       class: null,
       source: "intake",
       ruling: {
-        what: "Classified the task as " + classified.class,
-        why: rulingWhy(classified.reasons),
-        costIfWrong: costs[classified.class],
-        rubricVersion: classified.rubricVersion,
+        what: body.what,
+        why: body.why,
+        costIfWrong: costs[body.class],
+        rubricVersion: body.rubricVersion,
       },
     });
   } catch (error) {
