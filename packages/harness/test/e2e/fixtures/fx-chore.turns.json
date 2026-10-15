@@ -1,0 +1,52 @@
+[
+  {
+    "text": "Adding the exit-code test, with the duration library for later tests.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat >> app/test/timeout.test.js <<'EOF'\n\ntest(\"exits with code 2 for a fractional timeout\", () => {\n  const run = spawnSync(process.execPath, [cli, \"--timeout\", \"1.5\"]);\n  assert.equal(run.status, 2);\n});\nEOF\n"
+          ]
+        }
+      },
+      {
+        "id": "call-2",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/package.json <<'EOF'\n{\n  \"name\": \"fxcli\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"license\": \"Apache-2.0\",\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"node scripts/vendor-install.mjs && node --test\"\n  },\n  \"devDependencies\": {\n    \"@helmwright/fx-duration\": \"file:vendor/fx-duration\"\n  }\n}\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "Running the test script in app/.",
+    "toolCalls": [
+      {
+        "id": "call-3",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cd app && node scripts/vendor-install.mjs && node --test"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "app/test/timeout.test.js checks that a fractional timeout exits with code 2.",
+    "toolCalls": [],
+    "claimsDone": true
+  }
+]

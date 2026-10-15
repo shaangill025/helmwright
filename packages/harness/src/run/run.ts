@@ -42,6 +42,8 @@ import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
   intakeOverridden,
+  intakeReclassified,
+  intakeReclassifiedRuling,
   intakeRuling,
   type IntakeOverride,
 } from "../intake/events.ts";
@@ -308,7 +310,11 @@ export interface RunRecordEvent {
 /** What `RunSetup.floor` gives (A-dep): the check, and the events logged just before it. */
 export interface FloorEnd {
   readonly checked: FloorChecked;
-  /** `floor.signalled` and its `decision.opened` events, in order, each with its event ID if given. */
+  /**
+   * `floor.signalled` and its `decision.opened` events, in order, each with its event ID
+   * if given; A-dep-3: first `intake.reclassified` and its Ruling, if the floor raised
+   * the class.
+   */
   readonly before: readonly (RunRecordEvent & { readonly eventId?: string })[];
 }
 
@@ -398,6 +404,11 @@ export interface RunEnd extends RunOutcome {
   readonly floor: FloorChecked | null;
   /** A-dep: the IDs of the owner decisions the floor opened, pending: completed is not done. */
   readonly pending: readonly string[];
+  /** A-dep-3: the class move the floor logged; null if it logged none. */
+  readonly reclassified: {
+    readonly from: IntakeClass;
+    readonly to: IntakeClass;
+  } | null;
 }
 
 export interface RunOutcome {
@@ -423,7 +434,8 @@ export interface RunOutcome {
  * first failed append, the loop's own failure, then whatever else was thrown.
  * B3-2: with `setup.floor`, once cleanup is confirmed (not unconfirmed, no
  * SANDBOX_CLEANUP_FAILED halt) the floor runs, whatever the terminal, and A-dep its
- * `before` events (`floor.signalled`, then its decisions) and `floor.checked` are
+ * `before` events (A-dep-3 any `intake.reclassified` and its Ruling, then
+ * `floor.signalled` and its decisions) and `floor.checked` are
  * logged in one transaction just before `run.terminated`; a run that would complete
  * fails with FLOOR_REJECTED on a finding, or FLOOR_UNCHECKED (with the reason) if the
  * floor throws, its transaction fails, or there is no `setup.floor` (SF-2). Other
@@ -641,6 +653,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   // B3-2: only once no sandbox can still write to the worktree (S6, SF-1, SF-4).
   let logged: FloorChecked | null = null;
   let owned: string[] = [];
+  let reclassified: RunEnd["reclassified"] = null;
   // SF-2: a run with no floor cannot complete.
   let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
   if (setup.floor !== undefined && !unconfirmed) {
@@ -662,6 +675,12 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
             ? [id]
             : [],
         );
+        const up = before.find((e) => e.type === "intake.reclassified");
+        if (up !== undefined) {
+          // The floor built and checked it with intakeReclassified.
+          const { from, to } = up.payload;
+          reclassified = { from: from as IntakeClass, to: to as IntakeClass };
+        }
         if (checked.verdict !== "pass") floorError = FLOOR_REJECTED;
       } catch (error) {
         floorError = FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
@@ -675,7 +694,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       : done;
   try {
     append("run.terminated", { agentId: nodeId, ...end }, true);
-    return { ...end, floor: logged, pending: owned };
+    return { ...end, floor: logged, pending: owned, reclassified };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(
@@ -686,7 +705,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     } catch {
       // The log itself may be what failed.
     }
-    return { ...lost, floor: logged, pending: owned };
+    return { ...lost, floor: logged, pending: owned, reclassified };
   }
 }
 
@@ -797,7 +816,9 @@ export const RING0_NOT_APPROVED =
  * (`intakeRuling`) as the next event in one transaction. An upward or downward
  * override logs `intake.overridden`, linked to that Ruling; a downward one is first
  * asked like the Ring 0 change, and unless approved the run fails with
- * INTAKE_OVERRIDE_NOT_APPROVED.
+ * INTAKE_OVERRIDE_NOT_APPROVED. A-dep-3: if the class so logged is chore and the final
+ * floor has a signal, the floor's transaction first logs `intake.reclassified` to
+ * architectural and its Ruling (`intakeReclassifiedRuling`); a record only in M1.
  * B10-3: a reclassification with the worktree's Ring 0 link targets that the rubric
  * refuses fails the run with INTAKE_LINKS_REFUSED. B5-4: those targets are read before
  * `run.started`, which is logged in one transaction after `task.created` (only for a
@@ -843,6 +864,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   ) as [string, string, string];
   // B5-5: the Ruling's signal, so it is built with the run's other intake events.
   const ids = { runId, classifiedId: randomUUID() };
+  // A-dep-3 (OQ-AD3-1): the class the run's logged intake events give, once logged.
+  let effective: IntakeClass | undefined;
   // Validated before any workspace work; reclassified with the link targets below.
   let intake: ReturnType<typeof intakeRecords>;
   try {
@@ -1011,6 +1034,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           },
           { type: "decision.opened", payload: { ...ruling } },
         ]);
+        effective = classified.class;
         options.onIntake?.({ kind: "classified", ...result });
         if (overridden !== undefined && direction === "down") {
           const { from, to, reason, scopeSha256 } = overridden;
@@ -1023,8 +1047,9 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         }
         if (overridden !== undefined) {
           emit("intake.overridden", { ...overridden });
-          const { to, friction: effective } = overridden;
-          const shown = { class: to, reasons: [], friction: effective };
+          const { to, friction: toFriction } = overridden;
+          effective = to;
+          const shown = { class: to, reasons: [], friction: toFriction };
           options.onIntake?.({ kind: "overridden", ...shown });
         }
         return broker.executeTool;
@@ -1050,6 +1075,23 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         const { signals, lockfiles } = signalled;
         // OQ-AD-3: only a Brief commits to a recommendation, so only it needs the key.
         const briefs = signals.some((s) => route(s, threshold) === "brief");
+        // A-dep-3 (OQ-AD-7, OQ-AD3-1 to OQ-AD3-3): any final signal on a chore raises it
+        // first, its event linking forward to the signal IDs in this one transaction.
+        const raised: (RunRecordEvent & { readonly eventId?: string })[] = [];
+        if (effective === "chore" && signals.length > 0) {
+          const upId = randomUUID();
+          const up = intakeReclassified(
+            intake.classified.taskId,
+            "chore",
+            signals.map((s) => s.id),
+            intake.classified.rubricVersion,
+          );
+          const r1 = intakeReclassifiedRuling(runId, upId, up);
+          raised.push(
+            { type: "intake.reclassified", payload: { ...up }, eventId: upId },
+            { type: "decision.opened", payload: { ...r1 } },
+          );
+        }
         const key = briefs ? recommendationKey(stateDir) : new Uint8Array();
         try {
           const decisions = signals.map((signal, index) =>
@@ -1062,6 +1104,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           return {
             checked,
             before: [
+              ...raised,
               { type: "floor.signalled", payload: { ...signalled }, eventId },
               ...decisions.map((d) => ({
                 type: "decision.opened",
@@ -1231,6 +1274,7 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
         ...log.events({ type: "run.recorded" }),
         ...log.events({ type: "decision.opened" }),
         ...log.events({ type: "floor.signalled" }),
+        ...log.events({ type: "intake.reclassified" }),
       ]),
       projections,
     };

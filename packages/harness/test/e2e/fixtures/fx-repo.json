@@ -206,6 +206,13 @@
         "scope": ["app/pnpm-lock.yaml"]
       },
       "turns": "fx-lock.turns.json"
+    },
+    "chore": {
+      "title": "Add a test that `fxcli --timeout 1.5` exits with code 2.",
+      "intake": {
+        "scope": ["app/test/timeout.test.js"]
+      },
+      "turns": "fx-chore.turns.json"
     }
   }
 }
