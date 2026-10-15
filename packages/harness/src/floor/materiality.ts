@@ -13,7 +13,7 @@ import {
   decisionOpened,
   footprintAddress,
 } from "../objects/events.ts";
-import { deepFreeze, displayText } from "../permission/policy.ts";
+import { deepFreeze } from "../permission/policy.ts";
 import type { DependencySignal } from "./dependencies.ts";
 import { FloorError } from "./events.ts";
 
@@ -110,10 +110,7 @@ const BLOCKED_NAME = 200 - Array.from(BLOCKED).length - 1;
 /** The longest option label (OD-5), less "Keep ". */
 const KEEP_NAME = 80 - "Keep ".length;
 
-/**
- * The signal-specific parts of a Brief, as the owner approved them (OQ-AD-4); the draft
- * gave no wording for the bump options' trade-offs, so theirs await owner approval.
- */
+/** The signal-specific parts of a Brief, as the owner approved them (OQ-AD-4; the bump trade-offs OQ-AD-13). */
 function template(signal: FloorDependencyAdded | FloorDependencyMajorBump): {
   readonly question: string;
   readonly options: DecisionBrief["options"];
@@ -176,7 +173,10 @@ function template(signal: FloorDependencyAdded | FloorDependencyMajorBump): {
 interface BriefContext {
   readonly decisionId: string;
   readonly repoId: string;
-  /** The changed lockfile paths, each also a proposed `footprint.file`. */
+  /**
+   * The changed lockfile paths as shown text (already escaped with displayText, as
+   * `signal.path` is), each also a proposed `footprint.file` with that text as its ref.
+   */
   readonly lockfiles: readonly string[];
   /** The option order seed: 128 random bits as 32 lowercase hex digits. */
   readonly seed: string;
@@ -201,7 +201,7 @@ function floorBrief(signal: FloorSignal, context: BriefContext): DecisionBrief {
   const nonce = recommendationNonce(context.key, decisionId);
   const file = (path: string) =>
     footprintAddress("footprint.file", repoId, path).id;
-  const lockfiles = [...new Set(context.lockfiles.map(displayText))].sort();
+  const lockfiles = [...new Set(context.lockfiles)].sort();
   return {
     question: fixed.question,
     options: fixed.options,
@@ -276,6 +276,7 @@ export interface FloorDecisionInput {
   readonly index: number;
   readonly signal: FloorSignal;
   readonly threshold: BriefThreshold;
+  /** The changed lockfile paths as shown text (see `BriefContext.lockfiles`). */
   readonly lockfiles: readonly string[];
   readonly seed: string;
   readonly key: Uint8Array;
@@ -311,6 +312,7 @@ export function floorDecision(input: FloorDecisionInput): DecisionOpened {
         });
   } catch (error) {
     if (!(error instanceof ObjectEventError)) throw error;
-    throw new FloorError("decision.opened cannot be logged", { cause: error });
+    // Fixed text: "decision.opened cannot be logged: <reason>".
+    throw new FloorError(error.message);
   }
 }

@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import {
   validateFloorEvent,
   validateObjectEvent,
@@ -428,9 +429,70 @@ describe("floorDecision refusals", () => {
     },
   );
 
-  it("refuses a decision the log would refuse", () => {
-    expect(() =>
-      floorDecision(input(runtimeAdd, { taskId: "not-a-task" })),
-    ).toThrow(FloorError);
+  it("refuses a decision the log would refuse, with its reason", () => {
+    const refused = () =>
+      floorDecision(input(runtimeAdd, { taskId: "not-a-task" }));
+    expect(refused).toThrow(FloorError);
+    expect(refused).toThrow(
+      "decision.opened cannot be logged: invalid object event payload",
+    );
+  });
+});
+
+describe("the proposed footprint's lockfiles", () => {
+  const files = (lockfiles: readonly string[]) =>
+    owned(floorDecision(input(runtimeAdd, { lockfiles }))).brief
+      .proposedFootprint;
+  const file = (ref: string) =>
+    footprintAddress("footprint.file", repoId, ref).id;
+  const dependency = footprintAddress(
+    "footprint.dependency",
+    repoId,
+    "left-pad",
+  ).id;
+
+  it("takes shown text as is, with no second escape", () => {
+    // Shown text, as displayText gives it (and signal.path), is not escaped again.
+    const shown = "app\\u200b\\/pnpm-lock.yaml";
+    expect(files([shown])).toEqual([
+      dependency,
+      file("app/package.json"),
+      file(shown),
+    ]);
+  });
+
+  it("drops a repeated lockfile and one equal to the manifest", () => {
+    expect(
+      files(["x/pnpm-lock.yaml", "x/pnpm-lock.yaml", "app/package.json"]),
+    ).toEqual([dependency, file("app/package.json"), file("x/pnpm-lock.yaml")]);
+  });
+});
+
+describe("the threshold values", () => {
+  const schema = (name: string): unknown =>
+    JSON.parse(
+      readFileSync(
+        new URL(`../../../schema/schemas/${name}.schema.json`, import.meta.url),
+        "utf8",
+      ),
+    );
+  const at = (data: unknown, path: readonly string[]): unknown =>
+    path.reduce<unknown>(
+      (inner, key) =>
+        typeof inner === "object" && inner !== null
+          ? new Map(Object.entries(inner)).get(key)
+          : undefined,
+      data,
+    );
+
+  it("equal the config setting's and floor.signalled's enums", () => {
+    const config = ["properties", "decisions", "properties", "briefThreshold"];
+    const floor = ["$defs", "signalled", "properties", "materiality"];
+    expect(at(schema("helmwright-config"), [...config, "enum"])).toEqual(
+      BRIEF_THRESHOLDS,
+    );
+    expect(
+      at(schema("floor-event"), [...floor, "properties", "threshold", "enum"]),
+    ).toEqual(BRIEF_THRESHOLDS);
   });
 });
