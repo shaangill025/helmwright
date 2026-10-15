@@ -85,6 +85,14 @@ const schema31 = {
           enum: ["terse", "fullMemo", "recommendationOnly"],
           default: "terse",
         },
+        briefThreshold: {
+          description:
+            "Which floor signals open an owner Brief; the rest become a harness Ruling: a runtime dependency add or any major bump (default); every signal (stricter); or a runtime dependency add only (looser). The value used is logged in floor.signalled.materiality.",
+          $comment:
+            'Default "runtimeAddOrMajor". Ring 0: no. Consumer: A-dep. 08 row Decisions / Materiality thresholds; Q53.',
+          enum: ["runtimeAddOrMajor", "everySignal", "runtimeAddOnly"],
+          default: "runtimeAddOrMajor",
+        },
         evaluator: {
           description:
             "Who decides done: a fresh-context evaluator that only reads and runs, whose verdict flips criteria (default); or generator self-reports (not recommended).",
@@ -372,6 +380,7 @@ function validate20(
             key3 === "detection" ||
             key3 === "pendingWork" ||
             key3 === "briefFormat" ||
+            key3 === "briefThreshold" ||
             key3 === "evaluator"
           )) {
             const err8 = {
@@ -465,16 +474,21 @@ function validate20(
             errors++;
           }
         }
-        if (data5.evaluator !== undefined) {
-          let data9 = data5.evaluator;
-          if (!(data9 === "freshContext" || data9 === "generatorSelfReports")) {
+        if (data5.briefThreshold !== undefined) {
+          let data9 = data5.briefThreshold;
+          if (!(
+            data9 === "runtimeAddOrMajor" ||
+            data9 === "everySignal" ||
+            data9 === "runtimeAddOnly"
+          )) {
             const err12 = {
-              instancePath: instancePath + "/decisions/evaluator",
-              schemaPath: "#/properties/decisions/properties/evaluator/enum",
+              instancePath: instancePath + "/decisions/briefThreshold",
+              schemaPath:
+                "#/properties/decisions/properties/briefThreshold/enum",
               keyword: "enum",
               params: {
                 allowedValues:
-                  schema31.properties.decisions.properties.evaluator.enum,
+                  schema31.properties.decisions.properties.briefThreshold.enum,
               },
               message: "must be equal to one of the allowed values",
             };
@@ -486,8 +500,31 @@ function validate20(
             errors++;
           }
         }
+        if (data5.evaluator !== undefined) {
+          let data10 = data5.evaluator;
+          if (!(
+            data10 === "freshContext" || data10 === "generatorSelfReports"
+          )) {
+            const err13 = {
+              instancePath: instancePath + "/decisions/evaluator",
+              schemaPath: "#/properties/decisions/properties/evaluator/enum",
+              keyword: "enum",
+              params: {
+                allowedValues:
+                  schema31.properties.decisions.properties.evaluator.enum,
+              },
+              message: "must be equal to one of the allowed values",
+            };
+            if (vErrors === null) {
+              vErrors = [err13];
+            } else {
+              vErrors.push(err13);
+            }
+            errors++;
+          }
+        }
       } else {
-        const err13 = {
+        const err14 = {
           instancePath: instancePath + "/decisions",
           schemaPath: "#/properties/decisions/type",
           keyword: "type",
@@ -495,43 +532,24 @@ function validate20(
           message: "must be object",
         };
         if (vErrors === null) {
-          vErrors = [err13];
+          vErrors = [err14];
         } else {
-          vErrors.push(err13);
+          vErrors.push(err14);
         }
         errors++;
       }
     }
     if (data.permissions !== undefined) {
-      let data10 = data.permissions;
-      if (data10 && typeof data10 == "object" && !Array.isArray(data10)) {
-        for (const key4 in data10) {
+      let data11 = data.permissions;
+      if (data11 && typeof data11 == "object" && !Array.isArray(data11)) {
+        for (const key4 in data11) {
           if (!(key4 === "policy" || key4 === "untrustedContent")) {
-            const err14 = {
+            const err15 = {
               instancePath: instancePath + "/permissions",
               schemaPath: "#/properties/permissions/additionalProperties",
               keyword: "additionalProperties",
               params: { additionalProperty: key4 },
               message: "must NOT have additional properties",
-            };
-            if (vErrors === null) {
-              vErrors = [err14];
-            } else {
-              vErrors.push(err14);
-            }
-            errors++;
-          }
-        }
-        if (data10.policy !== undefined) {
-          let data11 = data10.policy;
-          if (data11 && typeof data11 == "object" && !Array.isArray(data11)) {
-          } else {
-            const err15 = {
-              instancePath: instancePath + "/permissions/policy",
-              schemaPath: "#/properties/permissions/properties/policy/type",
-              keyword: "type",
-              params: { type: "object" },
-              message: "must be object",
             };
             if (vErrors === null) {
               vErrors = [err15];
@@ -541,12 +559,31 @@ function validate20(
             errors++;
           }
         }
-        if (data10.untrustedContent !== undefined) {
-          let data12 = data10.untrustedContent;
+        if (data11.policy !== undefined) {
+          let data12 = data11.policy;
           if (data12 && typeof data12 == "object" && !Array.isArray(data12)) {
-            for (const key5 in data12) {
+          } else {
+            const err16 = {
+              instancePath: instancePath + "/permissions/policy",
+              schemaPath: "#/properties/permissions/properties/policy/type",
+              keyword: "type",
+              params: { type: "object" },
+              message: "must be object",
+            };
+            if (vErrors === null) {
+              vErrors = [err16];
+            } else {
+              vErrors.push(err16);
+            }
+            errors++;
+          }
+        }
+        if (data11.untrustedContent !== undefined) {
+          let data13 = data11.untrustedContent;
+          if (data13 && typeof data13 == "object" && !Array.isArray(data13)) {
+            for (const key5 in data13) {
               if (!(key5 === "mode" || key5 === "hintBytes")) {
-                const err16 = {
+                const err17 = {
                   instancePath: instancePath + "/permissions/untrustedContent",
                   schemaPath:
                     "#/properties/permissions/properties/untrustedContent/additionalProperties",
@@ -555,17 +592,17 @@ function validate20(
                   message: "must NOT have additional properties",
                 };
                 if (vErrors === null) {
-                  vErrors = [err16];
+                  vErrors = [err17];
                 } else {
-                  vErrors.push(err16);
+                  vErrors.push(err17);
                 }
                 errors++;
               }
             }
-            if (data12.mode !== undefined) {
-              let data13 = data12.mode;
-              if (!(data13 === "exploreSplit" || data13 === "singleEngine")) {
-                const err17 = {
+            if (data13.mode !== undefined) {
+              let data14 = data13.mode;
+              if (!(data14 === "exploreSplit" || data14 === "singleEngine")) {
+                const err18 = {
                   instancePath:
                     instancePath + "/permissions/untrustedContent/mode",
                   schemaPath:
@@ -579,22 +616,22 @@ function validate20(
                   message: "must be equal to one of the allowed values",
                 };
                 if (vErrors === null) {
-                  vErrors = [err17];
+                  vErrors = [err18];
                 } else {
-                  vErrors.push(err17);
+                  vErrors.push(err18);
                 }
                 errors++;
               }
             }
-            if (data12.hintBytes !== undefined) {
-              let data14 = data12.hintBytes;
+            if (data13.hintBytes !== undefined) {
+              let data15 = data13.hintBytes;
               if (!(
-                typeof data14 == "number" &&
-                !(data14 % 1) &&
-                !isNaN(data14) &&
-                isFinite(data14)
+                typeof data15 == "number" &&
+                !(data15 % 1) &&
+                !isNaN(data15) &&
+                isFinite(data15)
               )) {
-                const err18 = {
+                const err19 = {
                   instancePath:
                     instancePath + "/permissions/untrustedContent/hintBytes",
                   schemaPath:
@@ -604,15 +641,15 @@ function validate20(
                   message: "must be integer",
                 };
                 if (vErrors === null) {
-                  vErrors = [err18];
+                  vErrors = [err19];
                 } else {
-                  vErrors.push(err18);
+                  vErrors.push(err19);
                 }
                 errors++;
               }
-              if (typeof data14 == "number" && isFinite(data14)) {
-                if (data14 > 1024 || isNaN(data14)) {
-                  const err19 = {
+              if (typeof data15 == "number" && isFinite(data15)) {
+                if (data15 > 1024 || isNaN(data15)) {
+                  const err20 = {
                     instancePath:
                       instancePath + "/permissions/untrustedContent/hintBytes",
                     schemaPath:
@@ -622,14 +659,14 @@ function validate20(
                     message: "must be <= 1024",
                   };
                   if (vErrors === null) {
-                    vErrors = [err19];
+                    vErrors = [err20];
                   } else {
-                    vErrors.push(err19);
+                    vErrors.push(err20);
                   }
                   errors++;
                 }
-                if (data14 < 1 || isNaN(data14)) {
-                  const err20 = {
+                if (data15 < 1 || isNaN(data15)) {
+                  const err21 = {
                     instancePath:
                       instancePath + "/permissions/untrustedContent/hintBytes",
                     schemaPath:
@@ -639,16 +676,16 @@ function validate20(
                     message: "must be >= 1",
                   };
                   if (vErrors === null) {
-                    vErrors = [err20];
+                    vErrors = [err21];
                   } else {
-                    vErrors.push(err20);
+                    vErrors.push(err21);
                   }
                   errors++;
                 }
               }
             }
           } else {
-            const err21 = {
+            const err22 = {
               instancePath: instancePath + "/permissions/untrustedContent",
               schemaPath:
                 "#/properties/permissions/properties/untrustedContent/type",
@@ -657,15 +694,15 @@ function validate20(
               message: "must be object",
             };
             if (vErrors === null) {
-              vErrors = [err21];
+              vErrors = [err22];
             } else {
-              vErrors.push(err21);
+              vErrors.push(err22);
             }
             errors++;
           }
         }
       } else {
-        const err22 = {
+        const err23 = {
           instancePath: instancePath + "/permissions",
           schemaPath: "#/properties/permissions/type",
           keyword: "type",
@@ -673,23 +710,23 @@ function validate20(
           message: "must be object",
         };
         if (vErrors === null) {
-          vErrors = [err22];
+          vErrors = [err23];
         } else {
-          vErrors.push(err22);
+          vErrors.push(err23);
         }
         errors++;
       }
     }
     if (data.ownerLoop !== undefined) {
-      let data15 = data.ownerLoop;
-      if (data15 && typeof data15 == "object" && !Array.isArray(data15)) {
-        for (const key6 in data15) {
+      let data16 = data.ownerLoop;
+      if (data16 && typeof data16 == "object" && !Array.isArray(data16)) {
+        for (const key6 in data16) {
           if (!(
             key6 === "preCommitment" ||
             key6 === "consequences" ||
             key6 === "tutor"
           )) {
-            const err23 = {
+            const err24 = {
               instancePath: instancePath + "/ownerLoop",
               schemaPath: "#/properties/ownerLoop/additionalProperties",
               keyword: "additionalProperties",
@@ -697,21 +734,21 @@ function validate20(
               message: "must NOT have additional properties",
             };
             if (vErrors === null) {
-              vErrors = [err23];
+              vErrors = [err24];
             } else {
-              vErrors.push(err23);
+              vErrors.push(err24);
             }
             errors++;
           }
         }
-        if (data15.preCommitment !== undefined) {
-          let data16 = data15.preCommitment;
+        if (data16.preCommitment !== undefined) {
+          let data17 = data16.preCommitment;
           if (!(
-            data16 === "everyOwnedDecision" ||
-            data16 === "sparringOnly" ||
-            data16 === "off"
+            data17 === "everyOwnedDecision" ||
+            data17 === "sparringOnly" ||
+            data17 === "off"
           )) {
-            const err24 = {
+            const err25 = {
               instancePath: instancePath + "/ownerLoop/preCommitment",
               schemaPath:
                 "#/properties/ownerLoop/properties/preCommitment/enum",
@@ -723,31 +760,6 @@ function validate20(
               message: "must be equal to one of the allowed values",
             };
             if (vErrors === null) {
-              vErrors = [err24];
-            } else {
-              vErrors.push(err24);
-            }
-            errors++;
-          }
-        }
-        if (data15.consequences !== undefined) {
-          let data17 = data15.consequences;
-          if (!(
-            data17 === "signalsAndReviews" ||
-            data17 === "signalsOnly" ||
-            data17 === "reviewsOnly"
-          )) {
-            const err25 = {
-              instancePath: instancePath + "/ownerLoop/consequences",
-              schemaPath: "#/properties/ownerLoop/properties/consequences/enum",
-              keyword: "enum",
-              params: {
-                allowedValues:
-                  schema31.properties.ownerLoop.properties.consequences.enum,
-              },
-              message: "must be equal to one of the allowed values",
-            };
-            if (vErrors === null) {
               vErrors = [err25];
             } else {
               vErrors.push(err25);
@@ -755,20 +767,20 @@ function validate20(
             errors++;
           }
         }
-        if (data15.tutor !== undefined) {
-          let data18 = data15.tutor;
+        if (data16.consequences !== undefined) {
+          let data18 = data16.consequences;
           if (!(
-            data18 === "justInTimeAndConceptMap" ||
-            data18 === "justInTimeOnly" ||
-            data18 === "withSpacedFollowUps"
+            data18 === "signalsAndReviews" ||
+            data18 === "signalsOnly" ||
+            data18 === "reviewsOnly"
           )) {
             const err26 = {
-              instancePath: instancePath + "/ownerLoop/tutor",
-              schemaPath: "#/properties/ownerLoop/properties/tutor/enum",
+              instancePath: instancePath + "/ownerLoop/consequences",
+              schemaPath: "#/properties/ownerLoop/properties/consequences/enum",
               keyword: "enum",
               params: {
                 allowedValues:
-                  schema31.properties.ownerLoop.properties.tutor.enum,
+                  schema31.properties.ownerLoop.properties.consequences.enum,
               },
               message: "must be equal to one of the allowed values",
             };
@@ -780,35 +792,38 @@ function validate20(
             errors++;
           }
         }
+        if (data16.tutor !== undefined) {
+          let data19 = data16.tutor;
+          if (!(
+            data19 === "justInTimeAndConceptMap" ||
+            data19 === "justInTimeOnly" ||
+            data19 === "withSpacedFollowUps"
+          )) {
+            const err27 = {
+              instancePath: instancePath + "/ownerLoop/tutor",
+              schemaPath: "#/properties/ownerLoop/properties/tutor/enum",
+              keyword: "enum",
+              params: {
+                allowedValues:
+                  schema31.properties.ownerLoop.properties.tutor.enum,
+              },
+              message: "must be equal to one of the allowed values",
+            };
+            if (vErrors === null) {
+              vErrors = [err27];
+            } else {
+              vErrors.push(err27);
+            }
+            errors++;
+          }
+        }
       } else {
-        const err27 = {
+        const err28 = {
           instancePath: instancePath + "/ownerLoop",
           schemaPath: "#/properties/ownerLoop/type",
           keyword: "type",
           params: { type: "object" },
           message: "must be object",
-        };
-        if (vErrors === null) {
-          vErrors = [err27];
-        } else {
-          vErrors.push(err27);
-        }
-        errors++;
-      }
-    }
-    if (data.topology !== undefined) {
-      let data19 = data.topology;
-      if (!(
-        data19 === "sessionHarnessOneProcess" ||
-        data19 === "allInOneProcess" ||
-        data19 === "allSeparate"
-      )) {
-        const err28 = {
-          instancePath: instancePath + "/topology",
-          schemaPath: "#/properties/topology/enum",
-          keyword: "enum",
-          params: { allowedValues: schema31.properties.topology.enum },
-          message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {
           vErrors = [err28];
@@ -818,8 +833,30 @@ function validate20(
         errors++;
       }
     }
+    if (data.topology !== undefined) {
+      let data20 = data.topology;
+      if (!(
+        data20 === "sessionHarnessOneProcess" ||
+        data20 === "allInOneProcess" ||
+        data20 === "allSeparate"
+      )) {
+        const err29 = {
+          instancePath: instancePath + "/topology",
+          schemaPath: "#/properties/topology/enum",
+          keyword: "enum",
+          params: { allowedValues: schema31.properties.topology.enum },
+          message: "must be equal to one of the allowed values",
+        };
+        if (vErrors === null) {
+          vErrors = [err29];
+        } else {
+          vErrors.push(err29);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err29 = {
+    const err30 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -827,9 +864,9 @@ function validate20(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err29];
+      vErrors = [err30];
     } else {
-      vErrors.push(err29);
+      vErrors.push(err30);
     }
     errors++;
   }

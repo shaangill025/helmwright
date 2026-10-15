@@ -36,6 +36,10 @@ export interface HelmwrightConfig {
      */
     briefFormat?: "terse" | "fullMemo" | "recommendationOnly";
     /**
+     * Which floor signals open an owner Brief; the rest become a harness Ruling: a runtime dependency add or any major bump (default); every signal (stricter); or a runtime dependency add only (looser). The value used is logged in floor.signalled.materiality.
+     */
+    briefThreshold?: "runtimeAddOrMajor" | "everySignal" | "runtimeAddOnly";
+    /**
      * Who decides done: a fresh-context evaluator that only reads and runs, whose verdict flips criteria (default); or generator self-reports (not recommended).
      */
     evaluator?: "freshContext" | "generatorSelfReports";

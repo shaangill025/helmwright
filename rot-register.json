@@ -318,6 +318,19 @@
     "reviewTrigger": ["engine", "milestone"]
   },
   {
+    "component": "packages/harness/src/floor/materiality.ts",
+    "ring": 0,
+    "assumption": "materiality-rubric-1 is the Q53 table: at runtimeAddOrMajor, the only admitted threshold until a fixture exists, a runtime add or any major bump (dev or unknown too) opens a Brief and a dev add or lockfile-only change a Ruling; everySignal briefs every signal and runtimeAddOnly only a runtime add, but their dev and lockfile Briefs and bump Ruling have no template yet and fail closed. One decision per signal (OQ-AD-8), class technology, source floor, ID decision-floor-<run uuid>-<index>. The Brief and Ruling text is fixed by the rubric version (OQ-AD-4) and clipped by code points; a model fills nothing. The recommendation is the template keep (option a) at low confidence, committed with the nonce HMAC-SHA256(decision ID) under a key of at least 32 bytes (OQ-AD-3); a fixed recommendation is predictable, which weakens Q48's anti-anchoring until B11's brief step. Review at B11's brief step, the M2 detectors or a threshold fixture.",
+    "evidence": [
+      "decisions Q53",
+      "decisions Q48",
+      "packages/harness/test/floor/materiality.test.ts"
+    ],
+    "added": "2026-10-14",
+    "lastReviewed": "2026-10-14",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/floor/events.ts",
     "ring": 0,
     "assumption": "Each floor check gives one floor.checked whose verdict is reject exactly when it has a finding, with at most 256 sorted findings; a payload the schema rejects throws (fail closed). Replay faults a floor.checked whose base commit is not run.started's or whose rules version this build does not know, and any event but run.terminated after it.",
@@ -447,11 +460,12 @@
       "07 rule 1",
       "decisions Q51",
       "decisions Q58",
+      "decisions Q53",
       "decisions Q51 owner answers",
       "packages/schema/test/helmwright-config.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-14",
     "reviewTrigger": ["milestone"]
   },
   {

@@ -220,6 +220,19 @@ describe("loadRunConfig", { timeout: T }, () => {
     expect(() => loadRunConfig(repo)).toThrow(`${CONFIG_FILE}: ${problem}`);
   });
 
+  it("admits the default brief threshold and refuses its alternatives (OQ-AD-5)", () => {
+    const threshold = (value: string) =>
+      file(JSON.stringify({ decisions: { briefThreshold: value } }));
+    commit(threshold("runtimeAddOrMajor"));
+    expect(loadRunConfig(repo).record.source).toBe("file");
+    for (const value of ["everySignal", "runtimeAddOnly"]) {
+      commit(threshold(value));
+      expect(() => loadRunConfig(repo)).toThrow(
+        `decisions.briefThreshold "${value}" is not admitted: no fixture (07 rule 1)`,
+      );
+    }
+  });
+
   it("refuses an executable file", () => {
     git("update-index", "--chmod=+x", CONFIG_FILE);
     git(

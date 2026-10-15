@@ -75,6 +75,7 @@ describe("HelmwrightConfig", () => {
   it("lists the settings of the plan", () => {
     expect(settings.map(([path]) => dotted(path)).sort()).toEqual([
       "decisions.briefFormat",
+      "decisions.briefThreshold",
       "decisions.detection",
       "decisions.evaluator",
       "decisions.pendingWork",
