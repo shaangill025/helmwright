@@ -1055,23 +1055,28 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         // OQ-AD-3: only a Brief commits to a recommendation, so only it needs the key.
         const briefs = signals.some((s) => route(s, threshold) === "brief");
         const key = briefs ? recommendationKey(stateDir) : new Uint8Array();
-        const decisions = signals.map((signal, index) =>
-          floorDecision({
-            ...{ runId, taskId: task.id, repoId: config.repoId, index },
-            ...{ signal, threshold, lockfiles, key },
-            seed: randomBytes(16).toString("hex"),
-          }),
-        );
-        return {
-          checked,
-          before: [
-            { type: "floor.signalled", payload: { ...signalled }, eventId },
-            ...decisions.map((d) => ({
-              type: "decision.opened",
-              payload: { ...d },
-            })),
-          ],
-        };
+        try {
+          const decisions = signals.map((signal, index) =>
+            floorDecision({
+              ...{ runId, taskId: task.id, repoId: config.repoId, index },
+              ...{ signal, threshold, lockfiles, key },
+              seed: randomBytes(16).toString("hex"),
+            }),
+          );
+          return {
+            checked,
+            before: [
+              { type: "floor.signalled", payload: { ...signalled }, eventId },
+              ...decisions.map((d) => ({
+                type: "decision.opened",
+                payload: { ...d },
+              })),
+            ],
+          };
+        } finally {
+          // L6: made or failed, the commitments need this copy of the key no more.
+          key.fill(0);
+        }
       },
       confirmCleanup: () => sandboxContainersGone([...containers]),
       ...(options.signal === undefined ? {} : { signal: options.signal }),

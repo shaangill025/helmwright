@@ -578,6 +578,39 @@ describe("executeRun's Task and Run records (B5-4)", () => {
     expect(log.object(decision.id)).toMatchObject({ status: "pending" });
   });
 
+  it.each<[string, Partial<RunSetup>]>([
+    ["failed", {}],
+    [
+      "halted",
+      {
+        connect:
+          ({ halt }) =>
+          () => {
+            halt("stopped by the broker");
+            return ok();
+          },
+      },
+    ],
+  ])("logs the floor's events of a %s run too (A-dep)", async (_kind, more) => {
+    const opened = { type: "decision.opened", payload: { ...decision } };
+    const engine = more.connect ? mutatingEngine(0).engine : failing;
+    const outcome = await run(engine, true, log, more.connect, {
+      records,
+      floor: floorWith([signalled, opened]),
+    });
+    expect(outcome).toMatchObject({
+      terminal: { kind: "failed" },
+      pending: [decision.id],
+    });
+    const types = log.events({ runId: "run-1" }).map((e) => e.type);
+    expect(types.slice(-4)).toEqual([
+      ...["floor.signalled", "decision.opened", "floor.checked"],
+      "run.terminated",
+    ]);
+    expect(log.object(decision.id)).toMatchObject({ status: "pending" });
+    expectRunEnded(outcome.terminal);
+  });
+
   it("logs none of them and fails closed if the transaction fails (A-dep)", async () => {
     const refused = { type: "decision.opened", payload: { kind: "x" } };
     const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {

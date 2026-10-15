@@ -19,7 +19,12 @@ import {
   checkCandidate,
   type FloorLimits,
 } from "../../src/index.ts";
-import { requireGitVersion } from "../../src/floor/tree.ts";
+import type { FloorChange } from "../../src/floor/rules.ts";
+import {
+  changedLockfiles,
+  floorSignalled,
+  requireGitVersion,
+} from "../../src/floor/tree.ts";
 
 // Real git in temp repos; the candidate is a linked worktree, as in a run.
 const MARK = "// @ts-" + "ignore\n";
@@ -476,5 +481,82 @@ describe("git failures (SF-3)", { timeout: 30_000 }, () => {
     }
     expect(error).toBeInstanceOf(FloorError);
     expect((error as Error).message).toBe("git rev-parse failed (exit 128)");
+  });
+});
+
+// A-dep: the final floor.signalled and the Brief's lockfiles, over plain changes.
+const bytes = (text: string) => new TextEncoder().encode(text);
+const manifest = (path: string, from: object, to: object): FloorChange => ({
+  ...{ path, baseMode: "100644", candidateMode: "100644" },
+  base: bytes(JSON.stringify(from)),
+  candidate: bytes(JSON.stringify(to)),
+});
+const lockfile = (path: string): FloorChange => ({
+  ...{ path, baseMode: "100644", candidateMode: "100644" },
+  ...{ base: bytes("a"), candidate: bytes("b") },
+});
+const OID = "a".repeat(40);
+const signalsOf = (changes: readonly FloorChange[]) =>
+  floorSignalled("evt-1", OID, OID, "runtimeAddOrMajor", changes).signals;
+
+describe("floorSignalled and changedLockfiles (A-dep)", () => {
+  it("gives lockfile.only for a manifest change that touches no dependency field", () => {
+    const changes = [
+      manifest("package.json", { name: "a" }, { name: "b" }),
+      lockfile("pnpm-lock.yaml"),
+    ];
+    const payload = floorSignalled(
+      "evt-1",
+      OID,
+      "b".repeat(40),
+      "runtimeAddOrMajor",
+      changes,
+    );
+    expect(payload).toMatchObject({
+      ...{ kind: "floor.signalled", detector: "dependency-1", phase: "final" },
+      ...{ baseCommit: OID, candidateTree: "b".repeat(40) },
+      materiality: {
+        rubricVersion: "materiality-rubric-1",
+        threshold: "runtimeAddOrMajor",
+      },
+    });
+    expect(payload.signals).toEqual([
+      { id: "evt-1:0", type: "lockfile.only", path: "pnpm-lock.yaml" },
+    ]);
+    expect(changedLockfiles(changes)).toEqual(["pnpm-lock.yaml"]);
+  });
+
+  it("gives each of several lockfiles, sorted, with IDs in signal order", () => {
+    const changes = ["web/yarn.lock", "app/package-lock.json", "bun.lock"].map(
+      lockfile,
+    );
+    expect(signalsOf(changes)).toEqual([
+      { id: "evt-1:0", type: "lockfile.only", path: "app/package-lock.json" },
+      { id: "evt-1:1", type: "lockfile.only", path: "bun.lock" },
+      { id: "evt-1:2", type: "lockfile.only", path: "web/yarn.lock" },
+    ]);
+  });
+
+  it("skips a lockfile under node_modules", () => {
+    const changes = [
+      lockfile("node_modules/x/package-lock.json"),
+      lockfile("a/node_modules/yarn.lock"),
+      lockfile("pnpm-lock.yaml"),
+    ];
+    expect(signalsOf(changes).map((s) => s.path)).toEqual(["pnpm-lock.yaml"]);
+    expect(changedLockfiles(changes)).toEqual(["pnpm-lock.yaml"]);
+  });
+
+  it("names the lockfiles of a dependency change, which give no lockfile.only", () => {
+    const changes = [
+      manifest("package.json", {}, { dependencies: { "left-pad": "^1.0.0" } }),
+      lockfile("pnpm-lock.yaml"),
+      lockfile("docs/\u001b/yarn.lock"),
+    ];
+    expect(signalsOf(changes).map((s) => s.type)).toEqual(["dependency.added"]);
+    expect(changedLockfiles(changes)).toEqual([
+      "docs/\\u{1b}/yarn.lock",
+      "pnpm-lock.yaml",
+    ]);
   });
 });
