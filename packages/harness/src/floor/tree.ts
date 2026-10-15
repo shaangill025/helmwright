@@ -31,7 +31,13 @@ import {
 } from "./dependencies.ts";
 import { FloorError, floorChecked } from "./events.ts";
 import { MATERIALITY_RUBRIC, type BriefThreshold } from "./materiality.ts";
-import { floorFindings, isConfig, type FloorChange } from "./rules.ts";
+import {
+  floorFindings,
+  isConfig,
+  nameOf,
+  segments,
+  type FloorChange,
+} from "./rules.ts";
 
 /** The run's repo as the host knows it, never discovered from inside the worktree. */
 export interface FloorRepo {
@@ -62,6 +68,22 @@ export interface CandidateChanges {
   /** S3: the case-folded paths the base commit's configs extend or import. */
   readonly chain: ReadonlySet<string>;
 }
+
+/** What `candidateChanges` reads beyond the change list. */
+export interface CandidateOptions {
+  /**
+   * A-dep-4 (OQ-AD4-3): read only the changes the dependency detector reads (a
+   * `package.json` outside `node_modules`, or a lockfile), with no ignored-file or
+   * config-chain findings. For the mid-run check only; the final check reads everything.
+   */
+  readonly select?: boolean;
+}
+
+/** Whether the dependency detector reads `path`: a manifest or a lockfile. */
+const isDependencyPath = (path: string) =>
+  (nameOf(path) === "package.json" &&
+    !segments(path).includes("node_modules")) ||
+  isLockfilePath(path);
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const REF = /^refs\/[A-Za-z0-9._/-]+$/;
@@ -160,12 +182,14 @@ function privateGitDir(worktree: string, commonDir: string): string {
  * (`--attr-source`), so the candidate's .gitattributes cannot select a filter; a changed
  * ignore or attributes file is itself `config.changed`. Content is read from git objects
  * only, so no symlink is followed on the host. Every git call goes through runGit.
+ * With `options.select` only the detector's changes are read (A-dep-4).
  * @throws FloorError (fail closed); a git error otherwise.
  */
 export function candidateChanges(
   repo: FloorRepo,
   baseCommit: string,
   limits: FloorLimits = FLOOR_LIMITS,
+  options: CandidateOptions = {},
 ): CandidateChanges {
   if (!isAbsolute(repo.worktree) || !isAbsolute(repo.commonDir)) {
     throw new FloorError("worktree and common git dir must be absolute paths");
@@ -215,7 +239,9 @@ export function candidateChanges(
     git(["read-tree", head]);
     git(["add", "--all"], limits.bytes);
     const candidateTree = git(["write-tree"]).toString("utf8").trim();
-    return { candidateTree, ...read(git, baseCommit, candidateTree, limits) };
+    const select = options.select === true;
+    const found = read(git, baseCommit, candidateTree, limits, select);
+    return { candidateTree, ...found };
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
@@ -318,13 +344,22 @@ function ignoredFiles(git: Git, max: number): FloorFinding[] {
   return [...found].flatMap((path) => ignoredFinding(path) ?? []);
 }
 
-/** The candidate's changes with their blob bytes, bounded by `limits`. */
-function read(git: Git, base: string, tree: string, limits: FloorLimits) {
+/**
+ * The candidate's changes with their blob bytes, bounded by `limits`; with `select`, only
+ * the detector's (`isDependencyPath`), every changed path still counting to the file limit.
+ */
+function read(
+  git: Git,
+  base: string,
+  tree: string,
+  limits: FloorLimits,
+  select: boolean,
+) {
   const findings: FloorFinding[] = [];
   const changes: FloorChange[] = [];
   let raw: string[];
   try {
-    findings.push(...ignoredFiles(git, limits.bytes));
+    if (!select) findings.push(...ignoredFiles(git, limits.bytes));
     const diff = [
       "diff-tree",
       "-r",
@@ -344,17 +379,21 @@ function read(git: Git, base: string, tree: string, limits: FloorLimits) {
       findings: [...findings, limit(detail)],
     };
   }
-  const { chain, findings: chainLimits } = configChain(git, base, limits.bytes);
+  const { chain, findings: chainLimits } = select
+    ? { chain: new Set<string>(), findings: [] }
+    : configChain(git, base, limits.bytes);
   findings.push(...chainLimits);
   let budget = limits.bytes;
   for (let i = 0; i + 1 < raw.length; i += 2) {
     const path = raw[i + 1] ?? "";
     const fields = RAW.exec(raw[i] ?? "");
     if (fields === null) throw new FloorError("unexpected diff-tree output");
-    if (changes.length === limits.files) {
+    // Without `select` each path read is a change, so this counts the changes.
+    if (i / 2 === limits.files) {
       findings.push(limit(`over ${String(limits.files)} changed files`, path));
       break;
     }
+    if (select && !isDependencyPath(path)) continue;
     const [, baseMode = "", candidateMode = "", from = "", to = ""] = fields;
     const blob = (mode: string, oid: string) => {
       if (!REGULAR.has(mode)) return undefined;
@@ -627,11 +666,12 @@ export function checkCandidate(
 }
 
 /**
- * The final `floor.signalled` payload (Q44, A-dep): the `dependency-1` signals of
- * `changes`, signal `i` with the ID `<eventId>:<i>`, the materiality the run's
- * decisions are routed by (OQ-AD-5), and the changed lockfiles (`changedLockfiles`,
- * sorted without repeats): the run's Briefs are given these, and replay recomputes
- * each Brief's footprint from them.
+ * The `floor.signalled` payload (Q44, A-dep) of `phase`, the final one by default: the
+ * `dependency-1` signals of `changes`, signal `i` with the ID `<eventId>:<i>`, the
+ * materiality the run's decisions are routed by (OQ-AD-5), and the changed lockfiles
+ * (`changedLockfiles`, sorted without repeats): the run's Briefs are given these, and
+ * replay recomputes each Brief's footprint from them. An `early` one (A-dep-4) opens no
+ * decision.
  * @throws FloorError with fixed text if the detector fails or the payload is not valid
  */
 export function floorSignalled(
@@ -640,11 +680,12 @@ export function floorSignalled(
   candidateTree: string,
   threshold: BriefThreshold,
   changes: readonly FloorChange[],
+  phase: FloorSignalled["phase"] = "final",
 ): FloorSignalled & { readonly lockfiles: string[] } {
   const payload: FloorSignalled & { readonly lockfiles: string[] } = {
     kind: "floor.signalled",
     detector: DEPENDENCY_DETECTOR,
-    phase: "final",
+    phase,
     baseCommit,
     candidateTree,
     materiality: { rubricVersion: MATERIALITY_RUBRIC, threshold },

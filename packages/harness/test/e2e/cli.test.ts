@@ -2774,23 +2774,37 @@ function expectTestsPassed(
   expect(text).toContain("fail 0\n");
 }
 
+const isSignalled = (e: Event, phase: string) =>
+  e.type === "floor.signalled" && e.payload["phase"] === phase;
+
 /**
  * A-dep: the run's final floor.signalled and its floor decisions, logged with
- * floor.checked in one transaction, so they are the events just before it.
+ * floor.checked in one transaction, so they are the events just before it; A-dep-4: and
+ * its early floor.signalled events, all before them.
  */
 function floorSignalsOf(events: readonly Event[]) {
-  const at = events.findIndex((e) => e.type === "floor.signalled");
+  const at = events.findLastIndex((e) => isSignalled(e, "final"));
   const decisions = events.filter(
     (e) => e.type === "decision.opened" && e.payload["source"] === "floor",
   );
   if (at !== -1) expect(events.slice(at + 1, -2)).toEqual(decisions);
   const signalled = events[at];
+  const early = events.filter((e) => isSignalled(e, "early"));
+  if (at !== -1) {
+    expect(early.every((e) => events.indexOf(e) < at)).toBe(true);
+  }
   return {
     eventId: signalled?.eventId ?? "",
     signalled: signalled?.payload,
     decisions: decisions.map((e) => e.payload),
+    early: early.map((e): Record<string, unknown> & { eventId: string } => ({
+      ...e.payload,
+      eventId: e.eventId,
+    })),
   };
 }
+/** A-dep-4: the owner's notice of an early set, as the CLI prints it. */
+const EARLY = "helmwright: floor early: ";
 
 const PENDING = "helmwright: pending owner decisions: ";
 const KEY_FILE = "recommendation.key";
@@ -2927,6 +2941,25 @@ describe("seeded fixture repo (e2e, FX)", () => {
         // The changed lockfile, so replay recomputes the Brief's whole footprint.
         lockfiles: ["app/pnpm-lock.yaml"],
       });
+      // A-dep-4: once iteration 1 added it, an early warning (to the owner only) with
+      // the same signal, which later steps leave unchanged; it opens no decision.
+      const { early } = floorSignalsOf(run.events);
+      expect(early.length, "early events").toBe(1);
+      const [warned] = early;
+      const { candidateTree, signals } = signalled as Record<string, unknown>;
+      const [signal] = signals as object[];
+      expect(warned).toEqual({
+        ...(signalled as object),
+        ...{ eventId: warned?.eventId, phase: "early" },
+        candidateTree: warned?.["candidateTree"],
+        signals: [{ ...signal, id: String(warned?.eventId) + ":0" }],
+      });
+      // Before iteration 2 wrote the code and its test.
+      expect(warned?.["candidateTree"]).not.toBe(candidateTree);
+      expect(run.stderr).toContain(
+        EARLY +
+          "1 signals (dependency.added @helmwright/fx-duration app/package.json)\n",
+      );
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const repoId = join(tmp, "fx", ".git");
       const file = (path: string) =>
@@ -2984,6 +3017,22 @@ describe("seeded fixture repo (e2e, FX)", () => {
         { id: signalId, type: "lockfile.only", path: "app/pnpm-lock.yaml" },
       ]);
       expect(signalled?.["lockfiles"]).toEqual(["app/pnpm-lock.yaml"]);
+      // A-dep-4: one early warning with the same signal, between the two steps.
+      const { early } = floorSignalsOf(run.events);
+      expect(early.map((e) => [e["signals"], e["lockfiles"]])).toEqual([
+        [
+          [
+            {
+              ...{ id: String(early[0]?.eventId) + ":0" },
+              ...{ type: "lockfile.only", path: "app/pnpm-lock.yaml" },
+            },
+          ],
+          ["app/pnpm-lock.yaml"],
+        ],
+      ]);
+      expect(run.stderr).toContain(
+        EARLY + "1 signals (lockfile.only - app/pnpm-lock.yaml)\n",
+      );
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const why =
         "materiality-rubric-1, threshold runtimeAddOrMajor: a lockfile-only change is under the brief threshold";
@@ -3033,7 +3082,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       );
       expect(reclassified.length, "intake.reclassified events").toBe(1);
       // In the floor's transaction, before floor.signalled (OQ-AD3-4).
-      const at = run.events.findIndex((e) => e.type === "floor.signalled");
+      const at = run.events.findIndex((e) => isSignalled(e, "final"));
       expect(run.events.slice(at - 2, at + 3).map((e) => e.type)).toEqual([
         ...["intake.reclassified", "decision.opened", "floor.signalled"],
         ...["decision.opened", "floor.checked"],
@@ -3047,6 +3096,13 @@ describe("seeded fixture repo (e2e, FX)", () => {
           ...{ name: "@helmwright/fx-duration", runtime: false, from: null },
           to: "file:vendor/fx-duration",
         },
+      ]);
+      // OQ-AD3-6: its one early warning, before the final check, reclassifies nothing.
+      const { early } = floorSignalsOf(run.events);
+      const [devAdd] = signalled?.["signals"] as object[];
+      const earlyId = String(early[0]?.eventId) + ":0";
+      expect(early.map((e) => e["signals"])).toEqual([
+        [{ ...devAdd, id: earlyId }],
       ]);
       // A dev add is under the brief threshold: one floor Ruling, no Brief.
       expect(decisions).toHaveLength(1);
@@ -3076,6 +3132,49 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(run.stderr).toContain(
         "helmwright: intake reclassified chore -> architectural (floor signals)\n",
       );
+      expect(run.stderr).not.toContain(PENDING);
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "warns early of a dependency added and removed, and completes (FX-early, A-dep-4)",
+    { timeout: T },
+    () => {
+      const run = runFx("early");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.out.terminal).toEqual({ kind: "completed" });
+      expect(run.checked).toMatchObject({ verdict: "pass", findings: [] });
+      // OQ-AD-6: a warning at each change of the set, the last back to none.
+      const { signalled, decisions, early } = floorSignalsOf(run.events);
+      expect(early.map((e) => [e["signals"], e["lockfiles"]])).toEqual([
+        [
+          [
+            {
+              ...{ id: String(early[0]?.eventId) + ":0" },
+              ...{ type: "dependency.added", path: "app/package.json" },
+              ...{ field: "dependencies", name: "@helmwright/fx-duration" },
+              ...{ runtime: true, from: null, to: "file:vendor/fx-duration" },
+            },
+          ],
+          [],
+        ],
+        [[], []],
+      ]);
+      expect(early.every((e) => e["phase"] === "early")).toBe(true);
+      // The final check finds no change, so no decision opens.
+      expect(signalled).toMatchObject({
+        ...{ phase: "final", signals: [] },
+        lockfiles: [],
+      });
+      expect(decisions, "floor decisions").toEqual([]);
+      const added =
+        "1 signals (dependency.added @helmwright/fx-duration app/package.json)";
+      expect(run.stderr).toContain(EARLY + added + "\n");
+      expect(run.stderr).toContain(EARLY + "no signals\n");
+      // OQ-AD4-2: for the owner only; the engine's context holds no early event.
+      const said = JSON.stringify(deriveMessages(run.events, run.out.runId));
+      expect(said).not.toContain("dependency.added");
       expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
     },

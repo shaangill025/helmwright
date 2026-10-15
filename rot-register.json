@@ -233,18 +233,19 @@
   {
     "component": "packages/harness/src/run/run.ts",
     "ring": 0,
-    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call and only then writes config.accepted; it wires the broker to the policy. B5-4: task.created (a new Task only) and run.recorded are logged in run.started's transaction, before it; the worktree's Ring 0 link targets are read before them, so the Run's class is final, and a failure of that read still fails the run in connect at its old point. A re-run reuses an identical Task and refuses a changed one (exit 64), checked again in that transaction; two processes racing on one new task ID can orphan a worktree. B5-5: the run and intake.classified IDs are made first, so a Ruling the log would refuse is exit 64 before the worktree. A terminal error is escaped once (displayText). The engine gets the context derived from the log (in dev mode equal to the loop's messages); until SIG (M1) adds a hash chain, the context digest detects divergence, not tampering. Its git calls run through runGit and share config.ts's trust in .git/config.",
+    "assumption": "The run-start Ring 0 check (OQ1) asks a changed Ring 0 config before any tool call, then writes config.accepted. B5-4: task.created (a new Task only) and run.recorded are logged in run.started's transaction, before it; the worktree's Ring 0 link targets are read first, so the Run's class is final; a failed read still fails the run in connect. A re-run reuses an identical Task and refuses a changed one (exit 64), checked again in that transaction; two racing processes can orphan a worktree. B5-5: the run and intake.classified IDs are made first, so a Ruling the log would refuse is exit 64 before the worktree. A terminal error is escaped once. The engine gets the context derived from the log; until SIG (M1) adds a hash chain, the context digest detects divergence, not tampering. Its git calls run through runGit and share config.ts's trust in .git/config. A-dep-4: the early check runs git synchronously in the event loop before an engine step; the loop's clock still bounds the run.",
     "evidence": [
       "06 Spine",
       "decisions Q5",
       "decisions B5-4 owner answers",
       "decisions B5-5 owner answers",
+      "decisions A-dep-4 owner answers",
       "packages/harness/test/run/run.test.ts",
       "packages/harness/test/e2e/cli.test.ts",
       "packages/harness/test/config/config.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-09",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
@@ -355,10 +356,11 @@
   {
     "component": "packages/harness/src/floor/tree.ts",
     "ring": 0,
-    "assumption": "Git dirs never come from the worktree (B1): the host gives the realpath'd common dir; the private dir is the one whose back-pointer names the worktree and that .git names exactly (relative paths fail closed). HEAD and info/exclude are read O_NOFOLLOW|O_NONBLOCK. The candidate is written via a temp git dir (repo objects as alternates, base attributes, git 2.40+): no hook, fsmonitor or candidate filter runs. Over 2000 changed files or 8 MiB read fails closed. Config chains (tsconfig/jsconfig extends, references; relative literals in eslint/vitest/vite configs, any case, a .js one with its TS siblings, an extensionless one as each resolved file; 2 links deep, ≤64 non-guess paths) come from the base; a base config over 64 KiB or ls-tree over 8 MiB: floor.limits. Ignored .gitignore, agent and config files are findings unless in a collapsed ignored dir (B15 tests a clean export). floorSignalled logs floor.signalled.lockfiles: changed lockfiles at any depth outside node_modules, shown text, sorted, at most 256.",
+    "assumption": "Git dirs never come from the worktree (B1): the host gives the common dir; the private dir is the one whose back-pointer names the worktree and that .git names exactly. HEAD and info/exclude are read O_NOFOLLOW|O_NONBLOCK. The candidate is written via a temp git dir (base attributes, git 2.40+): no hook, fsmonitor or candidate filter runs. Over 2000 changed files or 8 MiB read fails closed. Config chains (tsconfig/jsconfig extends, references; relative literals in eslint/vitest/vite configs, any case, with TS siblings or each resolved file; 2 links deep, ≤64 non-guess paths) come from the base; a base config over 64 KiB or ls-tree over 8 MiB: floor.limits. Ignored .gitignore, agent and config files are findings unless in a collapsed ignored dir (B15). floor.signalled.lockfiles: changed lockfiles outside node_modules, sorted, ≤256. A-dep-4: select reads manifests and lockfiles mid-run, as no sandbox writer runs between calls (per-call --rm --init); review at a hosted engine (B13) or long-lived container.",
     "evidence": [
       "06 Ring 0 contents",
       "decisions CI sensor floor",
+      "decisions A-dep-4 owner answers",
       "packages/harness/test/floor/tree.test.ts"
     ],
     "added": "2026-10-07",

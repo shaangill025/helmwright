@@ -264,6 +264,21 @@ async function main(args: readonly string[]): Promise<number> {
         line += " friction " + shown.friction.intensity;
         console.error("helmwright: intake " + displayText(line));
       },
+      // A-dep-4 (OQ-AD4-1, OQ-AD4-2): the early dependency check, for the owner only.
+      onEarly: (shown) => {
+        let line = "early dependency check skipped: over the floor limits";
+        if (shown.kind === "failed") {
+          line = "early dependency check failed: " + shown.error;
+        } else if (shown.kind === "signalled") {
+          const named = shown.signals.map((s) =>
+            [s.type, "name" in s ? s.name : "-", s.path].join(" "),
+          );
+          const n = named.length;
+          const list = String(n) + " signals (" + named.join(", ") + ")";
+          line = "floor early: " + (n > 0 ? list : "no signals");
+        }
+        console.error("helmwright: " + displayText(line));
+      },
       ...(present
         ? { presence: createTtyPresence(process.stdin, process.stderr) }
         : {}),

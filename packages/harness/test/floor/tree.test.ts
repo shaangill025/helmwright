@@ -185,6 +185,42 @@ describe("candidateChanges", { timeout: 30_000 }, () => {
     expect(existsSync(marker)).toBe(true);
   });
 
+  it("reads only manifests and lockfiles with select (A-dep-4, OQ-AD4-3)", () => {
+    write("app/package.json", '{"dependencies":{"a":"1"}}\n');
+    write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    write("node_modules/x/package.json", "{}\n");
+    write("d/.gitignore", "*\n");
+    write("d/e/x.ts", MARK);
+    write("src/big.ts", "x".repeat(4000));
+    const repoOf = { worktree: wt, commonDir: common };
+    const small = { files: 2000, bytes: 2000 };
+    const select = { select: true };
+    const picked = candidateChanges(repoOf, base, small, select);
+    expect(picked.changes.map((c) => c.path)).toEqual([
+      "app/package.json",
+      "pnpm-lock.yaml",
+    ]);
+    // No blob but those is read, and no ignored-file or config-chain finding is made.
+    expect([picked.findings, [...picked.chain]]).toEqual([[], []]);
+    const all = changes();
+    expect(picked.candidateTree).toBe(all.candidateTree);
+    const kept = new Set(["app/package.json", "pnpm-lock.yaml"]);
+    expect(picked.changes).toEqual(all.changes.filter((c) => kept.has(c.path)));
+    expect(all.findings.map((f) => f.rule)).toContain("config.changed");
+    expect(changes(small).findings.map((f) => f.rule)).toContain(
+      "floor.limits",
+    );
+    // Every changed path still counts toward the file limit.
+    const one = candidateChanges(repoOf, base, { ...small, files: 1 }, select);
+    expect(one.findings).toEqual([
+      {
+        rule: "floor.limits",
+        path: "node_modules/x/package.json",
+        detail: "over 1 changed files",
+      },
+    ]);
+  });
+
   it("refuses a base that is not a full object ID", () => {
     expect(() =>
       candidateChanges({ worktree: wt, commonDir: common }, "HEAD"),
@@ -571,6 +607,17 @@ describe("floorSignalled and changedLockfiles (A-dep)", () => {
     const several = ["web/yarn.lock", "bun.lock"].map(lockfile);
     const logged = floorSignalled("e", OID, OID, "everySignal", several);
     expect(logged.lockfiles).toEqual(["bun.lock", "web/yarn.lock"]);
+  });
+
+  it("gives an early payload, valid and otherwise the final one's (A-dep-4)", () => {
+    const changes = [
+      manifest("package.json", {}, { dependencies: { a: "1" } }),
+    ];
+    const final = floorSignalled("e", OID, OID, "everySignal", changes);
+    // floorSignalled throws unless the payload is a valid floor event.
+    const phase = "early";
+    const early = floorSignalled("e", OID, OID, "everySignal", changes, phase);
+    expect(early).toEqual({ ...final, phase: "early" });
   });
 
   it("fails closed past 256 changed lockfiles, with its own text", () => {

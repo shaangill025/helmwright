@@ -882,3 +882,136 @@ describe("objectFaults: intake reclassification (A-dep-3)", () => {
     ]);
   });
 });
+
+// A-dep-4 (OQ-AD-6): early floor.signalled events, a warning that opens no decision.
+const early = (seq: number, signals: readonly FloorSignal[]) =>
+  event(seq, "floor.signalled", {
+    ...signalled(
+      signals.map((s, i) => ({ ...s, id: `evt-${String(seq)}:${String(i)}` })),
+      signals.length === 0 ? [] : LOCKFILES,
+    ),
+    phase: "early",
+  });
+
+/** Task, Run, start, an early floor.signalled (from seq 3) per set, a quiet final check, end. */
+function earlyRun(sets: readonly (readonly FloorSignal[])[]): Event[] {
+  const n = sets.length;
+  return [
+    ...signalledRun([]).slice(0, 3),
+    ...sets.map((set, i) => early(3 + i, set)),
+    event(3 + n, "floor.signalled", signalled([], [])),
+    event(4 + n, "floor.checked", floorChecked(BASE, TREE, [])),
+    event(5 + n, "run.terminated", {}),
+  ];
+}
+const NO_CHANGE = "early floor.signalled that changes no signal";
+
+describe("objectFaults: early floor signals (A-dep-4)", () => {
+  it("passes a dependency added and then removed, and a run with none", () => {
+    expect(floor(earlyRun([[runtimeAdd], []]))).toEqual([]);
+    expect(floor(earlyRun([[runtimeAdd], [runtimeAdd, devAdd], []]))).toEqual(
+      [],
+    );
+    expect(floor(earlyRun([]))).toEqual([]);
+  });
+
+  it("faults an early event that changes no signal", () => {
+    expect(floor(earlyRun([[]]))).toEqual(["seq 3: " + NO_CHANGE]);
+    expect(floor(earlyRun([[runtimeAdd], [runtimeAdd]]))).toEqual([
+      "seq 4: " + NO_CHANGE,
+    ]);
+    expect(floor(earlyRun([[runtimeAdd], [], []]))).toEqual([
+      "seq 5: " + NO_CHANGE,
+    ]);
+  });
+
+  it.each<[string, (p: Record<string, unknown>) => object]>([
+    ["that is not a valid floor event", (p) => ({ ...p, detector: "x" })],
+    ["base commit is not run.started's", (p) => ({ ...p, baseCommit: TREE })],
+    [
+      "rubric version is not known",
+      (p) => ({
+        ...p,
+        materiality: {
+          rubricVersion: "materiality-rubric-2",
+          threshold: "runtimeAddOrMajor",
+        },
+      }),
+    ],
+    [
+      "signal ID is not <eventId>:<index>",
+      (p) => ({ ...p, signals: [{ ...runtimeAdd, id: "evt-9:0" }] }),
+    ],
+    [
+      "lockfiles are not sorted without repeats",
+      (p) => ({ ...p, lockfiles: ["b/yarn.lock", "a/yarn.lock"] }),
+    ],
+    [
+      "lockfiles are not all lockfile paths",
+      (p) => ({ ...p, lockfiles: ["app/notes.md"] }),
+    ],
+    [
+      "without lockfiles",
+      (p) =>
+        Object.fromEntries(
+          Object.entries(p).filter(([key]) => key !== "lockfiles"),
+        ),
+    ],
+  ])("faults an early event %s", (text, change) => {
+    const events = edit(earlyRun([[runtimeAdd]]), 3, (e) =>
+      withPayload(e, change(e.payload)),
+    );
+    expect(floor(events)).toEqual(["seq 3: early floor.signalled " + text]);
+  });
+
+  it("faults an early event out of place", () => {
+    const quiet = earlyRun([]);
+    const first = [
+      ...[...quiet.slice(0, 2), early(2, [runtimeAdd])],
+      ...quiet.slice(2),
+    ].map((e, seq) => ({ ...e, seq }));
+    expect(floor(first)).toEqual([
+      "seq 2: early floor.signalled before run.started",
+    ]);
+    // After the final one, which is then not just before floor.checked.
+    const after = [
+      ...quiet.slice(0, 4),
+      early(4, [runtimeAdd]),
+      ...quiet.slice(4).map((e) => ({ ...e, seq: e.seq + 1 })),
+    ];
+    expect(floor(after)).toEqual([
+      "seq 3: floor.signalled and its decisions are not just before floor.checked",
+      "seq 4: early floor.signalled after the final one",
+    ]);
+    // With no final one, an early event is no legacy: floor.checked lacks it.
+    const unfinal = earlyRun([[runtimeAdd]]).filter(
+      (e) => e.seq !== 4 || e.type !== "floor.signalled",
+    );
+    expect(floor(unfinal)).toEqual([
+      "seq 5: floor.checked without floor.signalled",
+    ]);
+    const unsignalled = quiet.filter((e) => e.type !== "floor.signalled");
+    const checkedFirst = [
+      ...unsignalled.slice(0, 4),
+      early(5, [runtimeAdd]),
+      event(6, "run.terminated", {}),
+    ];
+    expect(floor(checkedFirst)).toEqual([
+      "seq 5: early floor.signalled after floor.checked",
+    ]);
+  });
+
+  it("opens no decision: one naming an early signal has no signal", () => {
+    const events = earlyRun([[runtimeAdd], []]);
+    const named = { ...runtimeAdd, id: "evt-3:0" };
+    const stray = event(4, "decision.opened", opened(named, 0));
+    const strayed = [
+      ...events.slice(0, 4),
+      stray,
+      ...events.slice(4).map((e) => ({ ...e, seq: e.seq + 1 })),
+    ];
+    expect(floor(strayed)).toEqual([
+      "seq 4: floor decision without its signal",
+    ]);
+  });
+});

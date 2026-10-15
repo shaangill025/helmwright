@@ -213,6 +213,13 @@
         "scope": ["app/test/timeout.test.js"]
       },
       "turns": "fx-chore.turns.json"
+    },
+    "early": {
+      "title": "Try @helmwright/fx-duration as a dependency of app/, then put app/package.json back as it was.",
+      "intake": {
+        "scope": ["app/package.json"]
+      },
+      "turns": "fx-early.turns.json"
     }
   }
 }

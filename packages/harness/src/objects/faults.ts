@@ -186,6 +186,30 @@ function isFloorDecisionOf(
 }
 
 /**
+ * The faults of a `floor.signalled` event's `lockfiles` (A-dep): sorted without repeats,
+ * each a lockfile path, and with a `lockfile.only` signal, those signals' paths.
+ */
+function lockfileFaults(
+  signals: FloorSignalled["signals"],
+  lockfiles: readonly string[],
+  at: (text: string) => void,
+): void {
+  if (!isDeepStrictEqual(lockfiles, [...new Set(lockfiles)].sort())) {
+    at("lockfiles are not sorted without repeats");
+  }
+  if (!lockfiles.every(isLockfilePath)) {
+    at("lockfiles are not all lockfile paths");
+  }
+  const only = signals.flatMap((s) =>
+    s.type === "lockfile.only" ? [s.path] : [],
+  );
+  const paths = [...new Set(only)].sort();
+  if (paths.length > 0 && !isDeepStrictEqual(paths, lockfiles)) {
+    at("lockfiles are not its lockfile.only paths");
+  }
+}
+
+/**
  * A-dep replay faults of a run's floor decisions: at most one final `floor.signalled`,
  * valid, of a known rubric, with `run.started`'s base commit and `floor.checked`'s
  * candidate tree, signal `i` with the ID `<eventId>:<i>`, and `lockfiles` sorted without
@@ -240,19 +264,7 @@ function floorDecisionFaults(
         e.payload["lockfiles"] !== undefined;
       if (objects.some(named)) at("without lockfiles");
     } else {
-      if (!isDeepStrictEqual(lockfiles, [...new Set(lockfiles)].sort())) {
-        at("lockfiles are not sorted without repeats");
-      }
-      if (!lockfiles.every(isLockfilePath)) {
-        at("lockfiles are not all lockfile paths");
-      }
-      const only = signals.flatMap((s) =>
-        s.type === "lockfile.only" ? [s.path] : [],
-      );
-      const paths = [...new Set(only)].sort();
-      if (paths.length > 0 && !isDeepStrictEqual(paths, lockfiles)) {
-        at("lockfiles are not its lockfile.only paths");
-      }
+      lockfileFaults(signals, lockfiles, at);
     }
     if (signalled.payload["baseCommit"] !== started?.payload["baseCommit"]) {
       at("base commit is not run.started's");
@@ -400,6 +412,58 @@ function reclassificationFaults(
 }
 
 /**
+ * A-dep-4 (OQ-AD-6) replay faults of a run's early `floor.signalled` events: each valid,
+ * with `run.started`'s base commit, a known rubric, signal `i` with the ID
+ * `<eventId>:<i>` and `lockfiles` as `lockfileFaults` checks them; after `run.started`
+ * and before the final `floor.signalled` (without one, `floor.checked`); and with
+ * signals (IDs aside) other than the previous early one's, at first none. An early
+ * event opens no decision (a decision naming its signal is `floorDecisionFaults`' fault)
+ * and never reclassifies (OQ-AD3-6). Its signals are self-attested until SIG's hash chain.
+ */
+function earlyFaults(
+  events: readonly Event[],
+  fault: (seq: number, text: string) => void,
+): void {
+  const started = events.find((e) => e.type === "run.started");
+  const final = events.find(
+    (e) => e.type === "floor.signalled" && e.payload["phase"] !== "early",
+  );
+  const end = final ?? events.find((e) => e.type === "floor.checked");
+  let previous: unknown = [];
+  const early = (e: Event) =>
+    e.type === "floor.signalled" && e.payload["phase"] === "early";
+  for (const e of events.filter(early)) {
+    const at = (text: string) => {
+      fault(e.seq, "early floor.signalled " + text);
+    };
+    const payload = { ...e.payload };
+    if (!validateFloorEvent(payload) || payload.kind !== "floor.signalled") {
+      at("that is not a valid floor event");
+      continue;
+    }
+    const { signals, materiality, lockfiles } = payload as FloorSignalled;
+    if (started === undefined || e.seq < started.seq) at("before run.started");
+    if (end !== undefined && e.seq > end.seq) {
+      at(final === undefined ? "after floor.checked" : "after the final one");
+    }
+    if (payload.baseCommit !== started?.payload["baseCommit"]) {
+      at("base commit is not run.started's");
+    }
+    if (materiality.rubricVersion !== MATERIALITY_RUBRIC) {
+      at("rubric version is not known");
+    }
+    if (signals.some((s, i) => s.id !== `${e.eventId}:${String(i)}`)) {
+      at("signal ID is not <eventId>:<index>");
+    }
+    if (lockfiles === undefined) at("without lockfiles");
+    else lockfileFaults(signals, lockfiles, at);
+    const set = signals.map((signal) => ({ ...signal, id: "" }));
+    if (isDeepStrictEqual(set, previous)) at("that changes no signal");
+    previous = set;
+  }
+}
+
+/**
  * B5-4b replay faults of one run's `events`, given `objects`: the log's `task.created`,
  * `run.recorded`, (B5-5) `decision.opened`, (A-dep) `floor.signalled` and (A-dep-3)
  * `intake.reclassified` events (any order). The run has at most
@@ -408,8 +472,9 @@ function reclassificationFaults(
  * may log none); its Task's text is `run.started`'s title. OD-B54-3 (i): a run with no
  * `run.recorded` is legacy, and so not a fault, only if the log has no `run.recorded`
  * before its `run.started`. B5-5: also the faults of its intake Ruling
- * (`intakeFaults`), A-dep-3 of its reclassification (`reclassificationFaults`), and
- * A-dep of its floor decisions (`floorDecisionFaults`). Each
+ * (`intakeFaults`), A-dep-3 of its reclassification (`reclassificationFaults`),
+ * A-dep of its floor decisions (`floorDecisionFaults`) and A-dep-4 of its early
+ * `floor.signalled` events (`earlyFaults`). Each
  * fault is fixed text and the event's `seq`, like `floorFaults`.
  */
 export function objectFaults(
@@ -432,6 +497,7 @@ export function objectFaults(
   intakeFaults(events, objects, fault);
   reclassificationFaults(events, objects, fault);
   floorDecisionFaults(events, objects, fault);
+  earlyFaults(events, fault);
   if (recorded === undefined) {
     const first = Math.min(
       ...objects.filter((e) => e.type === "run.recorded").map((e) => e.seq),
