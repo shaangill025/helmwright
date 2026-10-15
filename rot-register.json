@@ -308,13 +308,13 @@
   {
     "component": "packages/harness/src/floor/dependencies.ts",
     "ring": 0,
-    "assumption": "dependency-1 reads manifest and lockfile names and the specifier grammar as of pnpm 10.21: package.json at any depth outside node_modules, the fields dependencies, optionalDependencies, peerDependencies and devDependencies, and pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock, bun.lock and bun.lockb, never parsed. A name added in any field is dependency.added. A changed specifier, against the same base field, else each base runtime field with it (OQ-AD-10b/12), is a major bump if its major key (max over || of the first comparator's breaking component) differs, and unknown if a side has no key (tag, path, git, URL, * or over 256 units), the npm: or workspace: source changed (OQ-AD-10a) or the upper descriptor changed (OQ-AD-9). Syntactic: an operator change in a major is no signal (OQ-AD-11); a rewrite like >=1.2.0 <2.0.0 to ^1.2.0 may give unknown. Removals give no signal; lockfile.only needs no dependency-field change; past 256 manifests or signals, or for an empty name, it fails closed.",
+    "assumption": "dependency-1 reads manifest and lockfile names and the specifier grammar as of pnpm 10.21: package.json at any depth outside node_modules, the fields dependencies, optionalDependencies, peerDependencies and devDependencies, and pnpm-lock.yaml, package-lock.json, npm-shrinkwrap.json, yarn.lock, bun.lock and bun.lockb, never parsed. A name added in any field is dependency.added. A changed specifier, against the same base field, else each base runtime field with it (OQ-AD-10b/12), is a major bump if its major key (max over || of the first comparator's breaking component) differs, and unknown if a side has no key (tag, path, git, URL, * or over 256 units), the npm: or workspace: source changed (OQ-AD-10a) or the upper descriptor changed (OQ-AD-9). Syntactic: an operator change in a major is no signal (OQ-AD-11); >=1.2.0 <2.0.0 to ^1.2.0 can be unknown. Removals give no signal; lockfile.only needs no dependency-field change. Over 256 manifests or signals, an empty name or a changed non-object field fail closed.",
     "evidence": [
       "decisions Q44",
       "packages/harness/test/floor/dependencies.test.ts"
     ],
     "added": "2026-10-13",
-    "lastReviewed": "2026-10-14",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["engine", "milestone"]
   },
   {

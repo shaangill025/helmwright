@@ -56,6 +56,25 @@ const LOCKFILES: ReadonlySet<string> = new Set([
 ]);
 const OPERATORS = "^~=><";
 
+const isObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * L8: npm installs a string or array dependency field (normalize-package-data), so a
+ * field the candidate holds that is not an object and differs from the base fails closed;
+ * an unchanged one does not block every run.
+ * @throws FloorError for such a field
+ */
+function checkFields(baseManifest: object, candidateManifest: object): void {
+  for (const field of FIELDS) {
+    if (!Object.hasOwn(candidateManifest, field)) continue;
+    const value = own(candidateManifest, field);
+    if (!isObject(value) && !same(own(baseManifest, field), value)) {
+      throw new FloorError("a dependency field is not an object");
+    }
+  }
+}
+
 /** The specifiers of `field` by name; a non-string one as its JSON text, a non-object field as none. */
 function entries(
   manifest: object,
@@ -63,9 +82,7 @@ function entries(
 ): Map<string, string> {
   const value = own(manifest, field);
   const map = new Map<string, string>();
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return map;
-  }
+  if (!isObject(value)) return map;
   for (const [name, specifier] of Object.entries(value)) {
     map.set(
       name,
@@ -240,13 +257,15 @@ function bounded<T extends DependencySignal>(signals: T[], sort = true): T[] {
  * it (OQ-AD-10b, OQ-AD-12; fail toward a Brief): any bump beats none, and between bumps
  * the first such field in FIELDS order is kept, with `from` its specifier.
  * Text is escaped for display; the result is sorted by path, name and type.
- * @throws FloorError past MAX_SIGNALS signals, or for a signal of an empty name
+ * @throws FloorError past MAX_SIGNALS signals, for a signal of an empty name, or for a
+ * changed dependency field that is not an object (see `checkFields`)
  */
 export function dependencySignals(
   baseManifest: object,
   candidateManifest: object,
   path: string,
 ): Dependency[] {
+  checkFields(baseManifest, candidateManifest);
   const before = new Map(FIELDS.map((f) => [f, entries(baseManifest, f)]));
   const inBase = (name: string, fields: readonly DependencyField[]) =>
     fields.some((f) => before.get(f)?.has(name) === true);
@@ -319,7 +338,8 @@ function manifests(change: FloorChange): readonly [object, object] | undefined {
  * any depth, outside `node_modules`. A candidate that is not a JSON object is already a
  * `package.changed` finding, so it gives none. `lockfile.only` is each changed lockfile
  * when no manifest changed a dependency field (a minor bump or a removal does).
- * @throws FloorError past MAX_MANIFESTS manifests or MAX_SIGNALS signals
+ * @throws FloorError past MAX_MANIFESTS manifests or MAX_SIGNALS signals, or for a changed
+ * dependency field that is not an object
  */
 export function detectDependencies(
   changes: readonly FloorChange[],
