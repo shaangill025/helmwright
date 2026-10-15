@@ -356,9 +356,69 @@ describe("dependencySignals fields", () => {
       peerDependenciesMeta: { b: { optional: true } },
       overrides: { c: "^1.0.0" },
       resolutions: { d: "^1.0.0" },
-      dependencies: "not an object",
     };
     expect(dependencySignals({}, after, "package.json")).toEqual([]);
+  });
+
+  describe("a dependency field that is not an object (L8)", () => {
+    const odd: readonly [string, unknown][] = [
+      ["a string", "a"],
+      ["an array", ["left-pad"]],
+      ["a number", 1],
+      ["null", null],
+    ];
+    const fields = ["dependencies", "devDependencies"] as const;
+    const cases = fields.flatMap((field) =>
+      odd.map(([kind, value]) => [field, kind, value] as const),
+    );
+
+    it.each(cases)("throws for %s changed to %s", (field, _, value) => {
+      const before = { [field]: { a: "^1.0.0" } };
+      expect(() =>
+        dependencySignals(before, { [field]: value }, "package.json"),
+      ).toThrow(new FloorError("a dependency field is not an object"));
+    });
+
+    it.each(cases)("gives no signal for %s left as %s", (field, _, value) => {
+      const manifest = { [field]: value };
+      expect(dependencySignals(manifest, manifest, "package.json")).toEqual([]);
+    });
+
+    it.each(fields)("throws for a new manifest whose %s is a string", (f) => {
+      const changes = [change("package.json", undefined, { [f]: "a" })];
+      expect(() => detectDependencies(changes)).toThrow(
+        new FloorError("a dependency field is not an object"),
+      );
+    });
+
+    it("keeps an absent or empty field and an unchanged odd one", () => {
+      const lock = change("pnpm-lock.yaml", "a", "b");
+      const manifest = { dependencies: "a", devDependencies: {} };
+      expect(
+        detectDependencies([change("package.json", manifest, manifest), lock]),
+      ).toEqual([{ type: "lockfile.only", path: "pnpm-lock.yaml" }]);
+      expect(dependencySignals({}, { dependencies: {} }, "x")).toEqual([]);
+    });
+
+    it("lets a field with no base become null, keeping a lockfile signal", () => {
+      const lock = change("pnpm-lock.yaml", "a", "b");
+      expect(dependencySignals({}, { dependencies: null }, "x")).toEqual([]);
+      expect(
+        detectDependencies([
+          change("package.json", {}, { dependencies: null }),
+          lock,
+        ]),
+      ).toEqual([{ type: "lockfile.only", path: "pnpm-lock.yaml" }]);
+    });
+
+    it("signals a string field turned into an object as adds", () => {
+      const lock = change("pnpm-lock.yaml", "a", "b");
+      const before = { dependencies: "a" };
+      const after = { dependencies: { a: "^1.0.0" } };
+      expect(
+        detectDependencies([change("package.json", before, after), lock]),
+      ).toEqual([added("a", "^1.0.0")]);
+    });
   });
 
   it("reads own keys only, __proto__ included", () => {
