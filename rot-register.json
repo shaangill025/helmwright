@@ -333,7 +333,7 @@
   {
     "component": "packages/harness/src/floor/key.ts",
     "ring": 0,
-    "assumption": "The recommendation key (OQ-AD-3) is 32 random bytes in <stateDir>/recommendation.key, made on first Brief by a wx temp file set to 0600, fsynced, hard-linked into place (never replacing a key), the dir fsynced. It is refused unless the state dir is this user's with no group or other bits and the opened file (O_NOFOLLOW) is a regular 0600 file of this user, 32 bytes, one link.Refusals are fixed text (at most an errno code) and fail closed. A crash before linking can leave a harmless, never-read recommendation.key.<uuid> temp (no reaper). Node has no openat or linkat, so path ops are not anchored to the checked dir fd: a parent-path swap is out of scope; the key's own fd checks keep it secret. It assumes a POSIX state dir that keeps modes and hard links (macOS, Linux); the key's dir is never mounted (only <stateDir>/workspaces/<run> is bind-mounted). The commitment hides the recommendation from a log holder, not the owner, who can read the key. Review at B11's brief step or when the state dir moves.",
+    "assumption": "The recommendation key (OQ-AD-3) is 32 random bytes in <stateDir>/recommendation.key, made on first Brief by a wx temp file set to 0600, fsynced, hard-linked into place (never replacing a key), the dir fsynced. It is refused unless the state dir is this user's with no group or other bits and the opened file (O_NOFOLLOW) is a regular 0600 file of this user, 32 bytes, one link. Refusals are fixed text (at most an errno code) and fail closed. A crash before linking can leave a harmless, never-read recommendation.key.<uuid> temp (no reaper). Node has no openat or linkat, so path ops are not anchored to the checked dir fd: a parent-path swap is out of scope; the key's own fd checks keep it secret. It assumes a POSIX state dir that keeps modes and hard links (macOS, Linux); the key's dir is never mounted (only <stateDir>/workspaces/<run> is bind-mounted). The commitment hides the recommendation from a log holder, not the owner, who can read the key. Review at B11's brief step or when the state dir moves.",
     "evidence": ["decisions Q48", "packages/harness/test/floor/key.test.ts"],
     "added": "2026-10-14",
     "lastReviewed": "2026-10-14",
@@ -426,7 +426,7 @@
   {
     "component": "packages/harness/test/e2e/fixtures/fx-repo.json",
     "ring": 0,
-    "assumption": "The FX fixture (this tree, its fx-*.turns.json files and test/e2e/fx-repo.ts) is a plain ESM JavaScript project in app/, run by node --test (Node 22 or later default globs) in app/ in the sandbox, with no network and no package manager; its one dependency, the self-authored Apache-2.0 @helmwright/fx-duration, is copied from app/vendor/ by its app/scripts/vendor-install.mjs; its lockfiles are pnpm 10.21 output (lockfile v9, directory resolution), never hand-written; the base tree and commit are pinned (git 2.29 or later, autocrlf and safecrlf off); and the floor's Ring 0 package.json is the root one only and its package keys exclude the dependency keys (OQ-B3-3, OQ-AD-1), so the dependency run completes with a floor pass until A-dep adds its Brief; a change to either floor rule changes FX-2.",
+    "assumption": "The FX fixture (this tree, its fx-*.turns.json files and test/e2e/fx-repo.ts) is a plain ESM JavaScript project in app/, run by node --test (Node 22 or later default globs) in app/ in the sandbox, with no network and no package manager; its one dependency, the self-authored Apache-2.0 @helmwright/fx-duration, is copied from app/vendor/ by its app/scripts/vendor-install.mjs; its lockfiles are pnpm 10.21 output (lockfile v9, directory resolution), never hand-written; the base tree and commit are pinned (git 2.29 or later, autocrlf and safecrlf off); and the floor's Ring 0 package.json is the root one only and its package keys exclude the dependency keys (OQ-B3-3, OQ-AD-1), so the dependency run completes with a floor pass and one pending owner Brief; a change to either floor rule changes FX-2.",
     "evidence": [
       "decisions Dogfood targets",
       "decisions FX owner answers",
@@ -435,7 +435,7 @@
       "packages/harness/test/e2e/cli.test.ts"
     ],
     "added": "2026-10-09",
-    "lastReviewed": "2026-10-10",
+    "lastReviewed": "2026-10-15",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
