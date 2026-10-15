@@ -399,6 +399,26 @@ describe("dependencySignals fields", () => {
       ).toEqual([{ type: "lockfile.only", path: "pnpm-lock.yaml" }]);
       expect(dependencySignals({}, { dependencies: {} }, "x")).toEqual([]);
     });
+
+    it("lets a field with no base become null, keeping a lockfile signal", () => {
+      const lock = change("pnpm-lock.yaml", "a", "b");
+      expect(dependencySignals({}, { dependencies: null }, "x")).toEqual([]);
+      expect(
+        detectDependencies([
+          change("package.json", {}, { dependencies: null }),
+          lock,
+        ]),
+      ).toEqual([{ type: "lockfile.only", path: "pnpm-lock.yaml" }]);
+    });
+
+    it("signals a string field turned into an object as adds", () => {
+      const lock = change("pnpm-lock.yaml", "a", "b");
+      const before = { dependencies: "a" };
+      const after = { dependencies: { a: "^1.0.0" } };
+      expect(
+        detectDependencies([change("package.json", before, after), lock]),
+      ).toEqual([added("a", "^1.0.0")]);
+    });
   });
 
   it("reads own keys only, __proto__ included", () => {
