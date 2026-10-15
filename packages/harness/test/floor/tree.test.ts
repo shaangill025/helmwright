@@ -572,4 +572,18 @@ describe("floorSignalled and changedLockfiles (A-dep)", () => {
     const logged = floorSignalled("e", OID, OID, "everySignal", several);
     expect(logged.lockfiles).toEqual(["bun.lock", "web/yarn.lock"]);
   });
+
+  it("fails closed past 256 changed lockfiles, with its own text", () => {
+    const many = Array.from({ length: 257 }, (_, i) =>
+      lockfile(String(i) + "/yarn.lock"),
+    );
+    const text = "more than 256 changed lockfiles";
+    expect(() => changedLockfiles(many)).toThrow(new FloorError(text));
+    // A dependency change gives no lockfile.only, so only the lockfiles' bound fires.
+    const add = manifest("package.json", {}, { dependencies: { a: "1" } });
+    const signalled = () =>
+      floorSignalled("e", OID, OID, "everySignal", [add, ...many]);
+    expect(signalled).toThrow(new FloorError(text));
+    expect(changedLockfiles(many.slice(1))).toHaveLength(256);
+  });
 });

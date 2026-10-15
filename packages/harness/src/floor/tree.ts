@@ -23,10 +23,15 @@ import {
 import { runGit } from "../config/config.ts";
 import { caseFold, isRing0Path } from "../permission/normalize.ts";
 import { deepFreeze, displayText } from "../permission/policy.ts";
-import { DEPENDENCY_DETECTOR, detectDependencies } from "./dependencies.ts";
+import {
+  DEPENDENCY_DETECTOR,
+  MAX_SIGNALS,
+  detectDependencies,
+  isLockfilePath,
+} from "./dependencies.ts";
 import { FloorError, floorChecked } from "./events.ts";
 import { MATERIALITY_RUBRIC, type BriefThreshold } from "./materiality.ts";
-import { floorFindings, isConfig, nameOf, type FloorChange } from "./rules.ts";
+import { floorFindings, isConfig, type FloorChange } from "./rules.ts";
 
 /** The run's repo as the host knows it, never discovered from inside the worktree. */
 export interface FloorRepo {
@@ -658,9 +663,12 @@ export function floorSignalled(
 /**
  * The changed lockfiles of `changes` as shown text, as the detector names them: with no
  * manifest among the changes, each changed lockfile is a `lockfile.only` signal.
+ * @throws FloorError past MAX_SIGNALS changed lockfiles (fail closed)
  */
 export function changedLockfiles(changes: readonly FloorChange[]): string[] {
-  return detectDependencies(
-    changes.filter((change) => nameOf(change.path) !== "package.json"),
-  ).map((signal) => signal.path);
+  const lockfiles = changes.filter((change) => isLockfilePath(change.path));
+  if (lockfiles.length > MAX_SIGNALS) {
+    throw new FloorError("more than 256 changed lockfiles");
+  }
+  return detectDependencies(lockfiles).map((signal) => signal.path);
 }

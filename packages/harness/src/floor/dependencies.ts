@@ -54,15 +54,19 @@ const LOCKFILES: ReadonlySet<string> = new Set([
   ...["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json"],
   ...["yarn.lock", "bun.lock", "bun.lockb"],
 ]);
+/** Whether the detector reads `path` as a lockfile: a lockfile name outside `node_modules`. */
+export const isLockfilePath = (path: string) =>
+  LOCKFILES.has(nameOf(path)) && !segments(path).includes("node_modules");
 const OPERATORS = "^~=><";
 
 const isObject = (value: unknown): value is object =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * L8: npm installs a string or array dependency field (normalize-package-data), so a
- * field the candidate holds that is not an object and differs from the base fails closed;
- * an unchanged one does not block every run.
+ * L8: npm's install path does not convert a string or array dependency field, but its
+ * publish and pack `prepare` path (and `npm pkg fix`) does (normalize-package-data); either
+ * way a field the candidate holds that is not an object and differs from the base fails
+ * closed; an unchanged one does not block every run.
  * @throws FloorError for such a field
  */
 function checkFields(baseManifest: object, candidateManifest: object): void {
@@ -351,7 +355,7 @@ export function detectDependencies(
   for (const change of changes) {
     const name = nameOf(change.path);
     if (segments(change.path).includes("node_modules")) continue;
-    if (LOCKFILES.has(name)) lockfiles.push(change.path);
+    if (isLockfilePath(change.path)) lockfiles.push(change.path);
     if (name !== "package.json") continue;
     count += 1;
     if (count > MAX_MANIFESTS) {

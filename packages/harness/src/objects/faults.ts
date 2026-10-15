@@ -5,6 +5,7 @@ import {
   type Event,
   type FloorSignalled,
 } from "@helmwright/schema";
+import { isLockfilePath } from "../floor/dependencies.ts";
 import { FloorError } from "../floor/events.ts";
 import {
   MATERIALITY_RUBRIC,
@@ -168,7 +169,8 @@ function isFloorDecisionOf(
  * A-dep replay faults of a run's floor decisions: at most one final `floor.signalled`,
  * valid, of a known rubric, with `run.started`'s base commit and `floor.checked`'s
  * candidate tree, signal `i` with the ID `<eventId>:<i>`, and `lockfiles` sorted without
- * repeats and, with a `lockfile.only` signal, those signals' paths; then each signal's
+ * repeats, each a path the detector reads as a lockfile (`isLockfilePath`) and, with a
+ * `lockfile.only` signal, those signals' paths; then each signal's
  * decision at the next seqs in signal order, in this run's envelope and equal to the
  * recomputed one (`isFloorDecisionOf`), and `floor.checked` right after them; and no
  * other floor decision of the run (in its events or naming it). A run with
@@ -177,7 +179,8 @@ function isFloorDecisionOf(
  * `lockfiles` (written before the field) is legacy, its Briefs' lockfile footprints
  * checked for format only, only if no `floor.signalled` with it precedes it in the log.
  * Legacy is keyed on the field, not a detector version: the signals are the same
- * `dependency-1` ones.
+ * `dependency-1` ones. `lockfiles`, like `signals`, is self-attested until SIG's hash
+ * chain: replay checks it against the signals, not the candidate tree.
  */
 function floorDecisionFaults(
   events: readonly Event[],
@@ -219,6 +222,9 @@ function floorDecisionFaults(
     } else {
       if (!isDeepStrictEqual(lockfiles, [...new Set(lockfiles)].sort())) {
         at("lockfiles are not sorted without repeats");
+      }
+      if (!lockfiles.every(isLockfilePath)) {
+        at("lockfiles are not all lockfile paths");
       }
       const only = signals.flatMap((s) =>
         s.type === "lockfile.only" ? [s.path] : [],

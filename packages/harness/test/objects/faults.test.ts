@@ -371,10 +371,15 @@ const signalled = (
   signals: [...signals],
   ...(lockfiles === null ? {} : { lockfiles: [...lockfiles] }),
 });
-const opened = (signal: FloorSignal, index: number, runId = "run-1") =>
+const opened = (
+  signal: FloorSignal,
+  index: number,
+  runId = "run-1",
+  lockfiles: readonly string[] = LOCKFILES,
+) =>
   floorDecision({
     ...{ runId, taskId: "task-1", repoId: "/r/.git", index, signal },
-    ...{ threshold: "runtimeAddOrMajor", lockfiles: LOCKFILES },
+    ...{ threshold: "runtimeAddOrMajor", lockfiles },
     ...{ seed: SEED, key: new Uint8Array(32).fill(7) },
   });
 
@@ -454,11 +459,32 @@ describe("objectFaults: floor decisions (A-dep)", () => {
       ...{ id: "evt-3:0", type: "lockfile.only", path: "app/pnpm-lock.yaml" },
     };
     expect(floor(signalledRun([lockOnly]))).toEqual([]);
-    const events = edit(signalledRun([lockOnly]), 3, (e) =>
-      withPayload(e, signalled([lockOnly], [])),
+    const NOT_ONLY =
+      "seq 3: floor.signalled lockfiles are not its lockfile.only paths";
+    const lockfiles = (paths: readonly string[]) =>
+      edit(signalledRun([lockOnly]), 3, (e) =>
+        withPayload(e, signalled([lockOnly], paths)),
+      );
+    expect(floor(lockfiles([]))).toEqual([NOT_ONLY]);
+    // An added lockfile the detector would have signalled too.
+    const added = ["app/pnpm-lock.yaml", "zz/pnpm-lock.yaml"];
+    expect(floor(lockfiles(added))).toEqual([NOT_ONLY]);
+  });
+
+  it.each([
+    ["not a lockfile name", "src/x.ts"],
+    ["under node_modules", "node_modules/a/pnpm-lock.yaml"],
+  ])("faults a logged lockfile that is %s", (_key, path) => {
+    // The Brief is rebuilt from the same lockfiles, so only the name is wrong.
+    const events = edit(
+      edit(signalledRun(), 3, (e) =>
+        withPayload(e, signalled([runtimeAdd, devAdd], [path])),
+      ),
+      4,
+      (e) => withPayload(e, opened(runtimeAdd, 0, "run-1", [path])),
     );
     expect(floor(events)).toEqual([
-      "seq 3: floor.signalled lockfiles are not its lockfile.only paths",
+      "seq 3: floor.signalled lockfiles are not all lockfile paths",
     ]);
   });
 
