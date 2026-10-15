@@ -1,0 +1,24 @@
+[
+  {
+    "text": "Updating the lockfile settings in app/.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/pnpm-lock.yaml <<'EOF'\nlockfileVersion: '9.0'\n\nsettings:\n  autoInstallPeers: false\n  excludeLinksFromLockfile: false\n\nimporters:\n\n  .: {}\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "app/pnpm-lock.yaml records autoInstallPeers: false.",
+    "toolCalls": [],
+    "claimsDone": true
+  }
+]

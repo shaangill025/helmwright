@@ -171,7 +171,10 @@ function run(
     ...{ title: "task", limits: LIMITS, started: {}, engine },
     ...{ tools: BROKER_TOOLS, connect },
     // SF-2: a run with no floor cannot complete.
-    floor: () => floorChecked("a".repeat(40), "a".repeat(40), []),
+    floor: () => ({
+      checked: floorChecked("a".repeat(40), "a".repeat(40), []),
+      before: [],
+    }),
   });
 }
 

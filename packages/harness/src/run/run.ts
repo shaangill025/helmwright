@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -35,7 +35,13 @@ import {
 } from "../config/config.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
-import { checkCandidate } from "../floor/tree.ts";
+import { recommendationKey } from "../floor/key.ts";
+import { floorDecision, route } from "../floor/materiality.ts";
+import {
+  changedLockfiles,
+  checkCandidate,
+  floorSignalled,
+} from "../floor/tree.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
@@ -303,6 +309,13 @@ export interface RunRecordEvent {
   readonly payload: Record<string, unknown>;
 }
 
+/** What `RunSetup.floor` gives (A-dep): the check, and the events logged just before it. */
+export interface FloorEnd {
+  readonly checked: FloorChecked;
+  /** `floor.signalled` and its `decision.opened` events, in order, each with its event ID if given. */
+  readonly before: readonly (RunRecordEvent & { readonly eventId?: string })[];
+}
+
 /** A set-up run: everything from `run.started` to `run.terminated`. */
 export interface RunSetup {
   readonly log: SessionLog;
@@ -337,10 +350,12 @@ export interface RunSetup {
   readonly settleMs?: number;
   /**
    * B3-2: checks the candidate once every tool call has settled and its sandbox is
-   * confirmed removed; logged as `floor.checked` just before `run.terminated`. A throw
-   * means the floor could not check the candidate (fail closed).
+   * confirmed removed, whatever the terminal; A-dep: `before` and then `floor.checked`
+   * are logged in one transaction just before `run.terminated`. A throw, or a failed
+   * transaction (nothing is logged), means the floor could not check the candidate
+   * (fail closed).
    */
-  readonly floor?: () => FloorChecked;
+  readonly floor?: () => FloorEnd;
   /**
    * SF-1: resolves true once every sandbox container the run started is confirmed
    * gone; false (or a rejection) fails the run with SANDBOX_CLEANUP_FAILED.
@@ -385,6 +400,8 @@ async function settled(
 export interface RunEnd extends RunOutcome {
   /** N-1: the `floor.checked` payload logged; null if none was. */
   readonly floor: FloorChecked | null;
+  /** A-dep: the IDs of the owner decisions the floor opened, pending: completed is not done. */
+  readonly pending: readonly string[];
 }
 
 export interface RunOutcome {
@@ -409,10 +426,12 @@ export interface RunOutcome {
  * A failed run's error is, in order: cleanup unconfirmed, the halt reason, the
  * first failed append, the loop's own failure, then whatever else was thrown.
  * B3-2: with `setup.floor`, once cleanup is confirmed (not unconfirmed, no
- * SANDBOX_CLEANUP_FAILED halt) the floor runs and `floor.checked` is logged just
- * before `run.terminated`; a run that would complete fails with FLOOR_REJECTED on a
- * finding, or FLOOR_UNCHECKED if the floor throws, its event cannot be logged, or
- * there is no `setup.floor` (SF-2). Other terminals are kept. SF-1: first,
+ * SANDBOX_CLEANUP_FAILED halt) the floor runs, whatever the terminal, and A-dep its
+ * `before` events (`floor.signalled`, then its decisions) and `floor.checked` are
+ * logged in one transaction just before `run.terminated`; a run that would complete
+ * fails with FLOOR_REJECTED on a finding, or FLOOR_UNCHECKED (with the reason) if the
+ * floor throws, its transaction fails, or there is no `setup.floor` (SF-2). Other
+ * terminals are kept, so a failed run still records its decisions. SF-1: first,
  * `setup.confirmCleanup` must confirm every container gone, else the run is halted
  * with SANDBOX_CLEANUP_FAILED and the floor is skipped.
  * B5-4: `setup.records` and `run.started` are logged in one transaction, records first.
@@ -625,14 +644,28 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
         : failed(failure ?? "the run ended without a result");
   // B3-2: only once no sandbox can still write to the worktree (S6, SF-1, SF-4).
   let logged: FloorChecked | null = null;
+  let owned: string[] = [];
   // SF-2: a run with no floor cannot complete.
   let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
   if (setup.floor !== undefined && !unconfirmed) {
     if (halted !== SANDBOX_CLEANUP_FAILED) {
       try {
-        const checked = setup.floor();
-        append("floor.checked", { ...checked }, true);
+        const { checked, before } = setup.floor();
+        // floorFaults refuses any event after floor.checked but run.terminated.
+        log.transaction(() => {
+          for (const { type, payload, eventId } of before) {
+            append(type, { ...payload }, true, eventId);
+          }
+          append("floor.checked", { ...checked }, true);
+        });
         logged = checked;
+        owned = before.flatMap(({ type, payload: { id, authority } }) =>
+          type === "decision.opened" &&
+          authority === "owner" &&
+          typeof id === "string"
+            ? [id]
+            : [],
+        );
         if (checked.verdict !== "pass") floorError = FLOOR_REJECTED;
       } catch (error) {
         floorError = FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
@@ -646,7 +679,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       : done;
   try {
     append("run.terminated", { agentId: nodeId, ...end }, true);
-    return { ...end, floor: logged };
+    return { ...end, floor: logged, pending: owned };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(
@@ -657,7 +690,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     } catch {
       // The log itself may be what failed.
     }
-    return { ...lost, floor: logged };
+    return { ...lost, floor: logged, pending: owned };
   }
 }
 
@@ -799,8 +832,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
   // The permission layer's Ring 0 paths: the policy's united with the floor.
   const ring0Paths = [...new Set([...RING0_PATHS, ...policy.ring0Paths])];
   // N3: loadRunConfig admits only the default friction (07 rule 1; e2e "refuses a
-  // listed alternative"), so the default is the loaded config's.
+  // listed alternative"), so the default is the loaded config's; OQ-AD-5: so is the
+  // brief threshold's.
   const { friction } = CONFIG_DEFAULTS;
+  const threshold = CONFIG_DEFAULTS.decisions.briefThreshold;
   const classifyWith = (links: readonly string[]) =>
     classify({
       ...task.intake,
@@ -1001,7 +1036,42 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       // B1: the host's common dir, never one the worktree names; protected = Ring 0.
       floor: () => {
         const repo = { worktree: workspace, commonDir: config.repoId };
-        return checkCandidate(repo, baseCommit, ring0Paths);
+        const { checked, changes } = checkCandidate(
+          repo,
+          baseCommit,
+          ring0Paths,
+        );
+        const eventId = randomUUID();
+        const { candidateTree } = checked;
+        const signalled = floorSignalled(
+          eventId,
+          baseCommit,
+          candidateTree,
+          threshold,
+          changes,
+        );
+        const { signals } = signalled;
+        const lockfiles = changedLockfiles(changes);
+        // OQ-AD-3: only a Brief commits to a recommendation, so only it needs the key.
+        const briefs = signals.some((s) => route(s, threshold) === "brief");
+        const key = briefs ? recommendationKey(stateDir) : new Uint8Array();
+        const decisions = signals.map((signal, index) =>
+          floorDecision({
+            ...{ runId, taskId: task.id, repoId: config.repoId, index },
+            ...{ signal, threshold, lockfiles, key },
+            seed: randomBytes(16).toString("hex"),
+          }),
+        );
+        return {
+          checked,
+          before: [
+            { type: "floor.signalled", payload: { ...signalled }, eventId },
+            ...decisions.map((d) => ({
+              type: "decision.opened",
+              payload: { ...d },
+            })),
+          ],
+        };
       },
       confirmCleanup: () => sandboxContainersGone([...containers]),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -1097,8 +1167,8 @@ export type ReplayResult =
        */
       readonly permissionFaults: string[];
       /**
-       * How the run's Task and Run (B5-4b) and its intake Ruling (B5-5) break their
-       * relations; empty if none.
+       * How the run's Task and Run (B5-4b), its intake Ruling (B5-5) and its floor
+       * decisions (A-dep) break their relations; empty if none.
        */
       readonly objectFaults: string[];
       readonly projections: ProjectionCheck;
@@ -1159,6 +1229,7 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
         ...log.events({ type: "task.created" }),
         ...log.events({ type: "run.recorded" }),
         ...log.events({ type: "decision.opened" }),
+        ...log.events({ type: "floor.signalled" }),
       ]),
       projections,
     };

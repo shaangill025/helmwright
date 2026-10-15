@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import {
   chmodSync,
   closeSync,
@@ -12,6 +12,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -28,6 +29,7 @@ import {
   DEFAULT_PERMISSION_POLICY,
   contextDigest,
   deriveMessages,
+  footprintAddress,
   loadRunConfig,
   openSessionLog,
   permissionAnswered,
@@ -481,7 +483,8 @@ describe("helmwright CLI (e2e)", () => {
         ...["decision.opened", "message.appended", "loop.iteration.started"],
         ...["message.appended", "loop.tool.started", "permission.evaluated"],
         ...["loop.tool.called", "message.appended", "loop.iteration.started"],
-        ...["message.appended", "floor.checked", "run.terminated"],
+        ...["message.appended", "floor.signalled", "floor.checked"],
+        "run.terminated",
       ]);
       expect(events[0]?.payload["policyVersion"]).toBe("default-2");
       // Allowed in the worktree without asking: one ruling, then the effect.
@@ -1109,6 +1112,7 @@ describe("helmwright CLI (e2e)", () => {
       const events = expectWellFormedLog(out.runId);
       expect(events.map((e) => e.type)).toEqual([
         "run.started",
+        "floor.signalled",
         "floor.checked",
         "run.terminated",
       ]);
@@ -1664,6 +1668,7 @@ describe("helmwright.config.json (e2e)", () => {
         "permission.evaluated",
         "permission.asked",
         "permission.answered",
+        "floor.signalled",
         "floor.checked",
         "run.terminated",
       ]);
@@ -1959,8 +1964,8 @@ describe("helmwright.config.json (e2e)", () => {
       // B5-4: task-1 is recorded by the first run, so only the Run is new.
       expect(events.map((e) => e.type)).toEqual([
         ...["run.recorded", "run.started", "permission.evaluated"],
-        ...["permission.asked", "permission.answered", "floor.checked"],
-        "run.terminated",
+        ...["permission.asked", "permission.answered", "floor.signalled"],
+        ...["floor.checked", "run.terminated"],
       ]);
       expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
         {
@@ -2226,7 +2231,8 @@ describe("intake (e2e, B10-2)", () => {
       expect(events.map((e) => e.type)).toEqual([
         ...["run.started", "config.accepted", "intake.classified"],
         ...["decision.opened", "permission.evaluated", "permission.asked"],
-        ...["permission.answered", "floor.checked", "run.terminated"],
+        ...["permission.answered", "floor.signalled", "floor.checked"],
+        "run.terminated",
       ]);
       expect(events.slice(4, 7).map((e) => e.payload)).toMatchObject([
         {
@@ -2379,6 +2385,7 @@ describe("intake (e2e, B10-2)", () => {
         ...[
           "run.started",
           "config.accepted",
+          "floor.signalled",
           "floor.checked",
           "run.terminated",
         ],
@@ -2767,6 +2774,27 @@ function expectTestsPassed(
   expect(text).toContain("fail 0\n");
 }
 
+/**
+ * A-dep: the run's final floor.signalled and its floor decisions, logged with
+ * floor.checked in one transaction, so they are the events just before it.
+ */
+function floorSignalsOf(events: readonly Event[]) {
+  const at = events.findIndex((e) => e.type === "floor.signalled");
+  const decisions = events.filter(
+    (e) => e.type === "decision.opened" && e.payload["source"] === "floor",
+  );
+  if (at !== -1) expect(events.slice(at + 1, -2)).toEqual(decisions);
+  const signalled = events[at];
+  return {
+    eventId: signalled?.eventId ?? "",
+    signalled: signalled?.payload,
+    decisions: decisions.map((e) => e.payload),
+  };
+}
+
+const PENDING = "helmwright: pending owner decisions: ";
+const KEY_FILE = "recommendation.key";
+
 describe("seeded fixture repo (e2e, FX)", () => {
   it(
     "materializes at the pinned base, also under core.autocrlf=true (FX-3)",
@@ -2813,6 +2841,11 @@ describe("seeded fixture repo (e2e, FX)", () => {
         ...{ rules: "floor-4", baseCommit: FX_BASE_COMMIT, verdict: "pass" },
         ...{ findings: [], truncated: false },
       });
+      // A-dep: the detector runs and finds nothing, so no decision opens.
+      const { signalled, decisions } = floorSignalsOf(run.events);
+      expect(decisions, "floor decisions").toEqual([]);
+      expect(signalled).toMatchObject({ phase: "final", signals: [] });
+      expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -2824,7 +2857,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       // OQ-AD-1 (owner, 2026-10-10; supersedes OQ-FX-1): the fixture's project is in
       // app/. The floor's "package.json" is the root one only and dependency keys are
       // not floor keys (OQ-B3-3 unchanged), so this run completes; A-dep adds the
-      // dependency signal and its Brief.
+      // dependency signal and its pending Brief: completed is not done.
       const run = runFx("dependency");
       expect(run.status, run.stderr).toBe(0);
       expect(run.out.terminal).toEqual({ kind: "completed" });
@@ -2865,6 +2898,109 @@ describe("seeded fixture repo (e2e, FX)", () => {
         ...{ rules: "floor-4", baseCommit: FX_BASE_COMMIT, verdict: "pass" },
         ...{ findings: [], truncated: false },
       });
+      // Q44, Q53: the runtime add is one owner Brief. The manifest changed a dependency
+      // field, so the lockfile gives no signal of its own.
+      const { eventId, signalled, decisions } = floorSignalsOf(run.events);
+      expect(decisions, "floor decisions").toHaveLength(1);
+      const signalId = eventId + ":0";
+      expect(signalled).toEqual({
+        ...{ kind: "floor.signalled", detector: "dependency-1" },
+        phase: "final",
+        baseCommit: FX_BASE_COMMIT,
+        materiality: {
+          rubricVersion: "materiality-rubric-1",
+          threshold: "runtimeAddOrMajor",
+        },
+        candidateTree: run.checked["candidateTree"],
+        signals: [
+          {
+            ...{ id: signalId, type: "dependency.added" },
+            ...{ path: "app/package.json", field: "dependencies" },
+            ...{ name: "@helmwright/fx-duration", runtime: true, from: null },
+            to: "file:vendor/fx-duration",
+          },
+        ],
+      });
+      const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
+      const repoId = join(tmp, "fx", ".git");
+      const file = (path: string) =>
+        footprintAddress("footprint.file", repoId, path).id;
+      const name = "@helmwright/fx-duration";
+      // OQ-AD-3: the commitment is to option a, its nonce an HMAC under the 0600 key;
+      // replay checks the random seed's format.
+      const keyFile = join(stateDir, KEY_FILE);
+      expect(statSync(keyFile).mode & 0o777).toBe(0o600);
+      const key = readFileSync(keyFile);
+      expect(key).toHaveLength(32);
+      const nonce = createHmac("sha256", key).update(id).digest("hex");
+      const committed = JSON.stringify([id, "a", nonce]);
+      expect(decisions[0]).toMatchObject({
+        ...{ kind: "decision.opened", id, taskId: "task-1" },
+        ...{ runId: run.out.runId, signalIds: [signalId], class: "technology" },
+        ...{ source: "floor", authority: "owner" },
+        brief: {
+          question: `Add runtime dependency ${name} (file:vendor/fx-duration) in app/package.json?`,
+          options: [{ id: "a" }, { id: "b" }, { id: "c" }],
+          recommendationSha256: createHash("sha256")
+            .update(committed)
+            .digest("hex"),
+          ...{ confidence: "low", reversibility: "costly" },
+          concepts: ["runtime-dependency"],
+          proposedFootprint: [
+            footprintAddress("footprint.dependency", repoId, name).id,
+            file("app/package.json"),
+            file("app/pnpm-lock.yaml"),
+          ],
+        },
+      });
+      expect(objectOf(id)).toMatchObject({
+        kind: "decision",
+        status: "pending",
+      });
+      expect(run.stderr).toContain(PENDING + id + "\n");
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "rules a lockfile-only change and completes (FX-lock, AC3)",
+    { timeout: T },
+    () => {
+      const run = runFx("lockfile");
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.out.terminal).toEqual({ kind: "completed" });
+      expect(run.checked).toMatchObject({ verdict: "pass", findings: [] });
+      const { eventId, signalled, decisions } = floorSignalsOf(run.events);
+      expect(decisions, "floor decisions").toHaveLength(1);
+      const signalId = eventId + ":0";
+      expect(signalled?.["signals"]).toEqual([
+        { id: signalId, type: "lockfile.only", path: "app/pnpm-lock.yaml" },
+      ]);
+      const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
+      const why =
+        "materiality-rubric-1, threshold runtimeAddOrMajor: a lockfile-only change is under the brief threshold";
+      expect(decisions).toEqual([
+        {
+          ...{ kind: "decision.opened", id, taskId: "task-1" },
+          ...{
+            runId: run.out.runId,
+            signalIds: [signalId],
+            class: "technology",
+          },
+          ...{ source: "floor", authority: "harness" },
+          ruling: {
+            what: "Accepted a lockfile-only change to app/pnpm-lock.yaml",
+            why: why + "\nsignal " + signalId,
+            costIfWrong:
+              "If it matters, a transitive version changed without an owner brief.",
+            rubricVersion: "materiality-rubric-1",
+          },
+        },
+      ]);
+      expect(objectOf(id)).toMatchObject({ status: "resolved" });
+      // A Ruling needs no recommendation key.
+      expect(existsSync(join(stateDir, KEY_FILE))).toBe(false);
+      expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
