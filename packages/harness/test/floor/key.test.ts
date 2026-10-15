@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import type * as Fs from "node:fs";
 import {
   chmodSync,
+  closeSync,
+  fstatSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -18,11 +20,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FloorError } from "../../src/floor/events.ts";
 import { KEY_FILE, recommendationKey } from "../../src/floor/key.ts";
 
-// OQ-AD-3: the state dir's recommendation key, created on first use. linkSync is the
-// real one unless a test replaces one call.
+// OQ-AD-3: the state dir's recommendation key, created on first use. linkSync,
+// fstatSync and closeSync are the real ones unless a test replaces one call.
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof Fs>();
-  return { ...fs, linkSync: vi.fn(fs.linkSync) };
+  return {
+    ...fs,
+    linkSync: vi.fn(fs.linkSync),
+    fstatSync: vi.fn(fs.fstatSync),
+    closeSync: vi.fn(fs.closeSync),
+  };
 });
 const realFs = await vi.importActual<typeof Fs>("node:fs");
 let dir: string;
@@ -128,17 +135,38 @@ describe("recommendationKey (OQ-AD-3)", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  it("closes the state dir if it cannot be checked", () => {
+    let dirFd: number | undefined;
+    vi.mocked(fstatSync).mockImplementationOnce((fd: number) => {
+      dirFd = fd;
+      throw Object.assign(new Error("EIO: " + dir), { code: "EIO" });
+    });
+    vi.mocked(closeSync).mockClear();
+    expect(() => recommendationKey(dir)).toThrow(
+      new FloorError("the recommendation key cannot be read safely (EIO)"),
+    );
+    expect(dirFd).toBeTypeOf("number");
+    expect(closeSync).toHaveBeenCalledWith(dirFd);
+  });
+
   it("reads the key another run linked first, leaving no temporary name", async () => {
     let other: Buffer | undefined;
+    let linked: unknown;
     vi.mocked(linkSync).mockImplementationOnce((temp, target) => {
       // Another run creates and links its key between this one's write and link.
       other = recommendationKey(dir);
-      realFs.linkSync(temp, target);
+      try {
+        realFs.linkSync(temp, target);
+      } catch (error) {
+        linked = (error as { code?: unknown }).code;
+        throw error;
+      }
     });
     const [first, second] = await Promise.all([
       Promise.resolve().then(() => recommendationKey(dir)),
       Promise.resolve().then(() => recommendationKey(dir)),
     ]);
+    expect(linked).toBe("EEXIST");
     expect(other).toHaveLength(32);
     expect(first).toEqual(other);
     expect(second).toEqual(other);

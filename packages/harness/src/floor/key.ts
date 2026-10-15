@@ -54,16 +54,20 @@ function readKey(path: string): Buffer {
  */
 function openStateDir(stateDir: string): number {
   const fd = openSync(stateDir, constants.O_RDONLY | constants.O_DIRECTORY);
-  const stat = fstatSync(fd);
-  if (
-    !stat.isDirectory() ||
-    stat.uid !== process.getuid?.() ||
-    (stat.mode & 0o077) !== 0
-  ) {
+  try {
+    const stat = fstatSync(fd);
+    if (
+      !stat.isDirectory() ||
+      stat.uid !== process.getuid?.() ||
+      (stat.mode & 0o077) !== 0
+    ) {
+      throw new FloorError("the state dir is not this user's alone");
+    }
+    return fd;
+  } catch (error) {
     closeSync(fd);
-    throw new FloorError("the state dir is not this user's alone");
+    throw error;
   }
-  return fd;
 }
 
 /**
