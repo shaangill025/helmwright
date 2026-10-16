@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   FloorError,
@@ -121,6 +121,9 @@ describe("candidateChanges", { timeout: 30_000 }, () => {
     write("d/.gitignore", "*\n");
     write("d/e/x.ts", MARK);
     expect(paths()).toEqual([]);
+    expect(rules()).toEqual([["config.changed", "d/.gitignore"]]);
+    // The only ignored entry is the collapsed d/: check-ignore exits 1 (none ignored).
+    rmSync(join(wt, "d", "e"), { recursive: true });
     expect(rules()).toEqual([["config.changed", "d/.gitignore"]]);
     // R1: a name that is pathspec magic is matched literally, not parsed.
     rmSync(join(wt, "d"), { recursive: true });
@@ -517,6 +520,26 @@ describe("git failures (SF-3)", { timeout: 30_000 }, () => {
     }
     expect(error).toBeInstanceOf(FloorError);
     expect((error as Error).message).toBe("git rev-parse failed (exit 128)");
+  });
+
+  it("fails closed when check-ignore exits other than 0 or 1", () => {
+    // A git first on PATH exits 128 for check-ignore, else runs the real git.
+    const real = (process.env["PATH"] ?? "")
+      .split(delimiter)
+      .map((dir) => join(dir, "git"))
+      .find((path) => existsSync(path));
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "git"),
+      `#!/bin/sh\nfor a; do [ "$a" = check-ignore ] && exit 128; done\nexec '${real ?? "git"}' "$@"\n`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv("PATH", `${bin}${delimiter}${process.env["PATH"] ?? ""}`);
+    write("d/.gitignore", "*\n");
+    expect(checked).toThrow(
+      new FloorError("git check-ignore failed (exit 128)"),
+    );
   });
 });
 

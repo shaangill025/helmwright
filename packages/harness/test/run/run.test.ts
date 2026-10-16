@@ -27,6 +27,7 @@ import {
   FLOOR_REJECTED,
   FLOOR_UNCHECKED,
   loadTask,
+  earlyLine,
   stopReason,
   type EarlyCheck,
   type EarlyShown,
@@ -1020,6 +1021,15 @@ describe("executeRun's early dependency check (A-dep-4)", () => {
   }
   const earlyEvents = () =>
     log.events({ runId: "run-1" }).filter((e) => e.type === "floor.signalled");
+
+  it("gives the CLI's line for a skipped and a failed check (LOW-3)", () => {
+    expect(earlyLine({ kind: "skipped" })).toBe(
+      "early dependency check skipped: over the floor limits",
+    );
+    expect(earlyLine({ kind: "failed", error: "git x failed" })).toBe(
+      "early dependency check failed: git x failed",
+    );
+  });
 
   it("checks once a call has settled, never at step 1", async () => {
     const done = withEarly(calling(2), () => found("e"));

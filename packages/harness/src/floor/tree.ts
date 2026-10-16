@@ -230,11 +230,14 @@ export function candidateChanges(
     writeFileSync(join(dir, "objects", "info", "alternates"), objects);
     writeFileSync(join(dir, "info", "exclude"), exclude);
     const where = ["--git-dir=" + dir, "--work-tree=" + worktree];
-    const git = (args: string[], maxBuffer?: number) =>
-      gitCall(args, () =>
-        runGit(worktree, [...where, "--attr-source=" + baseCommit, ...args], {
-          maxBuffer,
-        }),
+    const git: Git = (args, maxBuffer, okExit) =>
+      gitCall(
+        args,
+        () =>
+          runGit(worktree, [...where, "--attr-source=" + baseCommit, ...args], {
+            maxBuffer,
+          }),
+        okExit,
       );
     git(["read-tree", head]);
     git(["add", "--all"], limits.bytes);
@@ -247,25 +250,34 @@ export function candidateChanges(
   }
 }
 
-type Git = (args: string[], maxBuffer?: number) => Buffer;
+type Git = (args: string[], maxBuffer?: number, okExit?: number) => Buffer;
 
 /**
  * SF-3: runs one git call. A failed one becomes a FloorError with fixed text, `git
  * <subcommand> failed (exit N)`, never its command line, stderr or a path. A timeout
  * (fixed text already) and ENOBUFS (a `floor.limits` finding) are thrown as they are.
+ * Exit `okExit` (a normal result, such as check-ignore's 1) gives the call's stdout.
  */
-function gitCall(args: readonly string[], call: () => Buffer): Buffer {
+function gitCall(
+  args: readonly string[],
+  call: () => Buffer,
+  okExit?: number,
+): Buffer {
   try {
     return call();
   } catch (error) {
     if (isOverBuffer(error)) throw error;
-    const { status, code } = (error ?? {}) as Record<string, unknown>;
+    const { status, code, stdout } = (error ?? {}) as Record<string, unknown>;
     if (status === undefined && code === undefined && error instanceof Error) {
       throw error; // runGit's timeout error
     }
+    if (okExit !== undefined && status === okExit && Buffer.isBuffer(stdout)) {
+      return stdout;
+    }
     const exit =
       typeof status === "number" ? " (exit " + String(status) + ")" : "";
-    throw new FloorError("git " + (args[0] ?? "") + " failed" + exit);
+    const name = args[0] === "-c" ? args[2] : args[0];
+    throw new FloorError("git " + (name ?? "") + " failed" + exit);
   }
 }
 
@@ -324,16 +336,12 @@ function ignoredFiles(git: Git, max: number): FloorFinding[] {
     .filter((path) => path.endsWith("/"))
     .map((path) => path.slice(0, -1));
   // runGit gives no stdin, so no --stdin -z: a quoted name fails the match and is searched.
-  let outer = new Set<string>();
-  try {
-    const local = dirs.map((dir) => "./" + dir);
-    const args = ["-c", "core.quotePath=false", "check-ignore", "--", ...local];
-    if (dirs.length)
-      outer = new Set(git(args, max).toString("utf8").split("\n"));
-  } catch (error) {
-    // check-ignore exits 1 when no path is ignored.
-    if ((error as { status?: unknown }).status !== 1) throw error;
-  }
+  const local = dirs.map((dir) => "./" + dir);
+  const args = ["-c", "core.quotePath=false", "check-ignore", "--", ...local];
+  // check-ignore exits 1 when no path is ignored; any other failure fails closed.
+  const outer = new Set(
+    dirs.length ? git(args, max, 1).toString("utf8").split("\n") : [],
+  );
   const inner = dirs
     .filter((dir) => !outer.has("./" + dir))
     .map((dir) => ":(glob)" + globLiteral(dir) + "/**/.gitignore");
