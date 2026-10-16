@@ -7,10 +7,13 @@ import {
   rmSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   CONFIG_DEFAULTS,
   type Event,
   type FloorChecked,
+  type FloorSignal,
+  type FloorSignalled,
   type IntakeClass,
   type IntakeDeclared,
   type IntakeFriction,
@@ -37,7 +40,12 @@ import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
 import { floorDecision, route } from "../floor/materiality.ts";
-import { checkCandidate, floorSignalled } from "../floor/tree.ts";
+import {
+  FLOOR_LIMITS,
+  candidateChanges,
+  checkCandidate,
+  floorSignalled,
+} from "../floor/tree.ts";
 import {
   INTAKE_OVERRIDE_NOT_APPROVED,
   intakeClassified,
@@ -91,6 +99,7 @@ import type {
   ExecuteTool,
   LoopLimits,
   Message,
+  StepInput,
   ToolSpec,
 } from "../loop/types.ts";
 import {
@@ -318,6 +327,23 @@ export interface FloorEnd {
   readonly before: readonly (RunRecordEvent & { readonly eventId?: string })[];
 }
 
+/**
+ * What `RunSetup.early` gives (A-dep-4): an early `floor.signalled` with its event ID, or
+ * "limits" past the floor's limits, where the set is partial and nothing is logged.
+ */
+export type EarlyCheck =
+  | {
+      readonly eventId: string;
+      readonly payload: FloorSignalled & { readonly lockfiles: string[] };
+    }
+  | "limits";
+
+/** What a run shows the owner of its early check (A-dep-4, OQ-AD4-1, OQ-AD4-2). */
+export type EarlyShown =
+  | { readonly kind: "signalled"; readonly signals: readonly FloorSignal[] }
+  | { readonly kind: "skipped" }
+  | { readonly kind: "failed"; readonly error: string };
+
 /** A set-up run: everything from `run.started` to `run.terminated`. */
 export interface RunSetup {
   readonly log: SessionLog;
@@ -358,6 +384,24 @@ export interface RunSetup {
    * (fail closed).
    */
   readonly floor?: () => FloorEnd;
+  /**
+   * A-dep-4 (OQ-AD-6): the mid-run dependency check, at an engine step that offers tools,
+   * once a tool call has settled since the last check and none is in flight (each call's
+   * sandbox is gone, so nothing writes the worktree), unless the run is halted or
+   * aborted. Its `floor.signalled` is logged only if its signals (IDs aside) differ from
+   * the last early one logged, at first none; it opens no decision and never
+   * reclassifies (OQ-AD3-6). "limits" or a throw is only shown, and never fails the run
+   * (OQ-AD4-1). By design, after "limits" it is not called again in the run, though a
+   * later step may drop below the limits; the final check still reads everything and is
+   * authoritative. After a throw it is retried at the next boundary. A failed append
+   * fails the run, as any failed append.
+   */
+  readonly early?: () => EarlyCheck;
+  /**
+   * A-dep-4 (OQ-AD4-2): shown to the owner only, never to the engine: each logged early
+   * set, then a skip once and each distinct failure once. A throw from it is ignored.
+   */
+  readonly onEarly?: (shown: EarlyShown) => void;
   /**
    * SF-1: resolves true once every sandbox container the run started is confirmed
    * gone; false (or a rejection) fails the run with SANDBOX_CLEANUP_FAILED.
@@ -443,6 +487,7 @@ export interface RunOutcome {
  * `setup.confirmCleanup` must confirm every container gone, else the run is halted
  * with SANDBOX_CLEANUP_FAILED and the floor is skipped.
  * B5-4: `setup.records` and `run.started` are logged in one transaction, records first.
+ * A-dep-4: `setup.early` runs before an engine step, as it describes.
  * @throws RangeError for an invalid `settleMs` or `limits` (N-f), before anything is
  * logged; whatever `setup.records` throws, or Error if `run.started` cannot be logged,
  * and then nothing is logged.
@@ -529,6 +574,54 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   let halted: string | undefined;
   let thrown: { error: unknown } | undefined;
   const pending = new Set<Promise<unknown>>();
+  // A-dep-4: whether a call settled since the last early check, and what it last logged.
+  let dirty = false;
+  // By design, the early warning stops for the run after "limits" (a later step may
+  // drop below them); the final check still reads everything and is authoritative.
+  let overLimits = false;
+  let earlySet: unknown = [];
+  const earlyShown = new Set<string>();
+  // The owner's display only: a throw (such as EPIPE) never fails the run.
+  const tell = (shown: EarlyShown) => {
+    try {
+      setup.onEarly?.(shown);
+    } catch {
+      // Nothing to do: the log, not the display, is the record.
+    }
+  };
+  const show = (shown: EarlyShown, key: string) => {
+    if (earlyShown.has(key)) return;
+    earlyShown.add(key);
+    tell(shown);
+  };
+  const checkEarly = (input: StepInput) => {
+    const check = setup.early;
+    if (check === undefined || overLimits) return;
+    if (!dirty || pending.size > 0) return;
+    if (input.tools.length === 0 || input.signal.aborted) return;
+    if (setup.signal?.aborted === true) return;
+    dirty = false;
+    let found: EarlyCheck;
+    try {
+      found = check();
+    } catch (error) {
+      const text = errorMessage(error);
+      show({ kind: "failed", error: text }, "failed " + text);
+      return;
+    }
+    if (found === "limits") {
+      overLimits = true;
+      show({ kind: "skipped" }, "skipped");
+      return;
+    }
+    const { eventId, payload } = found;
+    const set = payload.signals.map((signal) => ({ ...signal, id: "" }));
+    if (isDeepStrictEqual(set, earlySet)) return;
+    // A failed append is the run's log failure, as any other.
+    append("floor.signalled", { ...payload }, false, eventId);
+    earlySet = set;
+    tell({ kind: "signalled", signals: payload.signals });
+  };
   try {
     const signal = setup.signal;
     const connected = await setup.connect({
@@ -565,6 +658,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       pending.add(running);
       const done = () => {
         pending.delete(running);
+        dirty = true;
       };
       running.then(done, done);
       return running;
@@ -593,6 +687,8 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
           async step(input) {
             if (halted !== undefined) throw new Error(halted);
             if (logFailure !== undefined) throw logFailure.error;
+            // A-dep-4: to the log and the owner, never into the engine's context.
+            checkEarly(input);
             const messages = derive(input.messages);
             return setup.engine.step({ ...input, messages });
           },
@@ -737,6 +833,8 @@ export interface RunTaskOptions {
   readonly intakeOverride?: { readonly to: string; readonly reason: string };
   /** Called with the run's class before the first engine step, then with any override's. */
   readonly onIntake?: (shown: IntakeShown) => void;
+  /** A-dep-4: called with what the early dependency check shows (`RunSetup.onEarly`). */
+  readonly onEarly?: (shown: EarlyShown) => void;
 }
 
 /** What a run shows of its intake: the class and its friction (N8). */
@@ -819,6 +917,8 @@ export const RING0_NOT_APPROVED =
  * INTAKE_OVERRIDE_NOT_APPROVED. A-dep-3: if the class so logged is chore and the final
  * floor has a signal, the floor's transaction first logs `intake.reclassified` to
  * architectural and its Ruling (`intakeReclassifiedRuling`); a record only in M1.
+ * A-dep-4: mid-run, the early check (`RunSetup.early`) reads the worktree's manifests
+ * and lockfiles only, and `options.onEarly` shows what it found.
  * B10-3: a reclassification with the worktree's Ring 0 link targets that the rubric
  * refuses fails the run with INTAKE_LINKS_REFUSED. B5-4: those targets are read before
  * `run.started`, which is logged in one transaction after `task.created` (only for a
@@ -1117,6 +1217,28 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           key.fill(0);
         }
       },
+      // A-dep-4 (OQ-AD4-3): manifests and lockfiles only; the final check reads all.
+      early: () => {
+        const repo = { worktree: workspace, commonDir: config.repoId };
+        const { candidateTree, changes, findings } = candidateChanges(
+          repo,
+          baseCommit,
+          FLOOR_LIMITS,
+          { select: true },
+        );
+        if (findings.some((f) => f.rule === "floor.limits")) return "limits";
+        const eventId = randomUUID();
+        const payload = floorSignalled(
+          eventId,
+          baseCommit,
+          candidateTree,
+          threshold,
+          changes,
+          "early",
+        );
+        return { eventId, payload };
+      },
+      ...(options.onEarly === undefined ? {} : { onEarly: options.onEarly }),
       confirmCleanup: () => sandboxContainersGone([...containers]),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.checkDesync === undefined

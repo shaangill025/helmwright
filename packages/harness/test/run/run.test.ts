@@ -21,11 +21,15 @@ import {
   type SessionLog,
 } from "../../src/index.ts";
 import { floorDecision } from "../../src/floor/materiality.ts";
+import type { FloorChange } from "../../src/floor/rules.ts";
+import { floorSignalled } from "../../src/floor/tree.ts";
 import {
   FLOOR_REJECTED,
   FLOOR_UNCHECKED,
   loadTask,
   stopReason,
+  type EarlyCheck,
+  type EarlyShown,
 } from "../../src/run/run.ts";
 
 const LIMITS = {
@@ -963,4 +967,202 @@ describe("executeRun's sensor floor (B3-2)", () => {
       expect(types()).not.toContain("floor.checked");
     },
   );
+});
+
+describe("executeRun's early dependency check (A-dep-4)", () => {
+  const oid = "a".repeat(40);
+  const lock = (path: string): FloorChange => ({
+    ...{ path, baseMode: "100644", candidateMode: "100644" },
+    ...{ base: new Uint8Array([1]), candidate: new Uint8Array([2]) },
+  });
+  /** An early check's result, event `eventId`, with the lockfiles `paths` changed. */
+  const found = (id: string, ...paths: string[]): EarlyCheck => {
+    const changes = paths.map(lock);
+    const [threshold, phase] = ["runtimeAddOrMajor", "early"] as const;
+    const payload = floorSignalled(id, oid, oid, threshold, changes, phase);
+    return { eventId: id, payload };
+  };
+  /** `calls` steps that each call a tool, then one that is done. */
+  function calling(calls: number) {
+    const steps: { tools: number }[] = [];
+    const engine: Engine = {
+      step(step) {
+        steps.push({ tools: step.tools.length });
+        const n = steps.length;
+        const call = { id: "c" + String(n), name: "t", input: n };
+        const more = steps.length <= calls;
+        return Promise.resolve({
+          text: String(steps.length),
+          toolCalls: more ? [call] : [],
+          claimsDone: !more,
+        });
+      },
+    };
+    return { engine, steps };
+  }
+  /** Runs `engine` with `early`, recording the steps taken before each check. */
+  function withEarly(
+    engine: { engine: Engine; steps: unknown[] },
+    early: () => EarlyCheck,
+    more: Partial<RunSetup> = {},
+  ) {
+    const at: number[] = [];
+    const shown: EarlyShown[] = [];
+    const outcome = run(engine.engine, true, log, () => ok, {
+      early: () => {
+        at.push(engine.steps.length);
+        return early();
+      },
+      onEarly: (s) => shown.push(s),
+      ...more,
+    });
+    return { outcome, at, shown };
+  }
+  const earlyEvents = () =>
+    log.events({ runId: "run-1" }).filter((e) => e.type === "floor.signalled");
+
+  it("checks once a call has settled, never at step 1", async () => {
+    const done = withEarly(calling(2), () => found("e"));
+    expect((await done.outcome).terminal).toEqual({ kind: "completed" });
+    expect(done.at).toEqual([1, 2]);
+  });
+
+  it("never checks at a handoff step, which offers no tools", async () => {
+    const engine = calling(9);
+    const limits = { ...LIMITS, maxIterations: 3 };
+    const halted = withEarly(engine, () => found("e"), { limits });
+    expect((await halted.outcome).terminal).toMatchObject({
+      kind: "incomplete",
+      reason: "max_iterations",
+    });
+    expect(engine.steps.map((s) => s.tools)).toEqual([1, 1, 1, 0]);
+    expect(halted.at).toEqual([1, 2]);
+  });
+
+  it("logs a set only when it changes, from none, and shows each logged one", async () => {
+    const results = [
+      ...[found("early-1"), found("early-2", "yarn.lock")],
+      ...[found("early-3", "yarn.lock"), found("early-4")],
+      found("early-5", "bun.lock"),
+    ];
+    const next = () => results.shift() ?? "limits";
+    const limits = { ...LIMITS, maxIterations: 6 };
+    const { outcome, shown } = withEarly(calling(5), next, { limits });
+    expect((await outcome).terminal).toEqual({ kind: "completed" });
+    expect(results).toEqual([]);
+    const logged = earlyEvents().map((e) => e.payload);
+    expect(logged.map((p) => p["signals"])).toEqual([
+      [{ id: "early-2:0", type: "lockfile.only", path: "yarn.lock" }],
+      [],
+      [{ id: "early-5:0", type: "lockfile.only", path: "bun.lock" }],
+    ]);
+    expect(logged.every((p) => p["phase"] === "early")).toBe(true);
+    const counts = shown.map((s) => s.kind === "signalled" && s.signals.length);
+    expect(counts).toEqual([1, 0, 1]);
+    // Logged with the event IDs the signal IDs name; nothing reaches the engine.
+    const events = earlyEvents().map((e) => e.eventId);
+    expect(events).toEqual(["early-2", "early-4", "early-5"]);
+    const sent = log
+      .events({ runId: "run-1" })
+      .flatMap((e) => (e.type === "message.appended" ? [e.payload] : []));
+    expect(JSON.stringify(sent)).not.toContain("lockfile.only");
+  });
+
+  it("only shows a failed check, once per message, and the run completes", async () => {
+    let n = 0;
+    const { outcome, at, shown } = withEarly(calling(4), () => {
+      n += 1;
+      throw new Error(n < 3 ? "git add failed (exit 1)" : "other");
+    });
+    expect((await outcome).terminal).toEqual({ kind: "completed" });
+    expect((await outcome).floor).toMatchObject({ verdict: "pass" });
+    expect(at).toEqual([1, 2, 3, 4]);
+    expect(shown).toEqual([
+      { kind: "failed", error: "git add failed (exit 1)" },
+      { kind: "failed", error: "other" },
+    ]);
+    expect(earlyEvents()).toEqual([]);
+  });
+
+  it("logs nothing past the limits, shows the skip once and stops checking", async () => {
+    const { outcome, at, shown } = withEarly(calling(3), () => "limits");
+    expect((await outcome).terminal).toEqual({ kind: "completed" });
+    // No more git work at later boundaries: the closure is called once.
+    expect(at).toEqual([1]);
+    expect(shown).toEqual([{ kind: "skipped" }]);
+    expect(earlyEvents()).toEqual([]);
+  });
+
+  it("never fails the run when the owner's callback throws", async () => {
+    let n = 0;
+    const check = () => {
+      n += 1;
+      if (n === 2) throw new Error("git add failed (exit 1)");
+      return found("early-" + String(n), n === 1 ? "yarn.lock" : "bun.lock");
+    };
+    const onEarly = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    const { outcome, at } = withEarly(calling(3), check, { onEarly });
+    expect((await outcome).terminal).toEqual({ kind: "completed" });
+    expect(at).toEqual([1, 2, 3]);
+    expect(earlyEvents().map((e) => e.eventId)).toEqual(["early-1", "early-3"]);
+  });
+
+  it("checks nothing once the run is cancelled", async () => {
+    // This pins the loop's halt-before-step behaviour: after an abort runLoop takes no
+    // further step. The step wrapper's abort guard is defence in depth, which runLoop
+    // cannot reach.
+    const cancel = new AbortController();
+    let calls = 0;
+    const connect: RunSetup["connect"] = () => () => {
+      calls += 1;
+      if (calls === 2) cancel.abort();
+      return ok();
+    };
+    const check = () => found("e", "yarn.lock");
+    const { outcome, at } = withEarly(calling(4), check, {
+      connect,
+      signal: cancel.signal,
+    });
+    expect((await outcome).terminal).toEqual({
+      kind: "incomplete",
+      reason: "cancelled",
+    });
+    // Checked after call 1, never after the cancel during call 2.
+    expect(at).toEqual([1]);
+  });
+
+  it("checks nothing after a halt", async () => {
+    const connect: RunSetup["connect"] = ({ halt }) => {
+      return () => {
+        halt("sandbox cleanup failed");
+        return ok();
+      };
+    };
+    const check = () => found("e", "yarn.lock");
+    const { outcome, at } = withEarly(calling(2), check, { connect });
+    expect((await outcome).terminal).toMatchObject({ kind: "failed" });
+    expect(at).toEqual([]);
+  });
+
+  it("fails the run when the early event cannot be logged", async () => {
+    const failing: SessionLog = {
+      ...log,
+      append: (event) => {
+        if (event.type === "floor.signalled") throw new Error("disk full");
+        return log.append(event);
+      },
+    };
+    const check = () => found("e", "bun.lock");
+    const { outcome, at, shown } = withEarly(calling(2), check, {
+      log: failing,
+    });
+    expect((await outcome).terminal).toEqual({
+      kind: "failed",
+      error: "disk full",
+    });
+    expect(at).toEqual([1]);
+    expect(shown).toEqual([]);
+  });
 });
