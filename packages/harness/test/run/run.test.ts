@@ -1110,6 +1110,9 @@ describe("executeRun's early dependency check (A-dep-4)", () => {
   });
 
   it("checks nothing once the run is cancelled", async () => {
+    // This pins the loop's halt-before-step behaviour: after an abort runLoop takes no
+    // further step. The step wrapper's abort guard is defence in depth, which runLoop
+    // cannot reach.
     const cancel = new AbortController();
     let calls = 0;
     const connect: RunSetup["connect"] = () => () => {

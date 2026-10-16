@@ -391,8 +391,10 @@ export interface RunSetup {
    * aborted. Its `floor.signalled` is logged only if its signals (IDs aside) differ from
    * the last early one logged, at first none; it opens no decision and never
    * reclassifies (OQ-AD3-6). "limits" or a throw is only shown, and never fails the run
-   * (OQ-AD4-1); after "limits" it is not called again, after a throw it is retried at
-   * the next boundary. A failed append fails the run, as any failed append.
+   * (OQ-AD4-1). By design, after "limits" it is not called again in the run, though a
+   * later step may drop below the limits; the final check still reads everything and is
+   * authoritative. After a throw it is retried at the next boundary. A failed append
+   * fails the run, as any failed append.
    */
   readonly early?: () => EarlyCheck;
   /**
@@ -574,7 +576,8 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   const pending = new Set<Promise<unknown>>();
   // A-dep-4: whether a call settled since the last early check, and what it last logged.
   let dirty = false;
-  // Past the limits a later check is partial too: no more git work this run.
+  // By design, the early warning stops for the run after "limits" (a later step may
+  // drop below them); the final check still reads everything and is authoritative.
   let overLimits = false;
   let earlySet: unknown = [];
   const earlyShown = new Set<string>();
