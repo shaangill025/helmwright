@@ -274,7 +274,8 @@ async function main(args: readonly string[]): Promise<number> {
             [s.type, "name" in s ? s.name : "-", s.path].join(" "),
           );
           const n = named.length;
-          const list = String(n) + " signals (" + named.join(", ") + ")";
+          const noun = n === 1 ? " signal (" : " signals (";
+          const list = String(n) + noun + named.join(", ") + ")";
           line = "floor early: " + (n > 0 ? list : "no signals");
         }
         console.error("helmwright: " + displayText(line));

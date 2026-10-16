@@ -1084,12 +1084,50 @@ describe("executeRun's early dependency check (A-dep-4)", () => {
     expect(earlyEvents()).toEqual([]);
   });
 
-  it("logs nothing past the limits, and shows the skip once", async () => {
+  it("logs nothing past the limits, shows the skip once and stops checking", async () => {
     const { outcome, at, shown } = withEarly(calling(3), () => "limits");
     expect((await outcome).terminal).toEqual({ kind: "completed" });
-    expect(at).toEqual([1, 2, 3]);
+    // No more git work at later boundaries: the closure is called once.
+    expect(at).toEqual([1]);
     expect(shown).toEqual([{ kind: "skipped" }]);
     expect(earlyEvents()).toEqual([]);
+  });
+
+  it("never fails the run when the owner's callback throws", async () => {
+    let n = 0;
+    const check = () => {
+      n += 1;
+      if (n === 2) throw new Error("git add failed (exit 1)");
+      return found("early-" + String(n), n === 1 ? "yarn.lock" : "bun.lock");
+    };
+    const onEarly = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    const { outcome, at } = withEarly(calling(3), check, { onEarly });
+    expect((await outcome).terminal).toEqual({ kind: "completed" });
+    expect(at).toEqual([1, 2, 3]);
+    expect(earlyEvents().map((e) => e.eventId)).toEqual(["early-1", "early-3"]);
+  });
+
+  it("checks nothing once the run is cancelled", async () => {
+    const cancel = new AbortController();
+    let calls = 0;
+    const connect: RunSetup["connect"] = () => () => {
+      calls += 1;
+      if (calls === 2) cancel.abort();
+      return ok();
+    };
+    const check = () => found("e", "yarn.lock");
+    const { outcome, at } = withEarly(calling(4), check, {
+      connect,
+      signal: cancel.signal,
+    });
+    expect((await outcome).terminal).toEqual({
+      kind: "incomplete",
+      reason: "cancelled",
+    });
+    // Checked after call 1, never after the cancel during call 2.
+    expect(at).toEqual([1]);
   });
 
   it("checks nothing after a halt", async () => {
@@ -1114,11 +1152,14 @@ describe("executeRun's early dependency check (A-dep-4)", () => {
       },
     };
     const check = () => found("e", "bun.lock");
-    const { outcome, at } = withEarly(calling(2), check, { log: failing });
+    const { outcome, at, shown } = withEarly(calling(2), check, {
+      log: failing,
+    });
     expect((await outcome).terminal).toEqual({
       kind: "failed",
       error: "disk full",
     });
     expect(at).toEqual([1]);
+    expect(shown).toEqual([]);
   });
 });

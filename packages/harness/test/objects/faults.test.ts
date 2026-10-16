@@ -1001,6 +1001,19 @@ describe("objectFaults: early floor signals (A-dep-4)", () => {
     ]);
   });
 
+  it.each([{ graphId: "graph-9" }, { nodeId: "node-9" }])(
+    "faults an early event outside run.started's envelope (%o)",
+    (envelope) => {
+      const moved = edit(earlyRun([[runtimeAdd]]), 3, (e) => ({
+        ...e,
+        ...envelope,
+      }));
+      expect(floor(moved)).toEqual([
+        "seq 3: early floor.signalled outside run.started's envelope",
+      ]);
+    },
+  );
+
   it("opens no decision: one naming an early signal has no signal", () => {
     const events = earlyRun([[runtimeAdd], []]);
     const named = { ...runtimeAdd, id: "evt-3:0" };

@@ -391,12 +391,13 @@ export interface RunSetup {
    * aborted. Its `floor.signalled` is logged only if its signals (IDs aside) differ from
    * the last early one logged, at first none; it opens no decision and never
    * reclassifies (OQ-AD3-6). "limits" or a throw is only shown, and never fails the run
-   * (OQ-AD4-1); a failed append does, as any failed append.
+   * (OQ-AD4-1); after "limits" it is not called again, after a throw it is retried at
+   * the next boundary. A failed append fails the run, as any failed append.
    */
   readonly early?: () => EarlyCheck;
   /**
    * A-dep-4 (OQ-AD4-2): shown to the owner only, never to the engine: each logged early
-   * set, then a skip once and each distinct failure once.
+   * set, then a skip once and each distinct failure once. A throw from it is ignored.
    */
   readonly onEarly?: (shown: EarlyShown) => void;
   /**
@@ -573,16 +574,27 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   const pending = new Set<Promise<unknown>>();
   // A-dep-4: whether a call settled since the last early check, and what it last logged.
   let dirty = false;
+  // Past the limits a later check is partial too: no more git work this run.
+  let overLimits = false;
   let earlySet: unknown = [];
   const earlyShown = new Set<string>();
+  // The owner's display only: a throw (such as EPIPE) never fails the run.
+  const tell = (shown: EarlyShown) => {
+    try {
+      setup.onEarly?.(shown);
+    } catch {
+      // Nothing to do: the log, not the display, is the record.
+    }
+  };
   const show = (shown: EarlyShown, key: string) => {
     if (earlyShown.has(key)) return;
     earlyShown.add(key);
-    setup.onEarly?.(shown);
+    tell(shown);
   };
   const checkEarly = (input: StepInput) => {
     const check = setup.early;
-    if (check === undefined || !dirty || pending.size > 0) return;
+    if (check === undefined || overLimits) return;
+    if (!dirty || pending.size > 0) return;
     if (input.tools.length === 0 || input.signal.aborted) return;
     if (setup.signal?.aborted === true) return;
     dirty = false;
@@ -595,6 +607,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       return;
     }
     if (found === "limits") {
+      overLimits = true;
       show({ kind: "skipped" }, "skipped");
       return;
     }
@@ -604,7 +617,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     // A failed append is the run's log failure, as any other.
     append("floor.signalled", { ...payload }, false, eventId);
     earlySet = set;
-    setup.onEarly?.({ kind: "signalled", signals: payload.signals });
+    tell({ kind: "signalled", signals: payload.signals });
   };
   try {
     const signal = setup.signal;

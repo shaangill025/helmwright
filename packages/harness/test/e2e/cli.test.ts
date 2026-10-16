@@ -2958,7 +2958,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(warned?.["candidateTree"]).not.toBe(candidateTree);
       expect(run.stderr).toContain(
         EARLY +
-          "1 signals (dependency.added @helmwright/fx-duration app/package.json)\n",
+          "1 signal (dependency.added @helmwright/fx-duration app/package.json)\n",
       );
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const repoId = join(tmp, "fx", ".git");
@@ -3031,7 +3031,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
         ],
       ]);
       expect(run.stderr).toContain(
-        EARLY + "1 signals (lockfile.only - app/pnpm-lock.yaml)\n",
+        EARLY + "1 signal (lockfile.only - app/pnpm-lock.yaml)\n",
       );
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const why =
@@ -3169,7 +3169,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       });
       expect(decisions, "floor decisions").toEqual([]);
       const added =
-        "1 signals (dependency.added @helmwright/fx-duration app/package.json)";
+        "1 signal (dependency.added @helmwright/fx-duration app/package.json)";
       expect(run.stderr).toContain(EARLY + added + "\n");
       expect(run.stderr).toContain(EARLY + "no signals\n");
       // OQ-AD4-2: for the owner only; the engine's context holds no early event.

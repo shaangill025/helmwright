@@ -413,7 +413,7 @@ function reclassificationFaults(
 
 /**
  * A-dep-4 (OQ-AD-6) replay faults of a run's early `floor.signalled` events: each valid,
- * with `run.started`'s base commit, a known rubric, signal `i` with the ID
+ * in `run.started`'s envelope, with its base commit, a known rubric, signal `i` with the ID
  * `<eventId>:<i>` and `lockfiles` as `lockfileFaults` checks them; after `run.started`
  * and before the final `floor.signalled` (without one, `floor.checked`); and with
  * signals (IDs aside) other than the previous early one's, at first none. An early
@@ -443,6 +443,9 @@ function earlyFaults(
     }
     const { signals, materiality, lockfiles } = payload as FloorSignalled;
     if (started === undefined || e.seq < started.seq) at("before run.started");
+    if (started !== undefined && !sameEnvelope(e, started)) {
+      at("outside run.started's envelope");
+    }
     if (end !== undefined && e.seq > end.seq) {
       at(final === undefined ? "after floor.checked" : "after the final one");
     }
