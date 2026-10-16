@@ -522,8 +522,11 @@ describe("git failures (SF-3)", { timeout: 30_000 }, () => {
     expect((error as Error).message).toBe("git rev-parse failed (exit 128)");
   });
 
-  it("fails closed when check-ignore exits other than 0 or 1", () => {
-    // A git first on PATH exits 128 for check-ignore, else runs the real git.
+  it.each([
+    ["exits 128", "exit 128", "git check-ignore failed (exit 128)"],
+    ["is killed by a signal", "kill -9 $$", "git check-ignore failed"],
+  ])("fails closed when check-ignore %s", (_, end, message) => {
+    // A git first on PATH ends check-ignore with `end`, else runs the real git.
     const real = (process.env["PATH"] ?? "")
       .split(delimiter)
       .map((dir) => join(dir, "git"))
@@ -532,14 +535,19 @@ describe("git failures (SF-3)", { timeout: 30_000 }, () => {
     mkdirSync(bin);
     writeFileSync(
       join(bin, "git"),
-      `#!/bin/sh\nfor a; do [ "$a" = check-ignore ] && exit 128; done\nexec '${real ?? "git"}' "$@"\n`,
+      `#!/bin/sh\nfor a; do [ "$a" = check-ignore ] && ${end}; done\nexec '${real ?? "git"}' "$@"\n`,
       { mode: 0o755 },
     );
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env["PATH"] ?? ""}`);
     write("d/.gitignore", "*\n");
-    expect(checked).toThrow(
-      new FloorError("git check-ignore failed (exit 128)"),
-    );
+    let error: unknown;
+    try {
+      checked();
+    } catch (thrown) {
+      error = thrown;
+    }
+    expect(error).toBeInstanceOf(FloorError);
+    expect((error as Error).message).toBe(message);
   });
 });
 
