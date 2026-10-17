@@ -1,0 +1,252 @@
+import { rmSync, writeFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import { MODEL_PRICES, preflightCostMicroUsd } from "../../src/proxy/ledger.ts";
+import {
+  FAKE_KEY,
+  MODEL,
+  TOKEN,
+  USD,
+  closedPortUrl,
+  message,
+  usageReply,
+  useHarness,
+  type Reply,
+} from "./support/fake-upstream.ts";
+
+const h = useHarness();
+
+describe("proxy forwarding", () => {
+  it("adds the key and version and strips client credentials", async () => {
+    const proxy = await h.start();
+    const reply = await h.call(proxy, {
+      headers: {
+        cookie: "session=1",
+        "x-api-key": "client-supplied-key",
+        "anthropic-version": "1999-01-01",
+        "x-forwarded-for": "9.9.9.9",
+      },
+    });
+    expect(reply.status).toBe(200);
+    expect(h.seen).toHaveLength(1);
+    const headers = h.seen[0]?.headers ?? {};
+    expect(headers["x-api-key"]).toBe(FAKE_KEY);
+    expect(headers["anthropic-version"]).toBe("2023-06-01");
+    expect(headers.authorization).toBeUndefined();
+    expect(headers.cookie).toBeUndefined();
+    expect(headers["x-forwarded-for"]).toBeUndefined();
+    expect(headers.host).toBe(h.upstreamUrl().slice("http://".length));
+    expect(JSON.stringify(headers)).not.toContain(TOKEN);
+    expect(JSON.stringify(headers)).not.toContain("client-supplied-key");
+    expect(reply.headers["set-cookie"]).toBeUndefined();
+    expect(h.seen[0]?.url).toBe("/v1/messages");
+  });
+
+  it("forwards count_tokens without charging", async () => {
+    const proxy = await h.start();
+    const reply = await h.call(proxy, { path: "/v1/messages/count_tokens" });
+    expect(reply.status).toBe(200);
+    expect(h.seen[0]?.url).toBe("/v1/messages/count_tokens");
+    expect(h.reopen().totalMicroUsd()).toBe(0);
+  });
+
+  it("refuses other paths and methods without contacting upstream", async () => {
+    const proxy = await h.start();
+    for (const [method, path] of [
+      ["GET", "/v1/messages"],
+      ["POST", "/v1/models"],
+      ["POST", "/v1/messages/batches"],
+      ["POST", "/v1/messages/../models"],
+      ["POST", "/v1/messages?x=1"],
+      ["DELETE", "/v1/messages"],
+      ["POST", "/"],
+    ] as const) {
+      const reply = await h.call(proxy, { method, path });
+      expect([404, 405], `${method} ${path}`).toContain(reply.status);
+    }
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("requires the per-run bearer token", async () => {
+    const proxy = await h.start();
+    for (const auth of [
+      null,
+      "Bearer wrong",
+      `Bearer ${TOKEN}x`,
+      TOKEN,
+      "Basic abc",
+    ]) {
+      const reply = await h.call(proxy, { auth });
+      expect(reply.status).toBe(401);
+    }
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("listens on 127.0.0.1 only", async () => {
+    const proxy = await h.start();
+    expect(proxy.host).toBe("127.0.0.1");
+    expect(proxy.address).toBe("127.0.0.1");
+    expect(proxy.port).toBeGreaterThan(0);
+    expect(proxy.url).toBe(`http://127.0.0.1:${String(proxy.port)}`);
+  });
+
+  it("refuses an oversize body and a streaming request", async () => {
+    const proxy = await h.start({ maxBodyBytes: 200 });
+    const big = await h.call(proxy, { body: message().padEnd(400, " ") });
+    expect(big.status).toBe(413);
+    const stream = await h.start();
+    const s = await h.call(stream, {
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 5,
+        stream: true,
+        messages: [],
+      }),
+    });
+    expect(s.status).toBe(400);
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("does not follow an upstream redirect", async () => {
+    h.reply = {
+      status: 302,
+      headers: { location: "http://127.0.0.1:1/" },
+      body: "",
+    };
+    const proxy = await h.start();
+    const reply = await h.call(proxy);
+    expect(reply.status).toBe(502);
+    expect(reply.headers.location).toBeUndefined();
+    expect(h.seen).toHaveLength(1);
+  });
+
+  it("rejects an unpriced model locally", async () => {
+    const proxy = await h.start();
+    const reply = await h.call(proxy, {
+      body: JSON.stringify({
+        model: "other-model",
+        max_tokens: 5,
+        messages: [],
+      }),
+    });
+    expect(reply.status).toBe(400);
+    expect(h.seen).toHaveLength(0);
+  });
+});
+
+describe("spend caps through the proxy", () => {
+  it("charges actual usage after the call", async () => {
+    const proxy = await h.start();
+    await h.call(proxy);
+    const price = MODEL_PRICES[MODEL];
+    const expected =
+      100 * (price?.inputMicroUsdPerToken ?? 0) +
+      50 * (price?.outputMicroUsdPerToken ?? 0);
+    expect(h.reopen().totalMicroUsd()).toBe(expected);
+    expect(h.reopen().runMicroUsd("run-1")).toBe(expected);
+    expect(h.logs).toHaveLength(1);
+    expect(h.logs[0]).toMatchObject({
+      runId: "run-1",
+      model: MODEL,
+      status: 200,
+      cost: expected,
+    });
+  });
+
+  it("rejects pre-flight when max_tokens could pass the run cap", async () => {
+    const proxy = await h.start({ runCapUsd: 0.5 });
+    expect(preflightCostMicroUsd(MODEL, 100_000, 100)).toBeGreaterThan(
+      0.5 * USD,
+    );
+    const reply = await h.call(proxy, { body: message(100_000) });
+    expect(reply.status).toBe(402);
+    expect(JSON.parse(reply.body)).toMatchObject({
+      type: "error",
+      error: { type: "helmwright_spend_cap" },
+    });
+    expect(h.seen).toHaveLength(0);
+  });
+
+  it("keeps the run cap separate from the total cap", async () => {
+    const a = await h.start({
+      runId: "run-a",
+      runCapUsd: 0.01,
+      totalCapUsd: 25,
+    });
+    expect((await h.call(a, { body: message(5000) })).status).toBe(402);
+    const b = await h.start({ runId: "run-b", runCapUsd: 2, totalCapUsd: 25 });
+    expect((await h.call(b)).status).toBe(200);
+    const c = await h.start({
+      runId: "run-c",
+      runCapUsd: 2,
+      totalCapUsd: 0.001,
+    });
+    expect((await h.call(c, { body: message(5000) })).status).toBe(402);
+  });
+
+  it("persists across two proxy instances and a spent total blocks the next run", async () => {
+    const first = await h.start({ runId: "run-1", totalCapUsd: 0.02 });
+    expect((await h.call(first, { body: message(100) })).status).toBe(200);
+    h.reply = usageReply(0, 400);
+    expect((await h.call(first, { body: message(400) })).status).toBe(200);
+    await first.close();
+    const second = await h.start({ runId: "run-2", totalCapUsd: 0.02 });
+    const before = h.seen.length;
+    expect((await h.call(second, { body: message(400) })).status).toBe(402);
+    expect(h.seen).toHaveLength(before);
+  });
+
+  it("charges nothing for an upstream error", async () => {
+    h.reply = { status: 500, headers: {}, body: "{}" };
+    const proxy = await h.start();
+    expect((await h.call(proxy)).status).toBe(500);
+    expect(h.reopen().totalMicroUsd()).toBe(0);
+  });
+});
+
+describe("secrecy", () => {
+  it("never writes the key, the token or an auth value anywhere", async () => {
+    const written: string[] = [];
+    const capture = (chunk: unknown) => {
+      written.push(String(chunk));
+      return true;
+    };
+    vi.spyOn(process.stdout, "write").mockImplementation(capture);
+    vi.spyOn(process.stderr, "write").mockImplementation(capture);
+    for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+        written.push(args.map(String).join(" "));
+      });
+    }
+    const replies: Reply[] = [];
+    const proxy = await h.start();
+    replies.push(
+      await h.call(proxy, {
+        headers: { "x-api-key": "client-supplied-key" },
+      }),
+      await h.call(proxy, { auth: "Bearer wrong" }),
+      await h.call(proxy, { path: "/nope" }),
+      await h.call(proxy, { body: "not json" }),
+    );
+    // The 500 path: a corrupt ledger file makes the handler throw.
+    writeFileSync(h.ledgerPath(), "{corrupt");
+    replies.push(await h.call(proxy));
+    expect(replies.at(-1)?.status).toBe(500);
+    rmSync(h.ledgerPath());
+    // The unreachable path: nothing listens on the upstream port.
+    const dead = await h.start({ upstreamBaseUrl: await closedPortUrl() });
+    replies.push(await h.call(dead));
+    expect(replies.at(-1)?.status).toBe(502);
+    vi.restoreAllMocks();
+    const all =
+      h.everything() +
+      written.join("\n") +
+      replies.map((r) => r.body + JSON.stringify(r.headers)).join("\n");
+    expect(written.join("")).not.toMatch(/sk-ant|Bearer/u);
+    expect(all).not.toContain(FAKE_KEY);
+    expect(all).not.toContain(TOKEN);
+    expect(all).not.toContain("client-supplied-key");
+    expect(all.toLowerCase()).not.toContain("x-api-key");
+    expect(all.toLowerCase()).not.toContain("authorization");
+    expect(JSON.stringify(h.logs)).not.toContain("wrong");
+  });
+});
