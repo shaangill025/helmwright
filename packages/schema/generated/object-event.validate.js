@@ -471,6 +471,33 @@ const schema31 = {
           maxItems: 1024,
           items: { $ref: "#/$defs/artifactId" },
         },
+        claims: {
+          description:
+            "The Brief's claims, each with an evidence tier (Q70-1). Optional here so a log written before them still validates; the floor writer and replay require them under `materiality-rubric-2`. The tier rules (evidence that resolves in the log, a claim reference, no evidence) are checked by the writer and on every read.",
+          type: "array",
+          maxItems: 5,
+          items: { $ref: "#/$defs/briefClaim" },
+        },
+      },
+    },
+    briefClaim: {
+      title: "BriefClaim",
+      description:
+        "One claim of a Brief with its evidence tier (Q70-1). Direct and Supported cite evidence IDs; Inferred cites earlier claims as `claim:<index>`; Speculative and Unknown cite nothing.",
+      $comment: "Copy of objects.schema.json's `briefClaim`.",
+      type: "object",
+      additionalProperties: false,
+      required: ["text", "tier", "evidence"],
+      properties: {
+        text: { $ref: "#/$defs/line" },
+        tier: {
+          enum: ["Direct", "Supported", "Inferred", "Speculative", "Unknown"],
+        },
+        evidence: {
+          type: "array",
+          maxItems: 8,
+          items: { type: "string", pattern: "^[!-~]{1,200}$" },
+        },
       },
     },
     option: {
@@ -2226,6 +2253,13 @@ const schema57 = {
       maxItems: 1024,
       items: { $ref: "#/$defs/artifactId" },
     },
+    claims: {
+      description:
+        "The Brief's claims, each with an evidence tier (Q70-1). Optional here so a log written before them still validates; the floor writer and replay require them under `materiality-rubric-2`. The tier rules (evidence that resolves in the log, a claim reference, no evidence) are checked by the writer and on every read.",
+      type: "array",
+      maxItems: 5,
+      items: { $ref: "#/$defs/briefClaim" },
+    },
   },
 };
 const schema58 = {
@@ -2575,6 +2609,303 @@ function validate32(
   return errors === 0;
 }
 validate32.evaluated = {
+  props: true,
+  dynamicProps: false,
+  dynamicItems: false,
+};
+const schema69 = {
+  title: "BriefClaim",
+  description:
+    "One claim of a Brief with its evidence tier (Q70-1). Direct and Supported cite evidence IDs; Inferred cites earlier claims as `claim:<index>`; Speculative and Unknown cite nothing.",
+  $comment: "Copy of objects.schema.json's `briefClaim`.",
+  type: "object",
+  additionalProperties: false,
+  required: ["text", "tier", "evidence"],
+  properties: {
+    text: { $ref: "#/$defs/line" },
+    tier: {
+      enum: ["Direct", "Supported", "Inferred", "Speculative", "Unknown"],
+    },
+    evidence: {
+      type: "array",
+      maxItems: 8,
+      items: { type: "string", pattern: "^[!-~]{1,200}$" },
+    },
+  },
+};
+const pattern40 = new RegExp("^[!-~]{1,200}$", "u");
+function validate34(
+  data,
+  {
+    instancePath = "",
+    parentData,
+    parentDataProperty,
+    rootData = data,
+    dynamicAnchors = {},
+  } = {},
+) {
+  let vErrors = null;
+  let errors = 0;
+  const evaluated0 = validate34.evaluated;
+  if (evaluated0.dynamicProps) {
+    evaluated0.props = undefined;
+  }
+  if (evaluated0.dynamicItems) {
+    evaluated0.items = undefined;
+  }
+  if (data && typeof data == "object" && !Array.isArray(data)) {
+    if (data.text === undefined) {
+      const err0 = {
+        instancePath,
+        schemaPath: "#/required",
+        keyword: "required",
+        params: { missingProperty: "text" },
+        message: "must have required property '" + "text" + "'",
+      };
+      if (vErrors === null) {
+        vErrors = [err0];
+      } else {
+        vErrors.push(err0);
+      }
+      errors++;
+    }
+    if (data.tier === undefined) {
+      const err1 = {
+        instancePath,
+        schemaPath: "#/required",
+        keyword: "required",
+        params: { missingProperty: "tier" },
+        message: "must have required property '" + "tier" + "'",
+      };
+      if (vErrors === null) {
+        vErrors = [err1];
+      } else {
+        vErrors.push(err1);
+      }
+      errors++;
+    }
+    if (data.evidence === undefined) {
+      const err2 = {
+        instancePath,
+        schemaPath: "#/required",
+        keyword: "required",
+        params: { missingProperty: "evidence" },
+        message: "must have required property '" + "evidence" + "'",
+      };
+      if (vErrors === null) {
+        vErrors = [err2];
+      } else {
+        vErrors.push(err2);
+      }
+      errors++;
+    }
+    for (const key0 in data) {
+      if (!(key0 === "text" || key0 === "tier" || key0 === "evidence")) {
+        const err3 = {
+          instancePath,
+          schemaPath: "#/additionalProperties",
+          keyword: "additionalProperties",
+          params: { additionalProperty: key0 },
+          message: "must NOT have additional properties",
+        };
+        if (vErrors === null) {
+          vErrors = [err3];
+        } else {
+          vErrors.push(err3);
+        }
+        errors++;
+      }
+    }
+    if (data.text !== undefined) {
+      let data0 = data.text;
+      const _errs7 = errors;
+      const _errs8 = errors;
+      if (typeof data0 === "string") {
+        if (!pattern6.test(data0)) {
+          const err4 = {};
+          if (vErrors === null) {
+            vErrors = [err4];
+          } else {
+            vErrors.push(err4);
+          }
+          errors++;
+        }
+      }
+      var valid2 = _errs8 === errors;
+      if (valid2) {
+        const err5 = {
+          instancePath: instancePath + "/text",
+          schemaPath: "#/$defs/line/not",
+          keyword: "not",
+          params: {},
+          message: "must NOT be valid",
+        };
+        if (vErrors === null) {
+          vErrors = [err5];
+        } else {
+          vErrors.push(err5);
+        }
+        errors++;
+      } else {
+        errors = _errs7;
+        if (vErrors !== null) {
+          if (_errs7) {
+            vErrors.length = _errs7;
+          } else {
+            vErrors = null;
+          }
+        }
+      }
+      if (typeof data0 === "string") {
+        if (!pattern27.test(data0)) {
+          const err6 = {
+            instancePath: instancePath + "/text",
+            schemaPath: "#/$defs/line/pattern",
+            keyword: "pattern",
+            params: {
+              pattern:
+                "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,200}$",
+            },
+            message:
+              'must match pattern "' +
+              "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,200}$" +
+              '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err6];
+          } else {
+            vErrors.push(err6);
+          }
+          errors++;
+        }
+      } else {
+        const err7 = {
+          instancePath: instancePath + "/text",
+          schemaPath: "#/$defs/line/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err7];
+        } else {
+          vErrors.push(err7);
+        }
+        errors++;
+      }
+    }
+    if (data.tier !== undefined) {
+      let data1 = data.tier;
+      if (!(
+        data1 === "Direct" ||
+        data1 === "Supported" ||
+        data1 === "Inferred" ||
+        data1 === "Speculative" ||
+        data1 === "Unknown"
+      )) {
+        const err8 = {
+          instancePath: instancePath + "/tier",
+          schemaPath: "#/properties/tier/enum",
+          keyword: "enum",
+          params: { allowedValues: schema69.properties.tier.enum },
+          message: "must be equal to one of the allowed values",
+        };
+        if (vErrors === null) {
+          vErrors = [err8];
+        } else {
+          vErrors.push(err8);
+        }
+        errors++;
+      }
+    }
+    if (data.evidence !== undefined) {
+      let data2 = data.evidence;
+      if (Array.isArray(data2)) {
+        if (data2.length > 8) {
+          const err9 = {
+            instancePath: instancePath + "/evidence",
+            schemaPath: "#/properties/evidence/maxItems",
+            keyword: "maxItems",
+            params: { limit: 8 },
+            message: "must NOT have more than 8 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err9];
+          } else {
+            vErrors.push(err9);
+          }
+          errors++;
+        }
+        const len0 = data2.length;
+        for (let i0 = 0; i0 < len0; i0++) {
+          let data3 = data2[i0];
+          if (typeof data3 === "string") {
+            if (!pattern40.test(data3)) {
+              const err10 = {
+                instancePath: instancePath + "/evidence/" + i0,
+                schemaPath: "#/properties/evidence/items/pattern",
+                keyword: "pattern",
+                params: { pattern: "^[!-~]{1,200}$" },
+                message: 'must match pattern "' + "^[!-~]{1,200}$" + '"',
+              };
+              if (vErrors === null) {
+                vErrors = [err10];
+              } else {
+                vErrors.push(err10);
+              }
+              errors++;
+            }
+          } else {
+            const err11 = {
+              instancePath: instancePath + "/evidence/" + i0,
+              schemaPath: "#/properties/evidence/items/type",
+              keyword: "type",
+              params: { type: "string" },
+              message: "must be string",
+            };
+            if (vErrors === null) {
+              vErrors = [err11];
+            } else {
+              vErrors.push(err11);
+            }
+            errors++;
+          }
+        }
+      } else {
+        const err12 = {
+          instancePath: instancePath + "/evidence",
+          schemaPath: "#/properties/evidence/type",
+          keyword: "type",
+          params: { type: "array" },
+          message: "must be array",
+        };
+        if (vErrors === null) {
+          vErrors = [err12];
+        } else {
+          vErrors.push(err12);
+        }
+        errors++;
+      }
+    }
+  } else {
+    const err13 = {
+      instancePath,
+      schemaPath: "#/type",
+      keyword: "type",
+      params: { type: "object" },
+      message: "must be object",
+    };
+    if (vErrors === null) {
+      vErrors = [err13];
+    } else {
+      vErrors.push(err13);
+    }
+    errors++;
+  }
+  validate34.errors = vErrors;
+  return errors === 0;
+}
+validate34.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
@@ -3412,8 +3743,60 @@ function validate31(
         errors++;
       }
     }
+    if (data.claims !== undefined) {
+      let data14 = data.claims;
+      if (Array.isArray(data14)) {
+        if (data14.length > 5) {
+          const err45 = {
+            instancePath: instancePath + "/claims",
+            schemaPath: "#/properties/claims/maxItems",
+            keyword: "maxItems",
+            params: { limit: 5 },
+            message: "must NOT have more than 5 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err45];
+          } else {
+            vErrors.push(err45);
+          }
+          errors++;
+        }
+        const len3 = data14.length;
+        for (let i3 = 0; i3 < len3; i3++) {
+          if (
+            !validate34(data14[i3], {
+              instancePath: instancePath + "/claims/" + i3,
+              parentData: data14,
+              parentDataProperty: i3,
+              rootData,
+              dynamicAnchors,
+            })
+          ) {
+            vErrors =
+              vErrors === null
+                ? validate34.errors
+                : vErrors.concat(validate34.errors);
+            errors = vErrors.length;
+          }
+        }
+      } else {
+        const err46 = {
+          instancePath: instancePath + "/claims",
+          schemaPath: "#/properties/claims/type",
+          keyword: "type",
+          params: { type: "array" },
+          message: "must be array",
+        };
+        if (vErrors === null) {
+          vErrors = [err46];
+        } else {
+          vErrors.push(err46);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err45 = {
+    const err47 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -3421,9 +3804,9 @@ function validate31(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err45];
+      vErrors = [err47];
     } else {
-      vErrors.push(err45);
+      vErrors.push(err47);
     }
     errors++;
   }
@@ -3849,7 +4232,7 @@ validate28.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema69 = {
+const schema71 = {
   title: "DecisionOpenedRuling",
   description:
     "The harness recorded a Ruling (RulingRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`, `footprint` and `outcomes` start empty and `status` is `resolved`. A Ruling has no brief and no owner-written field; with source `intake` its class is `null` (checked by the writer).",
@@ -3893,7 +4276,7 @@ const schema69 = {
     ruling: { $ref: "#/$defs/rulingBody" },
   },
 };
-const schema74 = {
+const schema76 = {
   title: "Ruling",
   description:
     "What the harness decided, why, the cost if wrong and the version of the rubric that routed the call (03 Delegated authority, Q53).",
@@ -3920,18 +4303,18 @@ const schema74 = {
     rubricVersion: { $ref: "#/$defs/rubricVersion" },
   },
 };
-const schema78 = {
+const schema80 = {
   description:
     "The version of the rubric that routed the call, such as `intake-rubric-1` or `materiality-rubric-1`.",
   $comment: "Copy of objects.schema.json's `rubricVersion`.",
   type: "string",
   pattern: "^(?:intake|materiality)-rubric-[1-9][0-9]{0,5}$",
 };
-const pattern47 = new RegExp(
+const pattern50 = new RegExp(
   "^(?:intake|materiality)-rubric-[1-9][0-9]{0,5}$",
   "u",
 );
-function validate38(
+function validate40(
   data,
   {
     instancePath = "",
@@ -3943,7 +4326,7 @@ function validate38(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate38.evaluated;
+  const evaluated0 = validate40.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -4270,7 +4653,7 @@ function validate38(
     if (data.rubricVersion !== undefined) {
       let data3 = data.rubricVersion;
       if (typeof data3 === "string") {
-        if (!pattern47.test(data3)) {
+        if (!pattern50.test(data3)) {
           const err17 = {
             instancePath: instancePath + "/rubricVersion",
             schemaPath: "#/$defs/rubricVersion/pattern",
@@ -4321,15 +4704,15 @@ function validate38(
     }
     errors++;
   }
-  validate38.errors = vErrors;
+  validate40.errors = vErrors;
   return errors === 0;
 }
-validate38.evaluated = {
+validate40.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
 };
-function validate36(
+function validate38(
   data,
   {
     instancePath = "",
@@ -4341,7 +4724,7 @@ function validate36(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate36.evaluated;
+  const evaluated0 = validate38.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -4485,7 +4868,7 @@ function validate36(
       errors++;
     }
     for (const key0 in data) {
-      if (!func1.call(schema69.properties, key0)) {
+      if (!func1.call(schema71.properties, key0)) {
         const err9 = {
           instancePath,
           schemaPath: "#/additionalProperties",
@@ -4751,7 +5134,7 @@ function validate36(
           instancePath: instancePath + "/source",
           schemaPath: "#/properties/source/enum",
           keyword: "enum",
-          params: { allowedValues: schema69.properties.source.enum },
+          params: { allowedValues: schema71.properties.source.enum },
           message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {
@@ -4764,7 +5147,7 @@ function validate36(
     }
     if (data.ruling !== undefined) {
       if (
-        !validate38(data.ruling, {
+        !validate40(data.ruling, {
           instancePath: instancePath + "/ruling",
           parentData: data,
           parentDataProperty: "ruling",
@@ -4774,8 +5157,8 @@ function validate36(
       ) {
         vErrors =
           vErrors === null
-            ? validate38.errors
-            : vErrors.concat(validate38.errors);
+            ? validate40.errors
+            : vErrors.concat(validate40.errors);
         errors = vErrors.length;
       }
     }
@@ -4794,10 +5177,10 @@ function validate36(
     }
     errors++;
   }
-  validate36.errors = vErrors;
+  validate38.errors = vErrors;
   return errors === 0;
 }
-validate36.evaluated = {
+validate38.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
@@ -4846,7 +5229,7 @@ function validate27(
   }
   const _errs2 = errors;
   if (
-    !validate36(data, {
+    !validate38(data, {
       instancePath,
       parentData,
       parentDataProperty,
@@ -4855,7 +5238,7 @@ function validate27(
     })
   ) {
     vErrors =
-      vErrors === null ? validate36.errors : vErrors.concat(validate36.errors);
+      vErrors === null ? validate38.errors : vErrors.concat(validate38.errors);
     errors = vErrors.length;
   }
   var _valid0 = _errs2 === errors;
@@ -4900,7 +5283,7 @@ function validate27(
   return errors === 0;
 }
 validate27.evaluated = { dynamicProps: true, dynamicItems: false };
-const schema79 = {
+const schema81 = {
   title: "DecisionFootprintRecorded",
   description:
     "The harness recorded the footprint of a decision when it closed (Q47); it sets the record's `footprint` once (checked by the writer).",
@@ -4920,7 +5303,7 @@ const schema79 = {
     },
   },
 };
-function validate42(
+function validate44(
   data,
   {
     instancePath = "",
@@ -4932,7 +5315,7 @@ function validate42(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate42.evaluated;
+  const evaluated0 = validate44.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -5164,15 +5547,15 @@ function validate42(
     }
     errors++;
   }
-  validate42.errors = vErrors;
+  validate44.errors = vErrors;
   return errors === 0;
 }
-validate42.evaluated = {
+validate44.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
 };
-const schema82 = {
+const schema84 = {
   title: "DecisionOutcomeSignalled",
   description:
     "The harness found that a later run's diff matched a decision's footprint (Q47); it appends `{kind: \"signal\", signal, runId, artifactIds, at, seq}` to the record's `outcomes`, with the envelope's `at` and `seq`.",
@@ -5204,7 +5587,7 @@ const schema82 = {
     },
   },
 };
-function validate44(
+function validate46(
   data,
   {
     instancePath = "",
@@ -5216,7 +5599,7 @@ function validate44(
 ) {
   let vErrors = null;
   let errors = 0;
-  const evaluated0 = validate44.evaluated;
+  const evaluated0 = validate46.evaluated;
   if (evaluated0.dynamicProps) {
     evaluated0.props = undefined;
   }
@@ -5383,7 +5766,7 @@ function validate44(
           instancePath: instancePath + "/signal",
           schemaPath: "#/properties/signal/enum",
           keyword: "enum",
-          params: { allowedValues: schema82.properties.signal.enum },
+          params: { allowedValues: schema84.properties.signal.enum },
           message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {
@@ -5535,10 +5918,10 @@ function validate44(
     }
     errors++;
   }
-  validate44.errors = vErrors;
+  validate46.errors = vErrors;
   return errors === 0;
 }
-validate44.evaluated = {
+validate46.evaluated = {
   props: true,
   dynamicProps: false,
   dynamicItems: false,
@@ -5692,7 +6075,7 @@ function validate20(
         }
         const _errs6 = errors;
         if (
-          !validate42(data, {
+          !validate44(data, {
             instancePath,
             parentData,
             parentDataProperty,
@@ -5702,8 +6085,8 @@ function validate20(
         ) {
           vErrors =
             vErrors === null
-              ? validate42.errors
-              : vErrors.concat(validate42.errors);
+              ? validate44.errors
+              : vErrors.concat(validate44.errors);
           errors = vErrors.length;
         }
         var _valid0 = _errs6 === errors;
@@ -5720,7 +6103,7 @@ function validate20(
           }
           const _errs7 = errors;
           if (
-            !validate44(data, {
+            !validate46(data, {
               instancePath,
               parentData,
               parentDataProperty,
@@ -5730,8 +6113,8 @@ function validate20(
           ) {
             vErrors =
               vErrors === null
-                ? validate44.errors
-                : vErrors.concat(validate44.errors);
+                ? validate46.errors
+                : vErrors.concat(validate46.errors);
             errors = vErrors.length;
           }
           var _valid0 = _errs7 === errors;

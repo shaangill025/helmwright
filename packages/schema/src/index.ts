@@ -67,6 +67,7 @@ export { validate as validateRotRegister } from "../generated/rot-register.valid
 export type {
   ArtifactRecord,
   ArtifactType,
+  BriefClaim,
   DecisionBrief,
   DecisionClass,
   DecisionConfidence,

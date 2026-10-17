@@ -76,6 +76,10 @@ export type DecisionConfidence = "low" | "medium" | "high";
  */
 export type ConceptSlug = string;
 /**
+ * One line of 1 to 200 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.
+ */
+export type Line = string;
+/**
  * The version of the rubric that routed the call, such as `intake-rubric-1` or `materiality-rubric-1`.
  */
 export type RubricVersion = string;
@@ -222,6 +226,18 @@ export interface DecisionBrief {
    * @maxItems 1024
    */
   proposedFootprint: ArtifactId[];
+  /**
+   * The Brief's claims, each with an evidence tier (Q70-1). Optional here so a log written before them still validates; the floor writer and replay require them under `materiality-rubric-2`. The tier rules (evidence that resolves in the log, a claim reference, no evidence) are checked by the writer and on every read.
+   *
+   * @maxItems 5
+   */
+  claims?:
+    | []
+    | [BriefClaim]
+    | [BriefClaim, BriefClaim]
+    | [BriefClaim, BriefClaim, BriefClaim]
+    | [BriefClaim, BriefClaim, BriefClaim, BriefClaim]
+    | [BriefClaim, BriefClaim, BriefClaim, BriefClaim, BriefClaim];
 }
 /**
  * One option of a brief, whose ID stays the same under the shuffled display order (Q48).
@@ -233,6 +249,26 @@ export interface DecisionOption {
    * The option's trade-offs, as one line of at most 200 code points (Q45).
    */
   tradeoffs: string;
+}
+/**
+ * One claim of a Brief with its evidence tier (Q70-1). Direct and Supported cite evidence IDs; Inferred cites earlier claims as `claim:<index>`; Speculative and Unknown cite nothing.
+ */
+export interface BriefClaim {
+  text: Line;
+  tier: "Direct" | "Supported" | "Inferred" | "Speculative" | "Unknown";
+  /**
+   * @maxItems 8
+   */
+  evidence:
+    | []
+    | [string]
+    | [string, string]
+    | [string, string, string]
+    | [string, string, string, string]
+    | [string, string, string, string, string]
+    | [string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string]
+    | [string, string, string, string, string, string, string, string];
 }
 /**
  * The harness recorded a Ruling (RulingRecord): `createdAt` and `createdSeq` are the envelope's `at` and `seq`, `footprint` and `outcomes` start empty and `status` is `resolved`. A Ruling has no brief and no owner-written field; with source `intake` its class is `null` (checked by the writer).
@@ -268,7 +304,7 @@ export interface DecisionOpenedRuling {
  */
 export interface Ruling {
   /**
-   * What the harness decided, as one line of at most 200 code points.
+   * One line of 1 to 200 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.
    */
   what: string;
   /**
@@ -276,7 +312,7 @@ export interface Ruling {
    */
   why: string;
   /**
-   * The cost if the call is wrong, as one line of at most 200 code points. An intake Ruling's comes from a fixed table keyed by its rubric version.
+   * One line of 1 to 200 code points, not only spaces, without a control character, line break, bidi control or lone surrogate.
    */
   costIfWrong: string;
   rubricVersion: RubricVersion;
