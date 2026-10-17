@@ -362,11 +362,12 @@ const LOCKFILES = ["app/pnpm-lock.yaml"];
 const signalled = (
   signals: readonly FloorSignal[],
   lockfiles: readonly string[] | null = LOCKFILES,
+  rubric = "materiality-rubric-1",
 ): FloorSignalled => ({
   ...{ kind: "floor.signalled", detector: "dependency-1", phase: "final" },
   ...{ baseCommit: BASE, candidateTree: TREE },
   materiality: {
-    rubricVersion: "materiality-rubric-1",
+    rubricVersion: rubric,
     threshold: "runtimeAddOrMajor",
   },
   signals: [...signals],
@@ -377,24 +378,29 @@ const opened = (
   index: number,
   runId = "run-1",
   lockfiles: readonly string[] = LOCKFILES,
+  rubric = "materiality-rubric-1",
 ) =>
   floorDecision({
     ...{ runId, taskId: "task-1", repoId: "/r/.git", index, signal },
     ...{ threshold: "runtimeAddOrMajor", lockfiles },
+    rubricVersion: rubric,
     ...{ seed: SEED, key: new Uint8Array(32).fill(7) },
   });
 
 /** A run as A-dep logs it: Task, Run, start, floor.signalled (seq 3), its decisions, floor.checked, end. */
 function signalledRun(
   signals: readonly FloorSignal[] = [runtimeAdd, devAdd],
+  rubric = "materiality-rubric-1",
 ): Event[] {
   const n = signals.length;
   return [
     event(0, "task.created", task),
     event(1, "run.recorded", run),
     event(2, "run.started", started),
-    event(3, "floor.signalled", signalled(signals)),
-    ...signals.map((s, i) => event(4 + i, "decision.opened", opened(s, i))),
+    event(3, "floor.signalled", signalled(signals, LOCKFILES, rubric)),
+    ...signals.map((s, i) =>
+      event(4 + i, "decision.opened", opened(s, i, "run-1", LOCKFILES, rubric)),
+    ),
     event(4 + n, "floor.checked", floorChecked(BASE, TREE, [])),
     event(5 + n, "run.terminated", {}),
   ];
@@ -756,6 +762,58 @@ const reclass = (events: readonly Event[], log: readonly Event[] = events) =>
     log.filter((e) => RECLASSIFY_OBJECTS.includes(e.type)),
   );
 
+describe("objectFaults: floor Brief claims by rubric version (Q70-1)", () => {
+  const R1 = "materiality-rubric-1";
+  const R2 = "materiality-rubric-2";
+  const claimsOf = (e: Event) => briefOf(e)["claims"] as { tier: string }[];
+  const withoutClaims = (e: Event) => {
+    const rest = Object.fromEntries(
+      Object.entries(briefOf(e)).filter(([key]) => key !== "claims"),
+    );
+    return withPayload(e, { ...e.payload, brief: rest });
+  };
+
+  it("passes a rubric-2 run and a rubric-1 run (an old log) alike", () => {
+    expect(floor(signalledRun([runtimeAdd, devAdd], R2))).toEqual([]);
+    expect(floor(signalledRun([runtimeAdd, devAdd], R1))).toEqual([]);
+    expect(floor(signalledRun([], R2))).toEqual([]);
+  });
+
+  it("recomputes the claims: a rubric-2 Brief without them is not its signal's", () => {
+    const events = edit(
+      signalledRun([runtimeAdd, devAdd], R2),
+      4,
+      withoutClaims,
+    );
+    expect(floor(events)).toEqual([NOT_ITS]);
+  });
+
+  it("faults a rubric-2 Brief whose claim 0 tier changed", () => {
+    const events = edit(signalledRun([runtimeAdd, devAdd], R2), 4, (e) =>
+      withBrief(e, {
+        claims: claimsOf(e).map((c, i) =>
+          i === 0 ? { ...c, tier: "Supported" } : c,
+        ),
+      }),
+    );
+    expect(floor(events)).toEqual([NOT_ITS]);
+  });
+
+  it("faults a rubric-1 floor.signalled whose Brief has claims added", () => {
+    const withClaims = signalledRun([runtimeAdd, devAdd], R2);
+    const claims = claimsOf(withClaims[4] as Event);
+    const events = edit(signalledRun(), 4, (e) => withBrief(e, { claims }));
+    expect(floor(events)).toEqual([NOT_ITS]);
+  });
+
+  it("faults a rubric-2 floor.signalled over a rubric-1 Brief", () => {
+    const events = edit(signalledRun([runtimeAdd, devAdd], R2), 4, () =>
+      event(4, "decision.opened", opened(runtimeAdd, 0)),
+    );
+    expect(floor(events)).toEqual([NOT_ITS]);
+  });
+});
+
 describe("objectFaults: intake reclassification (A-dep-3)", () => {
   it("passes a chore reclassified by its final floor signals", () => {
     expect(reclass(choreRun())).toEqual([]);
@@ -933,7 +991,7 @@ describe("objectFaults: early floor signals (A-dep-4)", () => {
       (p) => ({
         ...p,
         materiality: {
-          rubricVersion: "materiality-rubric-2",
+          rubricVersion: "materiality-rubric-9",
           threshold: "runtimeAddOrMajor",
         },
       }),

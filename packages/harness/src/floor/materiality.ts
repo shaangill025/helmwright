@@ -23,7 +23,12 @@ import { FloorError } from "./events.ts";
  * Ruling and every Brief field but the seed and the commitment, so any change of rule or
  * wording is a new rubric version (OQ-AD-4).
  */
-export const MATERIALITY_RUBRIC = "materiality-rubric-1";
+export const MATERIALITY_RUBRIC = "materiality-rubric-2";
+/** Every version replay recomputes by: rubric-1 wording is pinned; rubric-2 adds the Brief claims (Q70-1). */
+export const MATERIALITY_RUBRICS: readonly string[] = deepFreeze([
+  "materiality-rubric-1",
+  MATERIALITY_RUBRIC,
+]);
 
 /** The `decisions.briefThreshold` values (OQ-AD-5); the config admits only the first until a fixture exists. */
 export type BriefThreshold = FloorSignalled["materiality"]["threshold"];
@@ -169,6 +174,33 @@ function template(signal: FloorDependencyAdded | FloorDependencyMajorBump): {
   };
 }
 
+/**
+ * The claims of a runtime add or a major bump under materiality-rubric-2 (Q70-1): a fixed,
+ * pure table. A Direct claim cites the signal ID (the log holds it from `floor.signalled`);
+ * the Unknown claim says what the harness did not check; the Inferred claim reasons from
+ * the Direct one (`claim:0`) and restates the Brief's cost if wrong.
+ */
+function briefClaims(
+  signal: FloorDependencyAdded | FloorDependencyMajorBump,
+  fixed: { readonly costIfWrong: string },
+): NonNullable<DecisionBrief["claims"]> {
+  const path = clip(signal.path, 32);
+  const name = clip(signal.name, 60);
+  const direct =
+    signal.type === "dependency.added"
+      ? `Manifest ${path} adds ${name} ${clip(signal.to, 32)}`
+      : `Manifest ${path} changes ${clip(signal.name, 48)} from ${clip(signal.from, 24)} to ${clip(signal.to, 24)}`;
+  const unchecked =
+    signal.type === "dependency.added"
+      ? UNCERTAINTY
+      : "The harness did not check the new major version's breaking changes or release notes.";
+  return [
+    { text: direct, tier: "Direct", evidence: [signal.id] },
+    { text: unchecked, tier: "Unknown", evidence: [] },
+    { text: fixed.costIfWrong, tier: "Inferred", evidence: ["claim:0"] },
+  ];
+}
+
 /** What the Brief of a floor decision needs beyond its signal. */
 interface BriefContext {
   readonly decisionId: string;
@@ -189,7 +221,11 @@ interface BriefContext {
  * the rubric version and the signal but the seed and the commitment; a model fills nothing.
  * @throws FloorError for another signal (its template comes with the `everySignal` fixture)
  */
-function floorBrief(signal: FloorSignal, context: BriefContext): DecisionBrief {
+function floorBrief(
+  signal: FloorSignal,
+  context: BriefContext,
+  rubric: string,
+): DecisionBrief {
   if (
     signal.type === "lockfile.only" ||
     (signal.type === "dependency.added" && !signal.runtime)
@@ -224,6 +260,10 @@ function floorBrief(signal: FloorSignal, context: BriefContext): DecisionBrief {
         ...lockfiles.map(file),
       ]),
     ],
+    // Q70-1: rubric-1 Briefs have no claims, so an old log replays unchanged.
+    ...(rubric === MATERIALITY_RUBRIC
+      ? { claims: briefClaims(signal, fixed) }
+      : {}),
   };
 }
 
@@ -232,7 +272,11 @@ function floorBrief(signal: FloorSignal, context: BriefContext): DecisionBrief {
  * threshold and rule, then the signal ID) and the cost if wrong.
  * @throws FloorError for another signal (no Ruling template yet)
  */
-function floorRuling(signal: FloorSignal, threshold: BriefThreshold): Ruling {
+function floorRuling(
+  signal: FloorSignal,
+  threshold: BriefThreshold,
+  rubric: string,
+): Ruling {
   let what: string;
   let rule: string;
   let costIfWrong: string;
@@ -258,14 +302,8 @@ function floorRuling(signal: FloorSignal, threshold: BriefThreshold): Ruling {
     );
   }
   const why =
-    MATERIALITY_RUBRIC +
-    ", threshold " +
-    threshold +
-    ": " +
-    rule +
-    "\nsignal " +
-    signal.id;
-  return { what, why, costIfWrong, rubricVersion: MATERIALITY_RUBRIC };
+    rubric + ", threshold " + threshold + ": " + rule + "\nsignal " + signal.id;
+  return { what, why, costIfWrong, rubricVersion: rubric };
 }
 
 /** One floor decision's inputs: the signal with its ID, and its index in `floor.signalled`. */
@@ -280,6 +318,8 @@ export interface FloorDecisionInput {
   readonly lockfiles: readonly string[];
   readonly seed: string;
   readonly key: Uint8Array;
+  /** The rubric version to build by; replay passes the recorded one. Default: the current. */
+  readonly rubricVersion?: string;
 }
 
 /**
@@ -289,6 +329,10 @@ export interface FloorDecisionInput {
  */
 export function floorDecision(input: FloorDecisionInput): DecisionOpened {
   const { runId, taskId, signal, threshold } = input;
+  const rubric = input.rubricVersion ?? MATERIALITY_RUBRIC;
+  if (!MATERIALITY_RUBRICS.includes(rubric)) {
+    throw new FloorError("decision.opened cannot be logged: unknown rubric");
+  }
   const id = floorDecisionId(runId, input.index);
   const common = {
     id,
@@ -303,12 +347,12 @@ export function floorDecision(input: FloorDecisionInput): DecisionOpened {
       ? decisionOpened({
           ...common,
           authority: "owner",
-          brief: floorBrief(signal, { ...input, decisionId: id }),
+          brief: floorBrief(signal, { ...input, decisionId: id }, rubric),
         })
       : decisionOpened({
           ...common,
           authority: "harness",
-          ruling: floorRuling(signal, threshold),
+          ruling: floorRuling(signal, threshold, rubric),
         });
   } catch (error) {
     if (!(error instanceof ObjectEventError)) throw error;

@@ -8,7 +8,7 @@ import {
 import { isLockfilePath } from "../floor/dependencies.ts";
 import { FloorError } from "../floor/events.ts";
 import {
-  MATERIALITY_RUBRIC,
+  MATERIALITY_RUBRICS,
   floorDecision,
   type FloorDecisionInput,
 } from "../floor/materiality.ts";
@@ -273,7 +273,7 @@ function floorDecisionFaults(
     if (checked !== undefined && tree !== checked.payload["candidateTree"]) {
       at("candidate tree is not floor.checked's");
     }
-    if (materiality.rubricVersion !== MATERIALITY_RUBRIC) {
+    if (!MATERIALITY_RUBRICS.includes(materiality.rubricVersion)) {
       at("rubric version is not known");
     }
     if (signals.some((s, i) => s.id !== `${signalled.eventId}:${String(i)}`)) {
@@ -297,10 +297,13 @@ function floorDecisionFaults(
         continue;
       }
       matched.add(seq);
+      // An unknown rubric cannot be recomputed; its one fault stands for the decisions.
+      if (!MATERIALITY_RUBRICS.includes(materiality.rubricVersion)) continue;
       const input = {
         ...{ runId, taskId: String(taskId), index, signal },
         repoId: String(task?.payload["repoId"]),
         threshold: materiality.threshold,
+        rubricVersion: materiality.rubricVersion,
       };
       if (!isFloorDecisionOf(e.payload, input, lockfiles)) {
         fault(seq, "floor decision is not its signal's");
@@ -452,7 +455,7 @@ function earlyFaults(
     if (payload.baseCommit !== started?.payload["baseCommit"]) {
       at("base commit is not run.started's");
     }
-    if (materiality.rubricVersion !== MATERIALITY_RUBRIC) {
+    if (!MATERIALITY_RUBRICS.includes(materiality.rubricVersion)) {
       at("rubric version is not known");
     }
     if (signals.some((s, i) => s.id !== `${e.eventId}:${String(i)}`)) {

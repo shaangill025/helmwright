@@ -604,7 +604,7 @@ describe("detectDependencies", () => {
       baseCommit: "a".repeat(40),
       candidateTree: "b".repeat(40),
       materiality: {
-        rubricVersion: "materiality-rubric-1",
+        rubricVersion: "materiality-rubric-2",
         threshold: "runtimeAddOrMajor",
       },
       signals: signals.map((s, i) => ({ id: "e1:" + String(i), ...s })),

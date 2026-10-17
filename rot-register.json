@@ -358,14 +358,14 @@
   {
     "component": "packages/harness/src/floor/materiality.ts",
     "ring": 0,
-    "assumption": "materiality-rubric-1 is the Q53 table: at runtimeAddOrMajor (the only admitted threshold until a fixture; run.ts reads it from CONFIG_DEFAULTS, so the PR that admits another must route it through loadRunConfig), a runtime add or any major bump (dev or unknown too) opens a Brief and a dev add or lockfile-only change a Ruling; everySignal briefs every signal and runtimeAddOnly only a runtime add, but their dev and lockfile Briefs and bump Ruling have no template yet and fail closed. One decision per signal (OQ-AD-8), class technology, source floor, ID decision-floor-<run uuid>-<index>. Brief and Ruling text is fixed by the rubric version (OQ-AD-4), clipped by code points; no model fills it. The recommendation is the template keep (option a) at low confidence, committed by the nonce HMAC-SHA256(decision ID), a key of 32+ bytes (OQ-AD-3); a fixed recommendation is predictable, which weakens Q48's anti-anchoring until B11's brief step. Review at B11's brief step, the M2 detectors or a threshold fixture.",
+    "assumption": "materiality-rubric-2 is current (Q70-1: each floor Brief gets a fixed claims table: Direct citing the signal, Unknown for what was not checked, Inferred cost citing claim 0); rubric-1 stays pinned with no claims, so old logs replay byte for byte; an unknown version is one replay fault. The Q53 table, same in both: at runtimeAddOrMajor (the only admitted threshold until a fixture; run.ts reads CONFIG_DEFAULTS, so admitting another must route it through loadRunConfig), a runtime add or any major bump opens a Brief and a dev add or lockfile-only change a Ruling; other thresholds' dev and lockfile Briefs have no template and fail closed. One decision per signal (OQ-AD-8), class technology, source floor. Text is fixed by the rubric version (OQ-AD-4); no model fills it. The recommendation is the template keep (a) at low confidence, committed by a nonce HMAC (OQ-AD-3); it is predictable, which weakens Q48 until B11's brief step. Review there or at the M2 detectors.",
     "evidence": [
       "decisions Q53",
       "decisions Q48",
       "packages/harness/test/floor/materiality.test.ts"
     ],
     "added": "2026-10-14",
-    "lastReviewed": "2026-10-14",
+    "lastReviewed": "2026-10-17",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
@@ -481,7 +481,7 @@
   {
     "component": "packages/harness/src/objects/faults.ts",
     "ring": 0,
-    "assumption": "Replay's object relations are read from the events, never the rows, and only for a terminated run (B5-4b): a run has at most one run.recorded, before its run.started, with its taskId, baseCommit and engine and the class of any intake.classified; its Task's text is run.started's title. B5-5: each intake.classified has its intake Ruling at the next seq, as recomputed; each intake.overridden after it names it. A-dep-3: a chore (effective class) whose final floor.signalled has a signal has intake.reclassified and its Ruling just before it, as recomputed; the run has no other intake Ruling. Legacy (OD-B54-3 i), not a fault, only if none precedes it in the log: a run with no run.recorded, intake Ruling or intake.reclassified; so an older build run after a newer one in a state dir faults replay (exit 3): use a new state dir. A-dep: a Brief's footprint is recomputed from floor.signalled's lockfiles, self-attested like signals until SIG; one without them is legacy (format-only) if none with them precedes it.",
+    "assumption": "Replay reads object relations from the events, not the rows, for a terminated run only (B5-4b): at most one run.recorded, before run.started, with its taskId, baseCommit, engine and intake class; the Task's text is run.started's title. B5-5: each intake.classified has its Ruling at the next seq, as recomputed; each intake.overridden names it. A-dep-3: a chore whose final floor.signalled has a signal has intake.reclassified and its Ruling just before it. Legacy (OD-B54-3 i), not a fault, only if none precedes it in the log: a run with no run.recorded, intake Ruling or intake.reclassified; an older build run after a newer one faults replay: use a new state dir. A-dep: a Brief's footprint is recomputed from floor.signalled's lockfiles (self-attested until SIG); without them it is legacy (format-only). Q70-1: floor decisions are recomputed by floor.signalled's rubric version (-1 or -2): a -2 Brief must carry its claims, a -1 Brief none; an unknown version is one fault, its decisions not recomputed.",
     "evidence": [
       "decisions B5-4 owner answers",
       "decisions B5-5 owner answers",
@@ -490,7 +490,7 @@
       "packages/harness/test/e2e/cli.test.ts"
     ],
     "added": "2026-10-09",
-    "lastReviewed": "2026-10-15",
+    "lastReviewed": "2026-10-17",
     "reviewTrigger": ["milestone"]
   },
   {

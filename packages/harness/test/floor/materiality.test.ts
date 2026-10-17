@@ -90,6 +90,7 @@ const input = (
   index: 0,
   signal,
   threshold: "runtimeAddOrMajor",
+  rubricVersion: "materiality-rubric-1",
   lockfiles: [],
   seed,
   key,
@@ -133,7 +134,7 @@ describe("route (materiality-rubric-1, Q53)", () => {
   );
 
   it("names the approved rubric version, which floor.signalled accepts", () => {
-    expect(MATERIALITY_RUBRIC).toBe("materiality-rubric-1");
+    expect(MATERIALITY_RUBRIC).toBe("materiality-rubric-2");
     const event = {
       kind: "floor.signalled",
       detector: "dependency-1",
