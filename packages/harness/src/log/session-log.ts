@@ -6,6 +6,7 @@ import {
   type Event,
   type ObjectRecord,
 } from "@helmwright/schema";
+import type { EvidenceResolver } from "../objects/claims.ts";
 import { checkObjectEvent } from "../objects/events.ts";
 import {
   OBJECTS_SCHEMA,
@@ -91,6 +92,34 @@ const LOSSY_MESSAGE: EventIssue = {
   params: {},
   message: "must be a message that survives a JSON round trip unchanged",
 };
+
+/**
+ * Q70-1: whether an evidence ID is in the log before `seq`, for a Brief of run `runId`:
+ * an event ID or the ID of a `floor.signalled` signal (`<eventId>:<index>`) whose event
+ * is of this run (scope "run") or of another run (scope "otherRun"), or the ID of an
+ * `artifact.recorded` (either scope). Read from the events table, not the projection,
+ * and only below `seq`, so a rebuild and a read resolve as the write did.
+ */
+function resolver(
+  db: DatabaseSync,
+  seq: number,
+  runId: string,
+): EvidenceResolver {
+  return (id, scope) => {
+    const run = scope === "run" ? "run_id = ?" : "run_id <> ?";
+    const found = db
+      .prepare(
+        "SELECT 1 AS ok FROM events WHERE seq < ? AND ((" +
+          run +
+          " AND (event_id = ? OR (type = 'floor.signalled' AND EXISTS (SELECT 1" +
+          " FROM json_each(payload, '$.signals') WHERE json_extract(value, '$.id') = ?))))" +
+          " OR (type = 'artifact.recorded' AND json_extract(payload, '$.id') = ?))" +
+          " LIMIT 1",
+      )
+      .get(seq, runId, id, id, id);
+    return found !== undefined;
+  };
+}
 
 /** B5-2 (OD-3): an event that checkObjectEvent refuses, on append and on every read. */
 const objectIssue = (reason: string): EventIssue => ({
@@ -235,7 +264,7 @@ function migrateV2(db: DatabaseSync, path: string, store: ProjectionStore) {
 /** Applies every event of `db`, read through the checked path, to `store` in seq order. */
 function applyAll(db: DatabaseSync, store: ProjectionStore): void {
   const rows = db.prepare(`SELECT ${COLUMNS} FROM events ORDER BY seq`).all();
-  for (const event of rows.map(toEvent)) {
+  for (const event of rows.map((row) => toEvent(row, db))) {
     const refused = applyEvent(store, event);
     if (refused !== undefined) {
       const seq = String(event.seq);
@@ -396,7 +425,7 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
         ) {
           throw new EventValidationError([LOSSY_MESSAGE]);
         }
-        const refused = checkObjectEvent(e);
+        const refused = checkObjectEvent(e, resolver(db, seq, e.runId));
         if (refused !== undefined) {
           throw new EventValidationError([objectIssue(refused)]);
         }
@@ -412,17 +441,20 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
           e.at,
           payload,
         );
-        const stored = toEvent({
-          seq,
-          schema_version: schemaVersion,
-          event_id: e.eventId,
-          graph_id: e.graphId,
-          run_id: e.runId,
-          node_id: e.nodeId,
-          type: e.type,
-          at: e.at,
-          payload,
-        });
+        const stored = toEvent(
+          {
+            seq,
+            schema_version: schemaVersion,
+            event_id: e.eventId,
+            graph_id: e.graphId,
+            run_id: e.runId,
+            node_id: e.nodeId,
+            type: e.type,
+            at: e.at,
+            payload,
+          },
+          db,
+        );
         // B5-3: the projection changes in the event's transaction, or neither is stored.
         const unapplied = applyEvent(store, stored);
         if (unapplied !== undefined) {
@@ -453,7 +485,7 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
           : runId === undefined
             ? all.all(fromSeq)
             : byRun.all(runId, fromSeq);
-      return rows.map(toEvent);
+      return rows.map((row) => toEvent(row, db));
     },
     object(id) {
       return store.get(id);
@@ -484,7 +516,7 @@ function createLog(db: DatabaseSync, store: ProjectionStore): SessionLog {
  * Rebuilds and re-validates a stored row, with checkObjectEvent, so a raw writer cannot
  * smuggle in a bad event.
  */
-function toEvent(row: Record<string, SQLOutputValue>): Event {
+function toEvent(row: Record<string, SQLOutputValue>, db: DatabaseSync): Event {
   const text = row["payload"];
   const payload: unknown = typeof text === "string" ? JSON.parse(text) : text;
   const candidate: unknown = {
@@ -504,7 +536,10 @@ function toEvent(row: Record<string, SQLOutputValue>): Event {
     );
   if (!validateEvent(candidate)) throw corrupt(validateEvent.errors ?? []);
   // B5-2 (OD-3): a raw-inserted refused event fails every read that includes it.
-  const refused = checkObjectEvent(candidate);
+  const refused = checkObjectEvent(
+    candidate,
+    resolver(db, Number(row["seq"]), candidate.runId),
+  );
   if (refused !== undefined) throw corrupt([objectIssue(refused)]);
   return candidate;
 }
@@ -539,7 +574,7 @@ export function inspectEvents(
     const events = rows.slice(0, limit).map((row) => {
       let refused: string | null = null;
       try {
-        toEvent(row);
+        toEvent(row, db);
       } catch (error) {
         refused = error instanceof Error ? error.message : "unreadable row";
       }

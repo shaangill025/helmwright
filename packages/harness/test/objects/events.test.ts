@@ -331,7 +331,7 @@ describe("SessionLog.append refuses (B5-2, OD-3)", () => {
       seq: 0,
       schemaVersion: 1,
     };
-    expect(checkObjectEvent(event as Event)).toBe(reason);
+    expect(checkObjectEvent(event as Event, () => true)).toBe(reason);
     expectRefused("decision.opened", opened, reason);
   });
 
@@ -472,7 +472,7 @@ describe("object event builders and createdRecord (OD-1, OD-8)", () => {
       seq: 0,
       schemaVersion: 1,
     };
-    expect(checkObjectEvent(event as Event)).toBeUndefined();
+    expect(checkObjectEvent(event as Event, () => true)).toBeUndefined();
   });
 });
 
