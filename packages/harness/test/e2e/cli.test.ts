@@ -435,7 +435,7 @@ function expectWellFormedLog(runId: string): Event[] {
 
 function expectReplayMatches(runId: string, events: readonly Event[]): void {
   const replay = cli("replay", runId, "--state-dir", stateDir);
-  expect(replay.status, replay.stderr).toBe(0);
+  expect(replay.status, replay.stderr + replay.stdout).toBe(0);
   const out = JSON.parse(replay.stdout) as Record<string, unknown>;
   // Replay counts every event of the run, its records (B5-4) too.
   const all = logEvents().filter((e) => e.runId === runId);
@@ -2815,8 +2815,9 @@ describe("sensor floor (e2e, B3-2)", () => {
 });
 
 /** FX: runs `kind`'s task on a fresh copy of the seeded fixture repo (T-12-06). */
-function runFx(kind: FxKind) {
+function runFx(kind: FxKind, prepare?: (fxRepo: string) => void) {
   const fx = materializeFx(join(tmp, "fx"));
+  prepare?.(fx.repo);
   const { title, intake, turns } = fxTask(kind);
   const result = runWith(writeTask(turns, LIMITS, fx.repo, { title, intake }));
   const events = expectWellFormedLog(result.out.runId);
@@ -2854,7 +2855,11 @@ function floorSignalsOf(events: readonly Event[]) {
   const decisions = events.filter(
     (e) => e.type === "decision.opened" && e.payload["source"] === "floor",
   );
-  if (at !== -1) expect(events.slice(at + 1, -2)).toEqual(decisions);
+  // PB-1: a provisional.opened follows its owner decision in the same transaction.
+  const between = events
+    .slice(at + 1, -2)
+    .filter((e) => !e.type.startsWith("provisional."));
+  if (at !== -1) expect(between).toEqual(decisions);
   const signalled = events[at];
   const early = events.filter((e) => isSignalled(e, "early"));
   if (at !== -1) {
@@ -3263,6 +3268,215 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(said).not.toContain("dependency.added");
       expect(run.stderr).not.toContain(PENDING);
       expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+});
+
+const PROVISIONAL = "refs/helmwright/provisional/";
+
+/** PB-1: the refs under refs/helmwright in the host repo, as "<ref> <object>". */
+const helmwrightRefs = (host: string) =>
+  git(
+    ...["-C", host, "for-each-ref", "--format=%(refname) %(objectname)"],
+    "refs/helmwright/",
+  )
+    .trim()
+    .split("\n")
+    .filter((l) => l !== "");
+
+describe("provisional branch (e2e, PB-1)", () => {
+  it(
+    "forks a deterministic commit of the candidate for the pending Brief",
+    { timeout: T },
+    () => {
+      const fx = join(tmp, "fx");
+      const run = runFx("dependency");
+      expect(run.status, run.stderr).toBe(0);
+      const heads = git("-C", fx, "for-each-ref", "refs/heads");
+      const id = String(floorSignalsOf(run.events).decisions[0]?.["id"]);
+      const at = run.events.findIndex((e) => e.type === "provisional.opened");
+      const opened = run.events[at];
+      // After its owner decision, in the floor's transaction, before floor.checked.
+      expect(run.events[at - 1]?.type).toBe("decision.opened");
+      expect(run.events[at - 1]?.payload["id"]).toBe(id);
+      expect(run.events[at + 1]?.type).toBe("floor.checked");
+      expect(opened?.payload).toMatchObject({
+        ...{ kind: "provisional.opened", decisionId: id, class: "technology" },
+        ...{ tree: run.checked["candidateTree"], baseCommit: FX_BASE_COMMIT },
+        ref: PROVISIONAL + id,
+      });
+      // Q48: the log names no recommendation, in a key or a value.
+      const keys = Object.keys(opened?.payload ?? {}).join(" ");
+      expect(keys.toLowerCase()).not.toContain("recommend");
+      const commit = String(opened?.payload["commit"]);
+      expect(git("-C", fx, "rev-parse", PROVISIONAL + id).trim()).toBe(commit);
+      expect(git("-C", fx, "rev-parse", commit + "^{tree}").trim()).toBe(
+        run.checked["candidateTree"],
+      );
+      expect(git("-C", fx, "rev-parse", commit + "^").trim()).toBe(
+        FX_BASE_COMMIT,
+      );
+      expect(helmwrightRefs(fx)).toEqual([PROVISIONAL + id + " " + commit]);
+      expect(git("-C", fx, "for-each-ref", "refs/heads")).toBe(heads);
+      expect(run.stderr).toContain(
+        "helmwright: provisional ref: " + PROVISIONAL + id + "\n",
+      );
+      // Reap removes the worktree and keeps the ref.
+      const reap = cli("reap", "--state-dir", stateDir);
+      expect(reap.status, reap.stderr).toBe(0);
+      expect(git("-C", fx, "rev-parse", PROVISIONAL + id).trim()).toBe(commit);
+      // Replay recomputes the commit from the logged facts.
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "creates no ref for control, lockfile or chore runs",
+    { timeout: T },
+    () => {
+      for (const kind of ["control", "lockfile", "chore"] as const) {
+        const run = runFx(kind);
+        expect(run.status, kind + run.stderr).toBe(0);
+        const forks = run.events.filter((e) => e.type === "provisional.opened");
+        expect(forks, kind).toEqual([]);
+        expect(helmwrightRefs(join(tmp, "fx")), kind).toEqual([]);
+        expect(run.stderr).not.toContain("provisional ref");
+        rmSync(join(tmp, "fx"), { recursive: true, force: true });
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("never forks a rejected candidate", { timeout: T }, () => {
+    seedFloorRepo();
+    const run = runFloor("echo '// eslint-disable-next-line' >> src/a.ts");
+    expect(run.checked["verdict"]).toBe("reject");
+    expect(helmwrightRefs(repo)).toEqual([]);
+  });
+
+  it(
+    "logs provisional.refused at the cap, keeps the floor record, and fails the run",
+    { timeout: T },
+    () => {
+      const taken = Array.from({ length: 10 }, (_, i) => {
+        return PROVISIONAL + "decision-pre-" + String(i);
+      });
+      const run = runFx("dependency", (fx) => {
+        for (const ref of taken)
+          git("-C", fx, "update-ref", ref, FX_BASE_COMMIT);
+      });
+      expect(run.status, run.stderr).toBe(1);
+      expect(run.out.terminal).toEqual({
+        kind: "failed",
+        error: "provisional branch refused: too many open provisional branches",
+      });
+      const id = String(floorSignalsOf(run.events).decisions[0]?.["id"]);
+      const at = run.events.findIndex((e) => e.type === "provisional.refused");
+      expect(run.events[at - 1]?.payload["id"]).toBe(id);
+      expect(run.events[at]?.payload).toEqual({
+        ...{ kind: "provisional.refused", decisionId: id, reason: "cap" },
+      });
+      expect(run.events[at + 1]?.type).toBe("floor.checked");
+      expect(run.checked["verdict"]).toBe("pass");
+      expect(run.events.some((e) => e.type === "provisional.opened")).toBe(
+        false,
+      );
+      expect(helmwrightRefs(join(tmp, "fx"))).toHaveLength(10);
+      expect(helmwrightRefs(join(tmp, "fx")).join("\n")).not.toContain(id);
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "fails the run with its own reason when update-ref cannot create the ref",
+    { timeout: T },
+    () => {
+      // A ref named like the namespace itself makes every ref below it a conflict.
+      const blocker = "refs/helmwright/provisional";
+      const run = runFx("dependency", (fx) => {
+        git("-C", fx, "update-ref", blocker, FX_BASE_COMMIT);
+      });
+      expect(run.status, run.stderr).toBe(1);
+      expect(JSON.stringify(run.out.terminal)).toMatch(
+        /"error":"provisional branch ref could not be created: /,
+      );
+      expect(run.events.some((e) => e.type === "provisional.opened")).toBe(
+        true,
+      );
+      expect(run.checked["verdict"]).toBe("pass");
+      expect(helmwrightRefs(join(tmp, "fx"))).toEqual([
+        blocker + " " + FX_BASE_COMMIT,
+      ]);
+      expect(run.stderr).not.toContain("provisional ref:");
+      expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "replay faults a forged commit and a dropped fork (Q68a)",
+    { timeout: T },
+    () => {
+      const run = runFx("dependency");
+      expect(run.status, run.stderr).toBe(0);
+      const opened = run.events.find((e) => e.type === "provisional.opened");
+      const original = String(opened?.payload["commit"]);
+      const edit = (change: string, ...values: string[]) => {
+        const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+        try {
+          // A forger with a raw connection can drop the append-only guard.
+          db.exec("DROP TRIGGER IF EXISTS events_no_update");
+          db.prepare(
+            "UPDATE events SET payload = json_set(payload, " +
+              change +
+              ") WHERE type = 'provisional.opened'",
+          ).run(...values);
+        } finally {
+          db.close();
+        }
+      };
+      edit("'$.commit', ?", "e".repeat(40));
+      const forged = cli("replay", run.out.runId, "--state-dir", stateDir);
+      expect(forged.status, forged.stdout).toBe(3);
+      expect(forged.stdout).toContain("provisional commit is not recomputed");
+      edit("'$.commit', ?", original);
+      edit("'$.decisionId', ?", "decision-other");
+      const dropped = cli("replay", run.out.runId, "--state-dir", stateDir);
+      expect(dropped.status, dropped.stdout).toBe(3);
+      expect(dropped.stdout).toContain(
+        "owner decision without provisional.opened",
+      );
+    },
+  );
+
+  it(
+    "forks on a SHA-256 repository too (object IDs of 64 digits)",
+    { timeout: T },
+    () => {
+      const sha = join(tmp, "repo256");
+      git("init", "--quiet", "--object-format=sha256", sha);
+      mkdirSync(join(sha, "app"));
+      writeFileSync(join(sha, "app", "package.json"), '{"name":"app"}\n');
+      git("-C", sha, "add", "-A");
+      git(
+        ...["-C", sha, "-c", "user.name=e2e", "-c", "user.email=e2e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"],
+      );
+      const dep = '{"name":"app","dependencies":{"left-pad":"1.3.0"}}';
+      const script = "printf '%s\\n' '" + dep + "' > app/package.json";
+      const result = runWith(writeTask(shTurns(script), LIMITS, sha));
+      const events = expectWellFormedLog(result.out.runId);
+      const { checked } = floorOf(events);
+      expect(result.status, result.stderr).toBe(0);
+      expect(checked["candidateTree"]).toMatch(/^[0-9a-f]{64}$/);
+      const opened = events.find((e) => e.type === "provisional.opened");
+      const commit = String(opened?.payload["commit"]);
+      expect(commit).toMatch(/^[0-9a-f]{64}$/);
+      const ref = String(opened?.payload["ref"]);
+      expect(git("-C", sha, "rev-parse", ref).trim()).toBe(commit);
+      expect(git("-C", sha, "rev-parse", commit + "^{tree}").trim()).toBe(
+        checked["candidateTree"],
+      );
+      expectReplayMatches(result.out.runId, events);
     },
   );
 });
