@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/shaangill025/helmwright/schemas/provisional-event.schema.json",
   "title": "ProvisionalEvent",
-  "description": "Payload of a provisional-branch event in the session log (PB, X3 revised), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. A run that ends with a pending owner decision of class technology or scope forks one provisional commit per decision from the floor's own candidate tree. Fork and discard are Ring 0 and pure functions of logged facts: the commit ID is recomputed on replay. The log holds no recommendation (Q48). PB-1 writes `provisional.opened` or `provisional.refused`; the other two are reserved for the work that builds on a provisional branch (PB-2) and for the owner's answer (PB-3).",
+  "description": "Payload of a provisional-branch event in the session log (PB, X3 revised), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. A run that ends with a pending owner decision of class technology or scope forks one provisional commit per decision from the floor's own candidate tree. Fork and discard are Ring 0 and pure functions of logged facts: the commit ID is recomputed on replay. The log holds no recommendation (Q48). PB-1 writes `provisional.opened` or `provisional.refused`. `provisional.attached` (PB-2) marks a run built on a provisional commit; PB-2a defines and replay-checks it, and PB-2b writes it. `provisional.resolved` is reserved for the owner's answer (PB-3).",
   "type": "object",
   "oneOf": [
     { "$ref": "#/$defs/opened" },
@@ -61,7 +61,7 @@
     },
     "attached": {
       "title": "ProvisionalAttached",
-      "description": "Reserved (PB-2): a run's work was built on the provisional commit `commit` of the pending decision `decisionId`. Not written by PB-1.",
+      "description": "PB-2: a run's work was built on the provisional commit `commit` of the pending decision `decisionId`. It is logged after the run's `run.recorded` and before its `run.started`, and the run's `run.started` and `floor.checked` base commit is `commit`. `runId` is the event's. Replay checks these and the opened fork; no producer exists until PB-2b.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "decisionId", "runId", "commit"],

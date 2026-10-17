@@ -138,10 +138,12 @@ flowchart LR
   permission_rejected --> loop_halted
   permission_rejected --> loop_tool_called
   permission_rejected --> run_terminated
+  provisional_attached --> run_started
   provisional_opened --> decision_opened
   provisional_opened --> floor_checked
   provisional_refused --> decision_opened
   provisional_refused --> floor_checked
+  run_recorded --> provisional_attached
   run_recorded --> run_started
   run_started --> config_accepted
   run_started --> floor_signalled
