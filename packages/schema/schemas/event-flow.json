@@ -26,6 +26,7 @@
         "loop.halted -> message.appended",
         "loop.halted -> permission.answered",
         "loop.halted -> run.terminated",
+        "loop.halted -> tool.output.offloaded",
         "loop.handoff.failed -> floor.signalled",
         "loop.handoff.failed -> intake.reclassified",
         "loop.handoff.failed -> run.terminated",
@@ -135,15 +136,28 @@
         "permission.answered -> loop.halted",
         "permission.answered -> loop.tool.called",
         "permission.answered -> run.terminated",
+        "permission.answered -> tool.output.offloaded",
         "permission.asked -> loop.halted",
         "permission.asked -> permission.answered",
         "permission.evaluated -> loop.halted",
         "permission.evaluated -> loop.tool.called",
         "permission.evaluated -> permission.asked",
+        "permission.evaluated -> tool.output.offloaded",
         "permission.rejected -> floor.signalled",
         "permission.rejected -> loop.halted",
         "permission.rejected -> loop.tool.called",
         "permission.rejected -> run.terminated"
+      ]
+    },
+    {
+      "group": "tool-event",
+      "types": ["tool.output.offloaded"],
+      "edges": [
+        "tool.output.offloaded -> loop.halted",
+        "tool.output.offloaded -> floor.signalled",
+        "tool.output.offloaded -> intake.reclassified",
+        "tool.output.offloaded -> loop.tool.called",
+        "tool.output.offloaded -> run.terminated"
       ]
     }
   ]

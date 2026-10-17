@@ -1,5 +1,16 @@
 import { createHash } from "node:crypto";
-import type { PermissionPolicy } from "@helmwright/schema";
+import { isAbsolute, relative, resolve } from "node:path";
+import {
+  validateToolEvent,
+  type PermissionPolicy,
+  type ToolOutputOffloaded,
+} from "@helmwright/schema";
+import {
+  OFFLOAD_SOURCE_CEILING_BYTES,
+  offload,
+  pointerLine,
+  withPreview,
+} from "./offload.ts";
 import type {
   EmitAll,
   ExecuteTool,
@@ -58,6 +69,8 @@ export interface BrokerContext {
   readonly image: string;
   readonly workspace: string;
   readonly workspaceRoot: string;
+  /** Q69: where a tool output over MAX_TOOL_OUTPUT_BYTES is written whole; outside the workspace. */
+  readonly offloadDir: string;
   /** Required: no call runs without a ruling. */
   readonly permission: PermissionContext;
   /** Ends the run as failed before its next engine step. */
@@ -73,6 +86,7 @@ interface Action {
     input: Readonly<Record<string, unknown>>,
     context: BrokerContext,
     signal: AbortSignal,
+    callId: string,
   ): Promise<ToolResult>;
 }
 
@@ -140,7 +154,7 @@ type Ruled =
 
 /** Wall-clock bound on one `execute` (the loop's signal may end it sooner). */
 export const EXECUTE_TIMEOUT_MS = 120_000;
-/** Bound on each captured stream and on the tool result text. */
+/** Q69: the tool result text shows at most this much of an output (head and tail), plus a pointer line. */
 export const MAX_TOOL_OUTPUT_BYTES = 16_384;
 
 const denied = (output: string): ToolResult => ({ status: "denied", output });
@@ -158,19 +172,31 @@ const REUSED: RejectedVerdict = {
 /** SF-1: once a ruling's append fails, no later call in the run runs. */
 export const PERMISSION_LOG_FAILED = "permission log failed";
 
-function bounded(text: string): string {
-  if (Buffer.byteLength(text) <= MAX_TOOL_OUTPUT_BYTES) return text;
-  const head = Buffer.from(text).subarray(0, MAX_TOOL_OUTPUT_BYTES);
-  // Drop a split trailing character so the result ends cleanly.
-  return head.toString("utf8").replace(/�$/, "") + "\n[output truncated]";
-}
+/** Q69: writes and logs an offload; returns the pointer line to show the engine. */
+export type Offloader = (text: string, truncatedAtSource: boolean) => string;
 
-/** Maps a sandbox run onto a tool result: only exit 0 is `ok`. */
-export function sandboxToolResult(r: SandboxResult): ToolResult {
+/**
+ * Maps a sandbox run onto a tool result: only exit 0 is `ok`. Q69: an output over
+ * MAX_TOOL_OUTPUT_BYTES, or cut at source, is passed whole to `offloader` and shown
+ * as a head and tail preview plus its pointer line.
+ */
+export function sandboxToolResult(
+  r: SandboxResult,
+  offloader: Offloader,
+): ToolResult {
   const parts = [r.stdout];
   if (r.stderr !== "") parts.push("[stderr]\n" + r.stderr);
-  if (r.truncated) parts.push("[output truncated]");
-  const output = bounded(parts.join("\n"));
+  const text = parts.join("\n");
+  let output = text;
+  if (r.truncated || Buffer.byteLength(text) > MAX_TOOL_OUTPUT_BYTES) {
+    let pointer: string;
+    try {
+      pointer = offloader(text, r.truncated);
+    } catch {
+      pointer = "[output could not be offloaded]";
+    }
+    output = withPreview(text, MAX_TOOL_OUTPUT_BYTES, pointer);
+  }
   const fail = (why: string): ToolResult => ({
     status: "error",
     output: output === "" ? why : why + "\n" + output,
@@ -200,7 +226,7 @@ const execute: Action = {
     description:
       'Runs a program in the sandboxed workspace (no network). Input: { "argv": ["sh", "-c", "..."] }',
   },
-  async handle(input, context, signal) {
+  async handle(input, context, signal, callId) {
     const parsed = parseExecute(input);
     if (parsed === undefined) {
       return denied(
@@ -216,13 +242,35 @@ const execute: Action = {
         workspace: context.workspace,
         workspaceRoot: context.workspaceRoot,
         timeoutMs: EXECUTE_TIMEOUT_MS,
-        maxOutputBytes: MAX_TOOL_OUTPUT_BYTES,
+        maxOutputBytes: OFFLOAD_SOURCE_CEILING_BYTES,
         signal,
       },
       { containerName },
     );
     if (result.cleanupFailed) context.halt(SANDBOX_CLEANUP_FAILED);
-    return sandboxToolResult(result);
+    return sandboxToolResult(result, (text, truncatedAtSource) => {
+      const { sha256, bytes } = offload(text, { dir: context.offloadDir });
+      const payload: ToolOutputOffloaded = {
+        kind: "tool.output.offloaded",
+        toolCallId: callId,
+        sha256,
+        bytes,
+        truncatedAtSource,
+      };
+      if (!validateToolEvent(payload)) {
+        throw new Error("tool.output.offloaded cannot be logged");
+      }
+      try {
+        context.permission.emitAll([
+          { type: payload.kind, payload: { ...payload } },
+        ]);
+      } catch (error) {
+        // The run recorded the failure; no later call may run (SF-1).
+        context.halt(PERMISSION_LOG_FAILED);
+        throw error;
+      }
+      return pointerLine({ sha256, bytes, truncatedAtSource });
+    });
   },
 };
 
@@ -476,6 +524,20 @@ export function createBroker(context: BrokerContext): Broker {
     { ...context, argv: ["true"], timeoutMs: EXECUTE_TIMEOUT_MS },
     "helmwright-sandbox-check",
   );
+  const offloadRel = relative(
+    futureRealpath(context.workspaceRoot),
+    futureRealpath(resolve(context.offloadDir)),
+  );
+  if (
+    offloadRel === "" ||
+    !(
+      offloadRel === ".." ||
+      offloadRel.startsWith("../") ||
+      isAbsolute(offloadRel)
+    )
+  ) {
+    throw new RangeError("offloadDir must be outside workspaceRoot");
+  }
   const { permission } = context;
   const { presence } = permission;
   let halted: string | undefined;
@@ -650,7 +712,7 @@ export function createBroker(context: BrokerContext): Broker {
       if (action === undefined) {
         return denied("denied: no M1 handler for " + ruled.verdict.requested);
       }
-      return action.handle(ruled.verdict.input, own, signal);
+      return action.handle(ruled.verdict.input, own, signal, id);
     },
     acceptRing0(change, signal) {
       const { from, to, changed, ring0, note } = change;

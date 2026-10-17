@@ -53,6 +53,11 @@ export type {
 } from "../generated/floor-event.ts";
 export { validate as validateFloorEvent } from "../generated/floor-event.validate.js";
 export type {
+  ToolEvent,
+  ToolOutputOffloaded,
+} from "../generated/tool-event.ts";
+export { validate as validateToolEvent } from "../generated/tool-event.validate.js";
+export type {
   RotRegister,
   RotRegisterDate,
   RotRegisterEntry,

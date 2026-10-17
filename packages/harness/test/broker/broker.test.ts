@@ -23,7 +23,10 @@ import {
   floorChecked,
   openSessionLog,
   permissionFaults,
+  MAX_TOOL_OUTPUT_BYTES,
   runRing0,
+  sandboxToolResult,
+  type SandboxResult,
   type AppendInput,
   type Engine,
   type EngineTurn,
@@ -34,6 +37,7 @@ import {
   type SessionLog,
   type ToolCall,
 } from "../../src/index.ts";
+import { pointerLine } from "../../src/broker/offload.ts";
 
 // The real broker, policy, SQLite log and Docker sandbox; only the log's append can be made to fail.
 const T = 120_000;
@@ -156,6 +160,7 @@ function run(
   const connect: RunSetup["connect"] = ({ emitAll, halt }) =>
     createBroker({
       ...{ image, workspace, workspaceRoot: join(dir, "workspaces"), halt },
+      offloadDir: join(dir, "offload"),
       permission: {
         ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
         ring0: runRing0(workspace, policy),
@@ -189,6 +194,7 @@ describe("broker with the run's log", () => {
       let appends = 0;
       const broker = createBroker({
         ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+        offloadDir: join(dir, "offload"),
         halt: () => undefined,
         permission: {
           ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
@@ -715,6 +721,7 @@ describe("acceptRing0", () => {
     };
     const broker = createBroker({
       ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+      offloadDir: join(dir, "offload"),
       halt: () => undefined,
       permission: {
         ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
@@ -747,4 +754,177 @@ describe("acceptRing0", () => {
       expect(await accept(late, controller.signal)).toBe("cancelled");
     },
   );
+});
+
+describe("eager offload (Q69)", () => {
+  /** Runs `script` in the sandbox as the one tool call; returns the call's result. */
+  async function printing(script: string) {
+    const policy = DEFAULT_PERMISSION_POLICY;
+    const entries: { type: string; payload: Record<string, unknown> }[] = [];
+    const broker = createBroker({
+      ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+      offloadDir: join(dir, "offload"),
+      halt: () => undefined,
+      permission: {
+        ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
+        ring0: runRing0(workspace, policy),
+        emitAll: (all) => entries.push(...all),
+      },
+    });
+    const result = await broker.executeTool(
+      { id: "call-1", name: "execute", input: { argv: ["sh", "-c", script] } },
+      new AbortController().signal,
+    );
+    return { result, offloaded: entries.filter((e) => e.type === OFFLOADED) };
+  }
+  const OFFLOADED = "tool.output.offloaded";
+
+  it("leaves an output under the threshold alone", { timeout: T }, async () => {
+    const { result, offloaded } = await printing("echo hi");
+    expect(result).toEqual({ status: "ok", output: "hi\n" });
+    expect(offloaded).toEqual([]);
+    expect(existsSync(join(dir, "offload"))).toBe(false);
+  });
+
+  it(
+    "offloads an output over it: head, tail, pointer, file, event",
+    { timeout: T },
+    async () => {
+      const script =
+        "i=0; while [ $i -lt 3000 ]; do echo line-$i; i=$((i+1)); done";
+      const { result, offloaded } = await printing(script);
+      expect(result.status).toBe("ok");
+      expect(result.output).not.toContain("[output truncated]");
+      expect(result.output).toContain("line-0\n");
+      expect(result.output).toContain("line-2999");
+      const [event] = offloaded;
+      const payload = event?.payload as Record<string, unknown>;
+      expect(offloaded).toHaveLength(1);
+      expect(payload).toMatchObject({
+        kind: "tool.output.offloaded",
+        toolCallId: "call-1",
+        truncatedAtSource: false,
+      });
+      const sha = payload["sha256"] as string;
+      const file = join(dir, "offload", sha + ".txt");
+      const full = readFileSync(file, "utf8");
+      expect(createHash("sha256").update(full).digest("hex")).toBe(sha);
+      expect(Buffer.byteLength(full)).toBe(payload["bytes"]);
+      expect(full.endsWith("line-2999\n")).toBe(true);
+      expect(result.output.endsWith(pointerLine(payload as never))).toBe(true);
+      expect(Buffer.byteLength(result.output)).toBeLessThan(17_000);
+      expect(file.startsWith(workspace)).toBe(false);
+    },
+  );
+
+  it(
+    "says the output was cut at source past the 8 MiB ceiling",
+    { timeout: T },
+    async () => {
+      const { result, offloaded } = await printing(
+        "head -c 9000000 /dev/zero | tr '\\0' x",
+      );
+      const payload = offloaded[0]?.payload as Record<string, unknown>;
+      expect(payload).toMatchObject({ truncatedAtSource: true });
+      expect(payload["bytes"]).toBeGreaterThan(8 * 1024 * 1024 - 1);
+      expect(result.output).toContain("truncated at source");
+    },
+  );
+});
+
+describe("sandboxToolResult (Q69)", () => {
+  const sandboxRun = (stdout: string, stderr: string): SandboxResult => ({
+    ...{ exitCode: 0, stdout, stderr, containerName: "c", durationMs: 1 },
+    ...{ stdoutTruncated: false, stderrTruncated: false, truncated: false },
+    ...{ timedOut: false, cancelled: false, startFailed: false },
+    cleanupFailed: false,
+  });
+
+  it("keeps the [stderr] marker in the tail of a mixed ASCII and 4-byte output (A3)", () => {
+    const stdout = "a😀".repeat(Math.ceil(MAX_TOOL_OUTPUT_BYTES / 5));
+    expect(Buffer.byteLength(stdout)).toBeGreaterThan(MAX_TOOL_OUTPUT_BYTES);
+    const seen: string[] = [];
+    const result = sandboxToolResult(sandboxRun(stdout, "boom"), (text) => {
+      seen.push(text);
+      return "[P]";
+    });
+    expect(seen).toEqual([stdout + "\n[stderr]\nboom"]);
+    expect(result.output).toContain("[stderr]\nboom");
+    expect(result.output.endsWith("\n[P]")).toBe(true);
+    expect(result.output).not.toContain("�");
+  });
+
+  it("offloads at one byte over the threshold, not at the threshold (A3)", () => {
+    const calls: string[] = [];
+    const offloader = (text: string) => (calls.push(text), "[P]");
+    const at = "x".repeat(MAX_TOOL_OUTPUT_BYTES);
+    expect(sandboxToolResult(sandboxRun(at, ""), offloader).output).toBe(at);
+    expect(calls).toEqual([]);
+    sandboxToolResult(sandboxRun(at + "x", ""), offloader);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("shows the fallback line and keeps the status when offloading fails (C4)", () => {
+    const text = "x".repeat(MAX_TOOL_OUTPUT_BYTES + 1);
+    const result = sandboxToolResult(sandboxRun(text, ""), () => {
+      throw new Error("disk full");
+    });
+    expect(result.status).toBe("ok");
+    expect(result.output).toContain("[output could not be offloaded]");
+  });
+});
+
+describe("offload failures (hardening 2, 4)", () => {
+  it(
+    "falls back, halts and denies the next call when the offload event cannot be logged",
+    { timeout: T },
+    async () => {
+      const policy = DEFAULT_PERMISSION_POLICY;
+      const halts: string[] = [];
+      const broker = createBroker({
+        ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+        offloadDir: join(dir, "offload"),
+        halt: (reason) => halts.push(reason),
+        permission: {
+          ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
+          ring0: runRing0(workspace, policy),
+          emitAll(entries) {
+            if (entries.some((e) => e.type === "tool.output.offloaded")) {
+              throw new Error("disk full");
+            }
+          },
+        },
+      });
+      const { signal } = new AbortController();
+      const big = "head -c 20000 /dev/zero | tr '\\0' x";
+      const first = await broker.executeTool(
+        { id: "call-1", name: "execute", input: { argv: ["sh", "-c", big] } },
+        signal,
+      );
+      expect(first.status).toBe("ok");
+      expect(first.output).toContain("[output could not be offloaded]");
+      expect(halts).toEqual(["permission log failed"]);
+      expect(
+        await broker.executeTool(write("call-2", "a.txt"), signal),
+      ).toEqual({ status: "denied", output: "denied: permission log failed" });
+    },
+  );
+
+  it("refuses an offload dir inside the workspace root", () => {
+    const policy = DEFAULT_PERMISSION_POLICY;
+    const make = (offloadDir: string) =>
+      createBroker({
+        ...{ image, workspace, workspaceRoot: join(dir, "workspaces") },
+        offloadDir,
+        halt: () => undefined,
+        permission: {
+          ...{ policy, worktree: workspace, runId: "run-1", agentId: "node-1" },
+          ring0: runRing0(workspace, policy),
+          emitAll: () => undefined,
+        },
+      });
+    expect(() => make(join(dir, "workspaces", "offload"))).toThrow(RangeError);
+    expect(() => make(join(dir, "workspaces"))).toThrow(RangeError);
+    expect(() => make(join(dir, "offload"))).not.toThrow();
+  });
 });

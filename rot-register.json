@@ -142,6 +142,29 @@
     "reviewTrigger": ["engine", "milestone"]
   },
   {
+    "component": "packages/harness/src/broker/offload.ts",
+    "ring": 0,
+    "assumption": "Q69: a tool output over 16384 bytes is written whole, once per content, to <stateDir>/offload/<sha256>.txt (mode 0600, outside the sandbox workspace); the engine sees a head and tail preview plus a pointer line that is a pure function of the logged tool.output.offloaded event, so replay derives the same context. The sandbox captures at most 8 MiB per stream; past it the pointer says the output was cut at source. Offload files persist outside the sandbox with the same 0600 trust as the session log; reaping and retention of offload files are deferred to M2 with Q7 retention.",
+    "evidence": [
+      "decisions Q69",
+      "packages/harness/test/broker/offload.test.ts",
+      "packages/harness/test/broker/broker.test.ts",
+      "packages/harness/test/e2e/offload.test.ts"
+    ],
+    "added": "2026-10-16",
+    "lastReviewed": "2026-10-16",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/tool-event.schema.json",
+    "ring": 0,
+    "assumption": "Q69: tool.output.offloaded records the call, the SHA-256 and byte count of the offloaded text and whether the sandbox cut it at source; kind equals the event type, which the writer checks.",
+    "evidence": ["decisions Q69", "packages/harness/test/e2e/offload.test.ts"],
+    "added": "2026-10-16",
+    "lastReviewed": "2026-10-16",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/permission/policy.ts",
     "ring": 0,
     "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy changed (default-2), so every repo with a default-1 baseline is asked once at its next run.",
