@@ -1,7 +1,7 @@
 // Generated from schemas/rot-register.schema.json by scripts/generate.ts. Do not edit.
 
 /**
- * The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component repeats are checked by the register's test.
+ * The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component and facet repeat are checked by the register's test.
  *
  * @minItems 1
  * @maxItems 1024
@@ -18,6 +18,10 @@ export interface RotRegisterEntry {
    * Repository-relative path of a file, or of a directory that covers every module below it.
    */
   component: string;
+  /**
+   * Q60 amendment: one part of the component's assumption, with its own triggers. Component and facet are unique together; no facet is a key too.
+   */
+  facet?: string;
   /**
    * The component's ring in the 05 Rings table: 0 owner only, 1 evolve agent through the gate, 2 harness code.
    */

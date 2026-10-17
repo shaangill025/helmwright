@@ -9,6 +9,7 @@ import { createTtyPresence } from "./permission/presence.ts";
 import {
   CancelledError,
   UsageError,
+  earlyLine,
   reapRuns,
   replayRun,
   runTask,
@@ -266,19 +267,7 @@ async function main(args: readonly string[]): Promise<number> {
       },
       // A-dep-4 (OQ-AD4-1, OQ-AD4-2): the early dependency check, for the owner only.
       onEarly: (shown) => {
-        let line = "early dependency check skipped: over the floor limits";
-        if (shown.kind === "failed") {
-          line = "early dependency check failed: " + shown.error;
-        } else if (shown.kind === "signalled") {
-          const named = shown.signals.map((s) =>
-            [s.type, "name" in s ? s.name : "-", s.path].join(" "),
-          );
-          const n = named.length;
-          const noun = n === 1 ? " signal (" : " signals (";
-          const list = String(n) + noun + named.join(", ") + ")";
-          line = "floor early: " + (n > 0 ? list : "no signals");
-        }
-        console.error("helmwright: " + displayText(line));
+        console.error("helmwright: " + displayText(earlyLine(shown)));
       },
       ...(present
         ? { presence: createTtyPresence(process.stdin, process.stderr) }

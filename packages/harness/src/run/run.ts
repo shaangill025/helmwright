@@ -344,6 +344,23 @@ export type EarlyShown =
   | { readonly kind: "skipped" }
   | { readonly kind: "failed"; readonly error: string };
 
+/** The CLI's stderr line, before escaping, for what the early check shows. */
+export function earlyLine(shown: EarlyShown): string {
+  if (shown.kind === "skipped") {
+    return "early dependency check skipped: over the floor limits";
+  }
+  if (shown.kind === "failed") {
+    return "early dependency check failed: " + shown.error;
+  }
+  const named = shown.signals.map((s) =>
+    [s.type, "name" in s ? s.name : "-", s.path].join(" "),
+  );
+  const n = named.length;
+  const noun = n === 1 ? " signal (" : " signals (";
+  const list = String(n) + noun + named.join(", ") + ")";
+  return "floor early: " + (n > 0 ? list : "no signals");
+}
+
 /** A set-up run: everything from `run.started` to `run.terminated`. */
 export interface RunSetup {
   readonly log: SessionLog;

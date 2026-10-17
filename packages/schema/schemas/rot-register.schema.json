@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/shaangill025/helmwright/schemas/rot-register.schema.json",
   "title": "RotRegister",
-  "description": "The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component repeats are checked by the register's test.",
+  "description": "The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component and facet repeat are checked by the register's test.",
   "type": "array",
   "minItems": 1,
   "maxItems": 1024,
@@ -27,6 +27,11 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9._@+/-]{1,256}$",
           "not": { "pattern": "^/|//|/$|(^|/)\\.\\.?(/|$)" }
+        },
+        "facet": {
+          "description": "Q60 amendment: one part of the component's assumption, with its own triggers. Component and facet are unique together; no facet is a key too.",
+          "type": "string",
+          "pattern": "^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$"
         },
         "ring": {
           "description": "The component's ring in the 05 Rings table: 0 owner only, 1 evolve agent through the gate, 2 harness code.",
