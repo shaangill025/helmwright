@@ -363,7 +363,7 @@ describe("ObjectEvent", () => {
       );
     const names =
       "taskId runId artifactId decisionId repoId text displayText scopeEntry " +
-      "taskClass sha256 oid decisionClass signalId signalIds brief option " +
+      "taskClass sha256 oid decisionClass signalId signalIds brief briefClaim option " +
       "rulingBody seed conceptSlug rubricVersion question optionLabel line";
     const copies: [string, Def | undefined, Def | undefined][] = [
       ...names
@@ -446,5 +446,49 @@ describe("ObjectEvent", () => {
     } else {
       expect.unreachable();
     }
+  });
+
+  describe("Brief claims (Q70-1)", () => {
+    const claim = (change: object = {}) => ({
+      text: "Manifest app/package.json adds left-pad ^1.3.0",
+      tier: "Direct",
+      evidence: ["a:0"],
+      ...change,
+    });
+    const claims = (n: number) => Array.from({ length: n }, () => claim());
+    const ok = (list: unknown) => check(owned, withBrief({ claims: list }));
+
+    it.each([
+      ["none (the key absent)", undefined],
+      ["0 claims", []],
+      ["1 claim", claims(1)],
+      ["5 claims", claims(5)],
+      ["8 evidence refs", [claim({ evidence: Array(8).fill("a:0") })]],
+      [
+        "every tier",
+        ["Direct", "Supported", "Inferred", "Speculative", "Unknown"].map(
+          (tier) => claim({ tier }),
+        ),
+      ],
+      ["a 200-character ref", [claim({ evidence: ["x".repeat(200)] })]],
+    ])("accepts %s", (_name, list) => {
+      expect(ok(list)).toBe(true);
+    });
+
+    it.each([
+      ["6 claims", claims(6)],
+      ["9 evidence refs", [claim({ evidence: Array(9).fill("a:0") })]],
+      ["an empty ref", [claim({ evidence: [""] })]],
+      ["a ref with a space", [claim({ evidence: ["a b"] })]],
+      ["a non-ASCII ref", [claim({ evidence: ["é"] })]],
+      ["a 201-character ref", [claim({ evidence: ["x".repeat(201)] })]],
+      ["a lower-case tier", [claim({ tier: "direct" })]],
+      ["an extra key", [claim({ extra: true })]],
+      ["no evidence key", [{ text: "x", tier: "Unknown" }]],
+      ["an empty text", [claim({ text: "" })]],
+      ["claims that are not an array", claim()],
+    ])("rejects %s", (_name, list) => {
+      expect(ok(list)).toBe(false);
+    });
   });
 });
