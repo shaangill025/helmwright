@@ -129,6 +129,12 @@ describe("rot register checks", () => {
     expect(duplicates([a, b])).toEqual([]);
     expect(duplicates([a, b, a])).toEqual([entry.component + "#a"]);
   });
+
+  it("allows a facetless entry beside faceted ones of its component", () => {
+    const faceted = { ...entry, facet: "a" };
+    expect(validate([entry, faceted])).toBe(true);
+    expect(duplicates([entry, faceted])).toEqual([]);
+  });
 });
 
 describe("RotRegister schema", () => {
@@ -175,6 +181,13 @@ describe("RotRegister schema", () => {
   ])("rejects an entry with %j", (change) => {
     expect(validate([{ ...entry, ...change }])).toBe(false);
   });
+
+  it.each(["2", "a".repeat(32), "git-dirs"])(
+    "accepts the facet %j",
+    (facet) => {
+      expect(validate([{ ...entry, facet }])).toBe(true);
+    },
+  );
 
   it.each(Object.keys(entry))("rejects an entry without %s", (key) => {
     const partial = Object.entries(entry).filter(([name]) => name !== key);

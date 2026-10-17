@@ -366,7 +366,7 @@
     ],
     "added": "2026-10-07",
     "lastReviewed": "2026-10-16",
-    "reviewTrigger": ["milestone"]
+    "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/floor/tree.ts",
@@ -380,13 +380,13 @@
     ],
     "added": "2026-10-07",
     "lastReviewed": "2026-10-16",
-    "reviewTrigger": ["milestone"]
+    "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/floor/tree.ts",
     "facet": "ignored-files",
     "ring": 0,
-    "assumption": "Ignored .gitignore, agent and config files are findings. In a collapsed ignored dir, only a nested .gitignore is, and only if no rule outside the dir ignores it (B15 tests a clean export). git check-ignore: exit 1 = no listed name ignored, with empty output; 0 = some ignored; any other exit, a signal or a timeout fails closed.",
+    "assumption": "Ignored .gitignore, agent and config files are findings. In a collapsed ignored dir, only a nested .gitignore is, and only if no rule outside the dir ignores it (B15 tests a clean export). git check-ignore: exit 1 = no listed name ignored (git documents empty output; the floor does not check it); 0 = some ignored; any other exit, a signal or a timeout fails closed.",
     "evidence": [
       "06 Ring 0 contents",
       "decisions CI sensor floor",
@@ -394,7 +394,7 @@
     ],
     "added": "2026-10-07",
     "lastReviewed": "2026-10-16",
-    "reviewTrigger": ["milestone"]
+    "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/floor/tree.ts",
@@ -407,7 +407,7 @@
     ],
     "added": "2026-10-16",
     "lastReviewed": "2026-10-16",
-    "reviewTrigger": ["engine"]
+    "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/objects/events.ts",
@@ -617,14 +617,15 @@
   {
     "component": "packages/schema/schemas/rot-register.schema.json",
     "ring": 2,
-    "assumption": "Each component's assumption is reviewed on a model change, an engine change or a milestone end; until B12 emits rot.reviewDue, the register's test only enforces coverage and existence, and review is by hand.",
+    "assumption": "Each component's assumption is reviewed on a model change, an engine change or a milestone end; until B12 emits rot.reviewDue, the register's test only enforces coverage, existence and unique (component, facet) keys, and review is by hand. An entry may carry a facet (one part of a component's assumption, with its own triggers); an entry without one is its own key.",
     "evidence": [
       "07 rule 2",
       "decisions Q60",
+      "decisions Q60 amendment",
       "packages/schema/test/rot-register.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-10-16",
     "reviewTrigger": ["model", "engine", "milestone"]
   }
 ]
