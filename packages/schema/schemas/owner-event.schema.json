@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/owner-event.schema.json",
+  "title": "OwnerEvent",
+  "description": "Payload of an owner event (`decision.owner.*`) in the session log (SIG, T-EXT-04). Every owner event carries a presence signature over the canonical message that packages/harness/src/permission/owner-message.ts builds from it. `kind` equals the event's `type`. SIG-1 adds only this schema and the message builder: the log still refuses every `decision.owner.*` event until the signing and verifying code lands (SIG-2 and later).",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/answered" },
+    { "$ref": "#/$defs/keyRegistered" },
+    { "$ref": "#/$defs/keyRotated" }
+  ],
+  "$defs": {
+    "answered": {
+      "title": "OwnerAnswered",
+      "description": "The owner answered a decision card: chose an option, or overrode with own text. The presence signature binds the card, the decision, the action, the option hash, the text hash, the brief hash (the question as shown), the run, the graph and the nonce.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "cardId",
+        "decisionId",
+        "action",
+        "optionId",
+        "optionHash",
+        "presence"
+      ],
+      "properties": {
+        "kind": { "const": "decision.owner.answered" },
+        "cardId": { "$ref": "#/$defs/id" },
+        "decisionId": { "$ref": "#/$defs/id" },
+        "action": { "enum": ["choose", "override"] },
+        "optionId": { "enum": ["a", "b", "c", "d"] },
+        "optionHash": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the option named by `optionId`, as `optionHash` in owner-message.ts computes it. The verifier recomputes it from the stored option with that ID; for `override` it is the option the owner started from."
+        },
+        "text": {
+          "description": "The owner's own text, one line of 1 to 500 code points, not only spaces, without a control character, line break, bidi control or lone surrogate (the `line` rules of objects.schema.json). `override` requires it; `choose` may carry it as a note. With `text`, `textHash` is required, and the reverse.",
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f\\u061c\\u200e\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\p{Cs}]{1,500}$",
+          "not": { "pattern": "^\\s*$" }
+        },
+        "textHash": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the UTF-8 bytes of `text`."
+        },
+        "presence": { "$ref": "#/$defs/presence" }
+      },
+      "dependentRequired": {
+        "text": ["textHash"],
+        "textHash": ["text"]
+      },
+      "if": { "properties": { "action": { "const": "override" } } },
+      "then": { "required": ["text"], "properties": { "text": true } }
+    },
+    "keyRegistered": {
+      "title": "OwnerKeyRegistered",
+      "description": "The owner public key was pinned at setup. The log records the key fingerprint and the helper digest that the tamper checks compare. The first registration is signed by the key it registers.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "keyId",
+        "publicKeySpki",
+        "fingerprint",
+        "helperDigest",
+        "mode",
+        "presence"
+      ],
+      "properties": {
+        "kind": { "const": "decision.owner.key.registered" },
+        "keyId": { "$ref": "#/$defs/id" },
+        "publicKeySpki": { "$ref": "#/$defs/spki" },
+        "fingerprint": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the SPKI DER bytes."
+        },
+        "helperDigest": {
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the signing helper's binary."
+        },
+        "mode": { "$ref": "#/$defs/mode" },
+        "presence": { "$ref": "#/$defs/presence" }
+      }
+    },
+    "keyRotated": {
+      "title": "OwnerKeyRotated",
+      "description": "The pinned owner key changed. `presence` is a signature by the current key (`fromKeyId`); `newKeyPresence` is a signature by the new key (`toKeyId`) over the same message bytes except keyId, which proves that the owner holds it. Both bind the new fingerprint, the helper digest, the mode and fromKeyId.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "fromKeyId",
+        "toKeyId",
+        "publicKeySpki",
+        "fingerprint",
+        "helperDigest",
+        "mode",
+        "presence",
+        "newKeyPresence"
+      ],
+      "properties": {
+        "kind": { "const": "decision.owner.key.rotated" },
+        "fromKeyId": { "$ref": "#/$defs/id" },
+        "toKeyId": { "$ref": "#/$defs/id" },
+        "publicKeySpki": { "$ref": "#/$defs/spki" },
+        "fingerprint": { "$ref": "#/$defs/sha256" },
+        "helperDigest": { "$ref": "#/$defs/sha256" },
+        "mode": { "$ref": "#/$defs/mode" },
+        "presence": { "$ref": "#/$defs/presence" },
+        "newKeyPresence": { "$ref": "#/$defs/presence" }
+      }
+    },
+    "presence": {
+      "title": "OwnerPresence",
+      "description": "One presence signature: ECDSA P-256 over the owner message, made after a user-presence check. `keyId` is the signing key; `nonce` is single use; `issuedAt` is the signing time. It has no mode: the mode belongs to the registered key and is bound in the registration message, and the pinned helper digest is what makes that claim credible.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keyId", "nonce", "issuedAt", "signature"],
+      "properties": {
+        "keyId": { "$ref": "#/$defs/id" },
+        "nonce": {
+          "description": "128 random bits as 32 lowercase hex digits.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "issuedAt": {
+          "description": "UTC timestamp in the form of the envelope `at`.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+        },
+        "signature": {
+          "description": "Base64 of the DER-encoded ECDSA signature: 8 to 72 bytes for P-256, so 12 to 96 characters before padding. Strict DER parsing belongs to the verifier.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9+/]{12,96}={0,2}$"
+        }
+      }
+    },
+    "mode": {
+      "description": "`enclave`: a Secure Enclave key. `software`: a key in memory, allowed only in test builds.",
+      "enum": ["enclave", "software"]
+    },
+    "id": {
+      "description": "A run, card, decision or key ID.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "sha256": {
+      "description": "Lowercase hex SHA-256.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "spki": {
+      "description": "Base64 of the 91-byte SubjectPublicKeyInfo DER of a P-256 public key: the fixed 26-byte header, then the 0x04 uncompressed-point marker and 64 bytes. The first 36 characters are fixed.",
+      "type": "string",
+      "pattern": "^MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE[A-Za-z0-9+/]{85}[AQgw]==$"
+    }
+  }
+}

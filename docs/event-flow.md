@@ -37,6 +37,11 @@ flowchart LR
     run_recorded["run.recorded"]
     task_created["task.created"]
   end
+  subgraph owner_event["owner-event"]
+    decision_owner_answered["decision.owner.answered"]
+    decision_owner_key_registered["decision.owner.key.registered"]
+    decision_owner_key_rotated["decision.owner.key.rotated"]
+  end
   subgraph permission_event["permission-event"]
     permission_answered["permission.answered"]
     permission_asked["permission.asked"]

@@ -10,6 +10,7 @@ import {
   type DecisionOpenedOwned,
   type DecisionOpenedRuling,
   type Event,
+  validateOwnerEvent,
 } from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -183,6 +184,27 @@ describe("SessionLog.append refuses (B5-2, OD-3)", () => {
     "decision.owner.unknownaction",
   ])("%s until SIG (Q-B5-1)", (type) => {
     expectRefused(type, { kind: type }, /refused until SIG/);
+  });
+
+  it("a valid, signed-looking decision.owner.answered until SIG (SIG-1)", () => {
+    const type = "decision.owner.answered";
+    const presence = {
+      keyId: "key-1",
+      nonce: "0123456789abcdef0123456789abcdef",
+      issuedAt: "2026-10-17T12:00:00.000Z",
+      signature: "A".repeat(96),
+    };
+    const payload = {
+      kind: type,
+      cardId: "card-1",
+      decisionId: "decision-1",
+      action: "choose",
+      optionId: "a",
+      optionHash: "a".repeat(64),
+      presence,
+    };
+    expect(validateOwnerEvent(payload)).toBe(true);
+    expectRefused(type, payload, /refused until SIG/);
   });
 
   it("decision.recommendation.revealed until A3 (OD-2)", () => {

@@ -101,6 +101,14 @@ export type {
   TaskCreated,
 } from "../generated/object-event.ts";
 export { validate as validateObjectEvent } from "../generated/object-event.validate.js";
+export type {
+  OwnerAnswered,
+  OwnerEvent,
+  OwnerKeyRegistered,
+  OwnerKeyRotated,
+  OwnerPresence,
+} from "../generated/owner-event.ts";
+export { validate as validateOwnerEvent } from "../generated/owner-event.validate.js";
 export type { HelmwrightConfig } from "../generated/helmwright-config.ts";
 export { validate as validateHelmwrightConfig } from "../generated/helmwright-config.validate.js";
 
