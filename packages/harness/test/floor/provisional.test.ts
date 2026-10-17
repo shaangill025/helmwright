@@ -117,13 +117,16 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     ]) {
       expect(provisionalFaults(ended(terminal), earlier)).toEqual([]);
     }
-    // The failures made after a completed loop and a logged floor still owe the fork.
+    // S1: the terminal's text decides nothing. A run failed by these texts, with or
+    // without entries, is not owed a fork, and an engine error cannot spoof them.
     for (const error of [
       PROVISIONAL_REFUSED,
-      PROVISIONAL_FAILED + ": update-ref failed",
+      PROVISIONAL_REFUSED + " (suffix)",
+      PROVISIONAL_FAILED + ": x",
     ]) {
-      const owed = provisionalFaults(ended({ kind: "failed", error }), earlier);
-      expect(owed).toHaveLength(1);
+      expect(
+        provisionalFaults(ended({ kind: "failed", error }), earlier),
+      ).toEqual([]);
     }
     // Architecture is never provisional, and a harness Ruling has no fork.
     const architecture = [
@@ -131,6 +134,15 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
       event(1, "floor.checked", checkedPayload()),
     ];
     expect(provisionalFaults(architecture, earlier)).toEqual([]);
+    // A provisional event after a harness Ruling (not an owner decision) is a fault.
+    const afterRuling = [
+      event(0, "decision.opened", { ...decision, authority: "harness" }),
+      event(1, "provisional.opened", opened()),
+      event(2, "floor.checked", checkedPayload()),
+    ];
+    expect(provisionalFaults(afterRuling)).toEqual([
+      expect.stringContaining("not directly after its owner decision"),
+    ]);
   });
 
   it.each([
@@ -311,9 +323,10 @@ describe("planProvisional (PB-1, real git)", () => {
       candidateTree + ":a.txt",
     );
     rmSync(join(held.objects, blob.slice(0, 2), blob.slice(2)));
+    // The rev-list completeness guard fails, with git's own text.
     expect(() =>
       planProvisional(common, baseCommit, candidateTree, decisions(1), held),
-    ).toThrow();
+    ).toThrow(/rev-list/);
     const commit = provisionalCommitId(
       candidateTree,
       baseCommit,

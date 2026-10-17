@@ -221,7 +221,10 @@ export function planProvisional(
  * one for a decision, or a floor that did not pass. A passing floor whose owner decision
  * of class technology or scope has neither `provisional.opened` nor `provisional.refused`
  * is a fault, unless the log is from before PB-1: `history` (all provisional events of
- * the whole log; default this run's) has none before that `floor.checked`.
+ * the whole log; default this run's) has none before that `floor.checked`. An extra fork
+ * (one logged for a run that is not owed one, such as a failed run) is not faulted for
+ * that: the run-end retry path can end a run with its floor events already logged, and
+ * each event is still checked for itself above.
  */
 export function provisionalFaults(
   events: readonly Event[],
@@ -294,19 +297,14 @@ export function provisionalFaults(
     const legacy = !history.some(
       (h) => PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
     );
-    // Owner ruling 2026-10-17: only a run that ended its loop completed forks. From the
-    // log alone that is `completed`, or the two failures made after a completed loop and
-    // a logged passing floor (a refusal or a failed ref). This needs no extra event.
+    // Owner ruling 2026-10-17: only a run that ended completed forks, so a fork is due
+    // only for a `completed` terminal. A run failed by PROVISIONAL_REFUSED or
+    // PROVISIONAL_FAILED needs no check: its entries were logged before those terminals
+    // were set, and keying on their text would let an engine error spoof them.
     const terminal: unknown = events.find((e) => e.type === "run.terminated")
       ?.payload["terminal"];
-    const { kind, error } = (terminal ?? {}) as Record<string, unknown>;
-    const due =
-      kind === "completed" ||
-      (kind === "failed" &&
-        typeof error === "string" &&
-        (error === PROVISIONAL_REFUSED ||
-          error.startsWith(PROVISIONAL_FAILED)));
-    if (!legacy && due) {
+    const { kind } = (terminal ?? {}) as Record<string, unknown>;
+    if (!legacy && kind === "completed") {
       for (const e of events) {
         const forkable =
           e.type === "decision.opened" &&

@@ -297,7 +297,8 @@ async function main(args: readonly string[]): Promise<number> {
       console.error("helmwright: provisional ref: " + refs);
     }
     for (const warning of end.warnings) {
-      console.error("helmwright: warning: " + displayText(warning));
+      // Already escaped by the run.
+      console.error("helmwright: warning: " + warning);
     }
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];

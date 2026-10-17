@@ -424,6 +424,9 @@ describe("objectFaults: floor decisions (A-dep)", () => {
   });
 
   // PB-1 (B3): provisional events may follow a floor decision, in the floor's transaction.
+  // The fixture inserts an empty-payload event after the decision at each slot of
+  // signalledRun() (slot = decision index) and renumbers the seqs, since objectFaults
+  // reads positions only; the content of those events is provisionalFaults' check.
   const forked = (slots: readonly number[], type = "provisional.opened") => {
     const out: Event[] = [];
     for (const e of signalledRun()) {

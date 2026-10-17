@@ -450,7 +450,6 @@ const CLEANUP_UNCONFIRMED =
 export const FLOOR_REJECTED = "sensor floor rejected the candidate";
 /** Why a run that would have completed fails when the floor cannot check (fail closed). */
 export const FLOOR_UNCHECKED = "sensor floor could not check the candidate";
-export { PROVISIONAL_FAILED, PROVISIONAL_REFUSED };
 
 /** Resolves true once every call in `pending` has settled, or false after `ms`. */
 async function settled(
