@@ -48,6 +48,12 @@ flowchart LR
     permission_evaluated["permission.evaluated"]
     permission_rejected["permission.rejected"]
   end
+  subgraph provisional_event["provisional-event"]
+    provisional_attached["provisional.attached"]
+    provisional_opened["provisional.opened"]
+    provisional_refused["provisional.refused"]
+    provisional_resolved["provisional.resolved"]
+  end
   subgraph tool_event["tool-event"]
     tool_output_offloaded["tool.output.offloaded"]
   end
@@ -62,6 +68,8 @@ flowchart LR
   decision_opened --> message_appended
   decision_opened --> permission_evaluated
   decision_opened --> permission_rejected
+  decision_opened --> provisional_opened
+  decision_opened --> provisional_refused
   decision_opened --> run_terminated
   floor_checked --> run_terminated
   floor_signalled --> decision_opened
@@ -130,6 +138,10 @@ flowchart LR
   permission_rejected --> loop_halted
   permission_rejected --> loop_tool_called
   permission_rejected --> run_terminated
+  provisional_opened --> decision_opened
+  provisional_opened --> floor_checked
+  provisional_refused --> decision_opened
+  provisional_refused --> floor_checked
   run_recorded --> run_started
   run_started --> config_accepted
   run_started --> floor_signalled
