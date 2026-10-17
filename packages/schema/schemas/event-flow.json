@@ -1,0 +1,150 @@
+{
+  "description": "Q68(b): the declared event-type flow. Each group lists its event types: a schema group holds the payload kinds of schemas/<group>.schema.json, and code-only holds the types that have no schema kind. Each edge \"a -> b\" lets an event of type b follow an event of type a in one session log; it is listed under the group of a. scripts/generate.ts draws docs/event-flow.md from this file, and the e2e tests check that each observed pair is a declared edge. The edges describe a CLI session log. Some edges occur only on a failure path, such as a failed append before the floor.",
+  "groups": [
+    {
+      "group": "code-only",
+      "types": [
+        "config.accepted",
+        "decision.recommendation.revealed",
+        "loop.halted",
+        "loop.handoff.failed",
+        "loop.iteration.started",
+        "loop.reminder.sent",
+        "loop.tool.called",
+        "loop.tool.skipped",
+        "loop.tool.started",
+        "message.appended",
+        "run.started",
+        "run.terminated"
+      ],
+      "edges": [
+        "config.accepted -> floor.signalled",
+        "config.accepted -> intake.classified",
+        "config.accepted -> run.terminated",
+        "loop.halted -> floor.signalled",
+        "loop.halted -> intake.reclassified",
+        "loop.halted -> message.appended",
+        "loop.halted -> permission.answered",
+        "loop.halted -> run.terminated",
+        "loop.handoff.failed -> floor.signalled",
+        "loop.handoff.failed -> intake.reclassified",
+        "loop.handoff.failed -> run.terminated",
+        "loop.iteration.started -> floor.signalled",
+        "loop.iteration.started -> intake.reclassified",
+        "loop.iteration.started -> loop.halted",
+        "loop.iteration.started -> message.appended",
+        "loop.iteration.started -> run.terminated",
+        "loop.reminder.sent -> floor.signalled",
+        "loop.reminder.sent -> intake.reclassified",
+        "loop.reminder.sent -> loop.halted",
+        "loop.reminder.sent -> loop.iteration.started",
+        "loop.reminder.sent -> loop.tool.started",
+        "loop.reminder.sent -> message.appended",
+        "loop.reminder.sent -> run.terminated",
+        "loop.tool.called -> message.appended",
+        "loop.tool.skipped -> loop.halted",
+        "loop.tool.skipped -> message.appended",
+        "loop.tool.started -> loop.halted",
+        "loop.tool.started -> loop.tool.called",
+        "loop.tool.started -> permission.evaluated",
+        "loop.tool.started -> permission.rejected",
+        "message.appended -> floor.signalled",
+        "message.appended -> intake.reclassified",
+        "message.appended -> loop.halted",
+        "message.appended -> loop.handoff.failed",
+        "message.appended -> loop.iteration.started",
+        "message.appended -> loop.reminder.sent",
+        "message.appended -> loop.tool.skipped",
+        "message.appended -> loop.tool.started",
+        "message.appended -> message.appended",
+        "message.appended -> run.terminated",
+        "run.started -> config.accepted",
+        "run.started -> floor.signalled",
+        "run.started -> intake.classified",
+        "run.started -> permission.evaluated",
+        "run.started -> permission.rejected",
+        "run.started -> run.terminated",
+        "run.terminated -> run.recorded",
+        "run.terminated -> task.created"
+      ]
+    },
+    {
+      "group": "floor-event",
+      "types": ["floor.checked", "floor.signalled"],
+      "edges": [
+        "floor.checked -> run.terminated",
+        "floor.signalled -> decision.opened",
+        "floor.signalled -> floor.checked",
+        "floor.signalled -> floor.signalled",
+        "floor.signalled -> intake.reclassified",
+        "floor.signalled -> loop.halted",
+        "floor.signalled -> message.appended",
+        "floor.signalled -> run.terminated"
+      ]
+    },
+    {
+      "group": "intake-event",
+      "types": [
+        "intake.classified",
+        "intake.overridden",
+        "intake.reclassified"
+      ],
+      "edges": [
+        "intake.classified -> decision.opened",
+        "intake.overridden -> message.appended",
+        "intake.reclassified -> decision.opened"
+      ]
+    },
+    {
+      "group": "object-event",
+      "types": [
+        "artifact.recorded",
+        "decision.footprint.recorded",
+        "decision.opened",
+        "decision.outcome.signalled",
+        "run.recorded",
+        "task.created"
+      ],
+      "edges": [
+        "decision.opened -> decision.opened",
+        "decision.opened -> floor.checked",
+        "decision.opened -> floor.signalled",
+        "decision.opened -> intake.overridden",
+        "decision.opened -> intake.reclassified",
+        "decision.opened -> message.appended",
+        "decision.opened -> permission.evaluated",
+        "decision.opened -> permission.rejected",
+        "decision.opened -> run.terminated",
+        "run.recorded -> run.started",
+        "task.created -> run.recorded"
+      ]
+    },
+    {
+      "group": "permission-event",
+      "types": [
+        "permission.answered",
+        "permission.asked",
+        "permission.evaluated",
+        "permission.rejected"
+      ],
+      "edges": [
+        "permission.answered -> config.accepted",
+        "permission.answered -> floor.signalled",
+        "permission.answered -> intake.overridden",
+        "permission.answered -> intake.reclassified",
+        "permission.answered -> loop.halted",
+        "permission.answered -> loop.tool.called",
+        "permission.answered -> run.terminated",
+        "permission.asked -> loop.halted",
+        "permission.asked -> permission.answered",
+        "permission.evaluated -> loop.halted",
+        "permission.evaluated -> loop.tool.called",
+        "permission.evaluated -> permission.asked",
+        "permission.rejected -> floor.signalled",
+        "permission.rejected -> loop.halted",
+        "permission.rejected -> loop.tool.called",
+        "permission.rejected -> run.terminated"
+      ]
+    }
+  ]
+}

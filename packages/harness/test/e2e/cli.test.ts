@@ -428,6 +428,7 @@ function expectWellFormedLog(runId: string): Event[] {
   }
   expect(all.filter((e) => e.type === "run.terminated")).toHaveLength(1);
   expect(all.at(-1)?.type).toBe("run.terminated");
+  expectFlowDeclared(all);
   return all.slice(2);
 }
 
@@ -2805,6 +2806,24 @@ function floorSignalsOf(events: readonly Event[]) {
 }
 /** A-dep-4: the owner's notice of an early set, as the CLI prints it. */
 const EARLY = "helmwright: floor early: ";
+
+const FLOW = new URL(
+  "../../../schema/schemas/event-flow.json",
+  import.meta.url,
+);
+
+/** Q68(b): observed ⊆ declared; each consecutive pair of types in every e2e log is a declared edge. */
+function expectFlowDeclared(events: readonly Event[]): void {
+  const flow = JSON.parse(readFileSync(fileURLToPath(FLOW), "utf8")) as {
+    groups: { edges: string[] }[];
+  };
+  const declared = new Set(flow.groups.flatMap((g) => g.edges));
+  const missing = events
+    .slice(1)
+    .map((e, i) => `${events[i]?.type ?? ""} -> ${e.type}`)
+    .filter((edge) => !declared.has(edge));
+  expect([...new Set(missing)], "undeclared event-flow edges").toEqual([]);
+}
 
 const PENDING = "helmwright: pending owner decisions: ";
 const KEY_FILE = "recommendation.key";
