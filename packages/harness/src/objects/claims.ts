@@ -8,7 +8,7 @@ export type ClaimTier = BriefClaim["tier"];
 
 /**
  * What each tier means, as the owner approved it (Q70-1). Ring 0 and fixed: the wording
- * is not a setting, and the card and docs show these exact strings.
+ * is not a setting, and the card (A3) will show these exact strings.
  */
 export const TIER_MEANING: Readonly<Record<ClaimTier, string>> = deepFreeze({
   Direct:

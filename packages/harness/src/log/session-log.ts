@@ -112,7 +112,9 @@ function resolver(
         "SELECT 1 AS ok FROM events WHERE seq < ? AND ((" +
           run +
           " AND (event_id = ? OR (type = 'floor.signalled' AND EXISTS (SELECT 1" +
-          " FROM json_each(payload, '$.signals') WHERE json_extract(value, '$.id') = ?))))" +
+          " FROM json_each(payload, '$.signals') AS s" +
+          // Only an object element has an id; json_extract on a string element is an error.
+          " WHERE CASE WHEN s.type = 'object' THEN json_extract(s.value, '$.id') END = ?))))" +
           " OR (type = 'artifact.recorded' AND json_extract(payload, '$.id') = ?))" +
           " LIMIT 1",
       )

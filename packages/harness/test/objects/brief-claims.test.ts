@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { BriefClaim, DecisionOpenedOwned } from "@helmwright/schema";
 import {
   artifactRecorded,
   decisionOpened,
@@ -301,17 +302,40 @@ describe("Brief claims on write (Q70-1)", () => {
 
   it("lets the builder path through without a log, for the log to resolve", () => {
     // decisionOpened has no log, so it accepts any evidence ID (RESOLVES_ANY)...
-    const { claims } = opened([claim("Direct", ["evt-elsewhere"])]).brief;
-    expect(() =>
-      decisionOpened({
-        ...opened([claim("Direct", ["evt-elsewhere"])]),
-      } as never),
-    ).not.toThrow();
-    expect(claims).toBeDefined();
+    // The input is typed, so the builder's own signature is what this exercises.
+    const typed = (
+      claims: [BriefClaim],
+    ): Omit<DecisionOpenedOwned, "kind"> => ({
+      ...{ id: "decision-1", authority: "owner", taskId: "task-1", runId },
+      ...{ signalIds: ["floor-dep-1"], class: "technology", source: "floor" },
+      brief: {
+        ...{ question: "Which HTTP client should the harness use?" },
+        options: [option("a"), option("b")],
+        recommendationSha256: "d".repeat(64),
+        optionOrderSeed: "e".repeat(32),
+        confidence: "medium",
+        costIfWrong: "one module to rewrite",
+        reversibility: "costly",
+        uncertainty: "how retries behave behind a proxy",
+        blocked: "the fetch module",
+        concepts: ["http-client"],
+        proposedFootprint: [footprint.id],
+        claims,
+      },
+    });
+    const claims: [BriefClaim] = [
+      { text: "cited", tier: "Direct", evidence: ["evt-elsewhere"] },
+    ];
+    const built = decisionOpened(typed(claims));
+    if (built.authority !== "owner") throw new Error("not an owned decision");
+    expect(built.brief.claims).toEqual(claims);
     // ... but the structural tier rules still hold.
-    expect(() =>
-      decisionOpened({ ...opened([claim("Unknown", ["x"])]) } as never),
-    ).toThrow("decision.opened claim 0 (Unknown) has no evidence");
+    const unknown: [BriefClaim] = [
+      { text: "unsure", tier: "Unknown", evidence: ["x"] },
+    ];
+    expect(() => decisionOpened(typed(unknown))).toThrow(
+      "decision.opened claim 0 (Unknown) has no evidence",
+    );
   });
 });
 
@@ -375,6 +399,16 @@ describe("Brief claims on read and rebuild (Q70-1)", () => {
       eventId: "evt-later",
     });
     expect(() => log.events()).toThrow(corrupt(seq, DIRECT_RUN));
+  });
+
+  it("refuses with the normal refusal, not a SQLite error, past a raw floor.signalled with non-object signals", () => {
+    rawInsert("floor.signalled", {
+      kind: "floor.signalled",
+      signals: ["x"],
+    });
+    expect(() =>
+      append("decision.opened", opened([claim("Direct", ["x"])])),
+    ).toThrow(refusal(DIRECT_RUN));
   });
 
   it("rebuilds a log whose claims resolve", () => {
