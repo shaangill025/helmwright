@@ -296,6 +296,9 @@ async function main(args: readonly string[]): Promise<number> {
       const refs = displayText(provisional.join(", "));
       console.error("helmwright: provisional ref: " + refs);
     }
+    for (const warning of end.warnings) {
+      console.error("helmwright: warning: " + displayText(warning));
+    }
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
   } catch (error) {

@@ -18,6 +18,11 @@ import { persistHeld, type HeldObjects } from "./tree.ts";
 
 /** The most open provisional branches in one repository; past it a fork is refused. */
 export const MAX_PROVISIONAL = 10;
+/** PB-1: the floor is logged, but a provisional fork was refused at the cap. */
+export const PROVISIONAL_REFUSED =
+  "provisional branch refused: too many open provisional branches";
+/** PB-1: the floor is logged, but a provisional ref could not be created. */
+export const PROVISIONAL_FAILED = "provisional branch ref could not be created";
 /** Where the refs live in the host repo's common dir: never under refs/heads, never pushed. */
 export const PROVISIONAL_PREFIX = "refs/helmwright/provisional/";
 
@@ -289,7 +294,19 @@ export function provisionalFaults(
     const legacy = !history.some(
       (h) => PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
     );
-    if (!legacy) {
+    // Owner ruling 2026-10-17: only a run that ended its loop completed forks. From the
+    // log alone that is `completed`, or the two failures made after a completed loop and
+    // a logged passing floor (a refusal or a failed ref). This needs no extra event.
+    const terminal: unknown = events.find((e) => e.type === "run.terminated")
+      ?.payload["terminal"];
+    const { kind, error } = (terminal ?? {}) as Record<string, unknown>;
+    const due =
+      kind === "completed" ||
+      (kind === "failed" &&
+        typeof error === "string" &&
+        (error === PROVISIONAL_REFUSED ||
+          error.startsWith(PROVISIONAL_FAILED)));
+    if (!legacy && due) {
       for (const e of events) {
         const forkable =
           e.type === "decision.opened" &&

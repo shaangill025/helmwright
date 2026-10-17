@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Event } from "@helmwright/schema";
 import {
   MAX_PROVISIONAL,
+  PROVISIONAL_FAILED,
+  PROVISIONAL_REFUSED,
   planProvisional,
   provisionalCommitId,
   provisionalFaults,
@@ -97,12 +99,32 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     const missing = [
       event(0, "decision.opened", decision),
       event(1, "floor.checked", checkedPayload()),
+      event(2, "run.terminated", { terminal: { kind: "completed" } }),
     ];
     // Another run's earlier provisional event: the log is no longer legacy.
     const earlier = [event(0, "provisional.opened", opened())];
     expect(provisionalFaults(missing, earlier)).toEqual([
       expect.stringContaining("owner decision without provisional.opened"),
     ]);
+    // B1 (owner ruling 2026-10-17): a run that did not end completed is due no fork.
+    const ended = (terminal: object) => [
+      ...missing.slice(0, 2),
+      event(2, "run.terminated", { terminal }),
+    ];
+    for (const terminal of [
+      { kind: "incomplete", reason: "limit" },
+      { kind: "failed", error: "engine failed" },
+    ]) {
+      expect(provisionalFaults(ended(terminal), earlier)).toEqual([]);
+    }
+    // The failures made after a completed loop and a logged floor still owe the fork.
+    for (const error of [
+      PROVISIONAL_REFUSED,
+      PROVISIONAL_FAILED + ": update-ref failed",
+    ]) {
+      const owed = provisionalFaults(ended({ kind: "failed", error }), earlier);
+      expect(owed).toHaveLength(1);
+    }
     // Architecture is never provisional, and a harness Ruling has no fork.
     const architecture = [
       event(0, "decision.opened", { ...decision, class: "architecture" }),
@@ -271,6 +293,27 @@ describe("planProvisional (PB-1, real git)", () => {
     expect(() =>
       planProvisional(common, baseCommit, candidateTree, decisions(1), held),
     ).toThrow(/packed/);
+    const commit = provisionalCommitId(
+      candidateTree,
+      baseCommit,
+      "decision-u-0",
+    );
+    expect(() => git(common, "cat-file", "-e", commit)).toThrow();
+  });
+
+  it("fails closed, with no commit made, if a held object is missing (B4)", () => {
+    // The tree is only in the held dir until the fork copies it.
+    const gitDir = join(held.objects, "..");
+    const blob = git(
+      gitDir,
+      "--git-dir=" + gitDir,
+      "rev-parse",
+      candidateTree + ":a.txt",
+    );
+    rmSync(join(held.objects, blob.slice(0, 2), blob.slice(2)));
+    expect(() =>
+      planProvisional(common, baseCommit, candidateTree, decisions(1), held),
+    ).toThrow();
     const commit = provisionalCommitId(
       candidateTree,
       baseCommit,

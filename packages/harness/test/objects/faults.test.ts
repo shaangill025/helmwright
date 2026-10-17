@@ -423,6 +423,36 @@ describe("objectFaults: floor decisions (A-dep)", () => {
     expect(floor(signalledRun([]))).toEqual([]);
   });
 
+  // PB-1 (B3): provisional events may follow a floor decision, in the floor's transaction.
+  const forked = (slots: readonly number[], type = "provisional.opened") => {
+    const out: Event[] = [];
+    for (const e of signalledRun()) {
+      out.push(e);
+      if (e.type === "decision.opened" && slots.includes(e.seq - 4)) {
+        out.push(event(0, type, {}));
+      }
+    }
+    return out.map((e, seq) => ({ ...e, seq, eventId: "evt-" + String(seq) }));
+  };
+
+  it.each([
+    ["one after the first decision", [0], "provisional.opened"],
+    ["one after the second", [1], "provisional.refused"],
+    ["one after each", [0, 1], "provisional.opened"],
+  ])("steps over provisional events: %s", (_name, slots, type) => {
+    expect(floor(forked(slots, type))).toEqual([]);
+  });
+
+  it("faults a provisional event before the first decision, or a reserved one", () => {
+    const early = forked([]);
+    early.splice(1 + early.findIndex((e) => e.type === "floor.signalled"), 0, {
+      ...event(0, "provisional.opened", {}),
+    });
+    const renumbered = early.map((e, seq) => ({ ...e, seq }));
+    expect(floor(renumbered)).not.toEqual([]);
+    expect(floor(forked([0], "provisional.attached"))).not.toEqual([]);
+  });
+
   it("checks a Brief's seed and commitment for format only", () => {
     const seeded = edit(signalledRun(), 4, (e) =>
       withBrief(e, {

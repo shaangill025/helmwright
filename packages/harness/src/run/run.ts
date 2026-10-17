@@ -36,7 +36,12 @@ import {
   runGit,
   type RunConfig,
 } from "../config/config.ts";
-import { planProvisional, provisionalFaults } from "../floor/provisional.ts";
+import {
+  PROVISIONAL_FAILED,
+  PROVISIONAL_REFUSED,
+  planProvisional,
+  provisionalFaults,
+} from "../floor/provisional.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
@@ -445,11 +450,7 @@ const CLEANUP_UNCONFIRMED =
 export const FLOOR_REJECTED = "sensor floor rejected the candidate";
 /** Why a run that would have completed fails when the floor cannot check (fail closed). */
 export const FLOOR_UNCHECKED = "sensor floor could not check the candidate";
-/** PB-1: the floor is logged, but a provisional fork was refused at the cap. */
-export const PROVISIONAL_REFUSED =
-  "provisional branch refused: too many open provisional branches";
-/** PB-1: the floor is logged, but a provisional ref could not be created. */
-export const PROVISIONAL_FAILED = "provisional branch ref could not be created";
+export { PROVISIONAL_FAILED, PROVISIONAL_REFUSED };
 
 /** Resolves true once every call in `pending` has settled, or false after `ms`. */
 async function settled(
@@ -481,6 +482,8 @@ export interface RunEnd extends RunOutcome {
   readonly provisional: readonly string[];
   /** PB-1: the IDs of the decisions whose fork was refused at the cap. */
   readonly refused: readonly string[];
+  /** PB-1: non-fatal problems, as shown text (a failed removal of the floor's temp objects). */
+  readonly warnings: readonly string[];
   /** A-dep-3: the class move the floor logged; null if it logged none. */
   readonly reclassified: {
     readonly from: IntakeClass;
@@ -784,6 +787,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   let owned: string[] = [];
   const provisional: string[] = [];
   let refused: string[] = [];
+  const warnings: string[] = [];
   let reclassified: RunEnd["reclassified"] = null;
   // SF-2: a run with no floor cannot complete.
   let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
@@ -842,8 +846,8 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
           try {
             cleanup();
           } catch (error) {
-            const warning = displayText(errorMessage(error));
-            console.error("helmwright: warning: cleanup failed: " + warning);
+            const text = displayText(errorMessage(error));
+            warnings.push("cleanup failed: " + text);
           }
         }
       }
@@ -858,7 +862,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     append("run.terminated", { agentId: nodeId, ...end }, true);
     return {
       ...{ ...end, floor: logged, pending: owned, provisional },
-      ...{ refused, reclassified },
+      ...{ refused, warnings, reclassified },
     };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
@@ -876,6 +880,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       pending: owned,
       provisional,
       refused,
+      warnings,
       reclassified,
     };
   }

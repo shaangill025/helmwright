@@ -3290,6 +3290,35 @@ const helmwrightRefs = (host: string) =>
 
 describe("provisional branch (e2e, PB-1)", () => {
   it(
+    "replays an incomplete run with a pending Brief, after a forked run, as no fault (B1)",
+    { timeout: 2 * T },
+    () => {
+      const dep = fxTask("dependency");
+      const start = (dir: string, id: string, limits: object) => {
+        const fx = materializeFx(join(tmp, dir));
+        const { title, intake, turns } = dep;
+        const extra = { title, intake, id };
+        return runWith(writeTask(turns, limits, fx.repo, extra));
+      };
+      // Run 1 completes and forks: from then on the log is no longer legacy.
+      const first = start("fx-1", "task-1", LIMITS);
+      expect(first.status, first.stderr).toBe(0);
+      // Run 2 stops after one iteration: a passing floor, a Brief, and no fork.
+      const second = start("fx-2", "task-2", { ...LIMITS, maxIterations: 1 });
+      expect(second.out.terminal.kind).not.toBe("completed");
+      const events = logEvents().filter((e) => e.runId === second.out.runId);
+      expect(events.some((e) => e.type === "decision.opened")).toBe(true);
+      expect(events.some((e) => e.type.startsWith("provisional."))).toBe(false);
+      const replay = cli("replay", second.out.runId, "--state-dir", stateDir);
+      expect(replay.status, replay.stdout).toBe(0);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        permissionFaults: [],
+        objectFaults: [],
+      });
+    },
+  );
+
+  it(
     "forks a deterministic commit of the candidate for the pending Brief",
     { timeout: T },
     () => {
