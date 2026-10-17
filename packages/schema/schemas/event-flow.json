@@ -121,6 +121,15 @@
       ]
     },
     {
+      "group": "owner-event",
+      "types": [
+        "decision.owner.answered",
+        "decision.owner.key.registered",
+        "decision.owner.key.rotated"
+      ],
+      "edges": []
+    },
+    {
       "group": "permission-event",
       "types": [
         "permission.answered",

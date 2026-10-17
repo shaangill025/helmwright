@@ -611,6 +611,19 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/schema/schemas/owner-event.schema.json",
+    "ring": 0,
+    "assumption": "Every decision.owner.* payload carries a presence object (key ID, 128-bit nonce, issue time, base64 DER ECDSA signature) and no extra field; the key mode is a property of the registered key, bound in the registration message, not of a signature. The owner key is pinned by decision.owner.key.registered, and decision.owner.key.rotated carries a signature by the current key and one by the new key. The schema checks shape only: the signature check, the single-use nonce and the refusal of software keys outside test builds belong to the verifier (SIG-2 and later). Until then the log refuses every decision.owner.* event.",
+    "evidence": [
+      "decisions Owner answer signatures",
+      "packages/schema/test/owner-event.test.ts",
+      "packages/schema/test/event-flow.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/schema/schemas/permission-event.schema.json",
     "ring": 0,
     "assumption": "Each ruling is logged with the policy version and the input's SHA-256, each ask with its prompt's SHA-256, and an approval's attestation is none until slice SIG.",
