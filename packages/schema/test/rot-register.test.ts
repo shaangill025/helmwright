@@ -51,10 +51,12 @@ const missing = (register: readonly RotRegisterEntry[]) =>
     .map((e) => e.component)
     .filter((component) => !existsSync(join(root, component)));
 
+/** Q60 amendment: an entry's key is its component and facet; no facet is a key too. */
+const key = (e: RotRegisterEntry) =>
+  e.facet === undefined ? e.component : e.component + "#" + e.facet;
+
 const duplicates = (register: readonly RotRegisterEntry[]) =>
-  register
-    .map((e) => e.component)
-    .filter((component, index, all) => all.indexOf(component) !== index);
+  register.map(key).filter((name, index, all) => all.indexOf(name) !== index);
 
 function load(): RotRegister {
   const data: unknown = JSON.parse(
@@ -78,7 +80,7 @@ describe("rot-register.json", () => {
     expect(missing(register)).toEqual([]);
   });
 
-  it("names each component once", () => {
+  it("names each component and facet once", () => {
     expect(duplicates(register)).toEqual([]);
   });
 });
@@ -113,8 +115,19 @@ describe("rot register checks", () => {
     expect(missing([...register, gone])).toEqual([gone.component]);
   });
 
-  it("reports a repeated component", () => {
+  it("reports a repeated component without a facet", () => {
+    expect(entry.facet).toBeUndefined();
     expect(duplicates([...register, entry])).toEqual([entry.component]);
+  });
+
+  it("allows facets of one component, not a repeated facet (Q60 amendment)", () => {
+    const [a, b] = [
+      { ...entry, facet: "a" },
+      { ...entry, facet: "b-2" },
+    ];
+    expect(validate([a, b])).toBe(true);
+    expect(duplicates([a, b])).toEqual([]);
+    expect(duplicates([a, b, a])).toEqual([entry.component + "#a"]);
   });
 });
 
@@ -151,6 +164,14 @@ describe("RotRegister schema", () => {
     { reviewTrigger: [] },
     { reviewTrigger: ["weekly"] },
     { owner: "me" },
+    { facet: "" },
+    { facet: "Git" },
+    { facet: "a_b" },
+    { facet: "-a" },
+    { facet: "a-" },
+    { facet: "a--b" },
+    { facet: "a".repeat(33) },
+    { facet: 1 },
   ])("rejects an entry with %j", (change) => {
     expect(validate([{ ...entry, ...change }])).toBe(false);
   });

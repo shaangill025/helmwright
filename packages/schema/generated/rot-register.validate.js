@@ -7,7 +7,7 @@ const schema31 = {
   $id: "https://github.com/shaangill025/helmwright/schemas/rot-register.schema.json",
   title: "RotRegister",
   description:
-    "The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component repeats are checked by the register's test.",
+    "The rot register (07 rule 2, Q60): the assumption each component was built on, reviewed when a trigger fires. This schema checks each entry's shape; that every module is covered, every component exists and no component and facet repeat are checked by the register's test.",
   type: "array",
   minItems: 1,
   maxItems: 1024,
@@ -33,6 +33,12 @@ const schema31 = {
           type: "string",
           pattern: "^[A-Za-z0-9._@+/-]{1,256}$",
           not: { pattern: "^/|//|/$|(^|/)\\.\\.?(/|$)" },
+        },
+        facet: {
+          description:
+            "Q60 amendment: one part of the component's assumption, with its own triggers. Component and facet are unique together; no facet is a key too.",
+          type: "string",
+          pattern: "^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$",
         },
         ring: {
           description:
@@ -98,6 +104,12 @@ const schema32 = {
       pattern: "^[A-Za-z0-9._@+/-]{1,256}$",
       not: { pattern: "^/|//|/$|(^|/)\\.\\.?(/|$)" },
     },
+    facet: {
+      description:
+        "Q60 amendment: one part of the component's assumption, with its own triggers. Component and facet are unique together; no facet is a key too.",
+      type: "string",
+      pattern: "^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$",
+    },
     ring: {
       description:
         "The component's ring in the 05 Rings table: 0 owner only, 1 evolve agent through the gate, 2 harness code.",
@@ -140,9 +152,10 @@ const schema35 = {
 };
 const pattern4 = new RegExp("^/|//|/$|(^|/)\\.\\.?(/|$)", "u");
 const pattern5 = new RegExp("^[A-Za-z0-9._@+/-]{1,256}$", "u");
-const pattern6 = new RegExp("^\\S(.{0,1022}\\S)?$", "u");
-const pattern7 = new RegExp("^\\S(.{0,254}\\S)?$", "u");
-const pattern8 = new RegExp(
+const pattern6 = new RegExp("^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$", "u");
+const pattern7 = new RegExp("^\\S(.{0,1022}\\S)?$", "u");
+const pattern8 = new RegExp("^\\S(.{0,254}\\S)?$", "u");
+const pattern9 = new RegExp(
   "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
   "u",
 );
@@ -274,6 +287,7 @@ function validate21(
     for (const key0 in data) {
       if (!(
         key0 === "component" ||
+        key0 === "facet" ||
         key0 === "ring" ||
         key0 === "assumption" ||
         key0 === "evidence" ||
@@ -369,49 +383,52 @@ function validate21(
         errors++;
       }
     }
+    if (data.facet !== undefined) {
+      let data1 = data.facet;
+      if (typeof data1 === "string") {
+        if (!pattern6.test(data1)) {
+          const err12 = {
+            instancePath: instancePath + "/facet",
+            schemaPath: "#/properties/facet/pattern",
+            keyword: "pattern",
+            params: { pattern: "^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$" },
+            message:
+              'must match pattern "' +
+              "^(?!.*--)[a-z0-9][a-z0-9-]{0,31}(?<!-)$" +
+              '"',
+          };
+          if (vErrors === null) {
+            vErrors = [err12];
+          } else {
+            vErrors.push(err12);
+          }
+          errors++;
+        }
+      } else {
+        const err13 = {
+          instancePath: instancePath + "/facet",
+          schemaPath: "#/properties/facet/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err13];
+        } else {
+          vErrors.push(err13);
+        }
+        errors++;
+      }
+    }
     if (data.ring !== undefined) {
-      let data1 = data.ring;
-      if (!(data1 === 0 || data1 === 1 || data1 === 2)) {
-        const err12 = {
+      let data2 = data.ring;
+      if (!(data2 === 0 || data2 === 1 || data2 === 2)) {
+        const err14 = {
           instancePath: instancePath + "/ring",
           schemaPath: "#/properties/ring/enum",
           keyword: "enum",
           params: { allowedValues: schema32.properties.ring.enum },
           message: "must be equal to one of the allowed values",
-        };
-        if (vErrors === null) {
-          vErrors = [err12];
-        } else {
-          vErrors.push(err12);
-        }
-        errors++;
-      }
-    }
-    if (data.assumption !== undefined) {
-      let data2 = data.assumption;
-      if (typeof data2 === "string") {
-        if (!pattern6.test(data2)) {
-          const err13 = {
-            instancePath: instancePath + "/assumption",
-            schemaPath: "#/properties/assumption/pattern",
-            keyword: "pattern",
-            params: { pattern: "^\\S(.{0,1022}\\S)?$" },
-            message: 'must match pattern "' + "^\\S(.{0,1022}\\S)?$" + '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err13];
-          } else {
-            vErrors.push(err13);
-          }
-          errors++;
-        }
-      } else {
-        const err14 = {
-          instancePath: instancePath + "/assumption",
-          schemaPath: "#/properties/assumption/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
         };
         if (vErrors === null) {
           vErrors = [err14];
@@ -421,16 +438,16 @@ function validate21(
         errors++;
       }
     }
-    if (data.evidence !== undefined) {
-      let data3 = data.evidence;
-      if (Array.isArray(data3)) {
-        if (data3.length > 32) {
+    if (data.assumption !== undefined) {
+      let data3 = data.assumption;
+      if (typeof data3 === "string") {
+        if (!pattern7.test(data3)) {
           const err15 = {
-            instancePath: instancePath + "/evidence",
-            schemaPath: "#/properties/evidence/maxItems",
-            keyword: "maxItems",
-            params: { limit: 32 },
-            message: "must NOT have more than 32 items",
+            instancePath: instancePath + "/assumption",
+            schemaPath: "#/properties/assumption/pattern",
+            keyword: "pattern",
+            params: { pattern: "^\\S(.{0,1022}\\S)?$" },
+            message: 'must match pattern "' + "^\\S(.{0,1022}\\S)?$" + '"',
           };
           if (vErrors === null) {
             vErrors = [err15];
@@ -439,8 +456,42 @@ function validate21(
           }
           errors++;
         }
-        if (data3.length < 1) {
-          const err16 = {
+      } else {
+        const err16 = {
+          instancePath: instancePath + "/assumption",
+          schemaPath: "#/properties/assumption/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err16];
+        } else {
+          vErrors.push(err16);
+        }
+        errors++;
+      }
+    }
+    if (data.evidence !== undefined) {
+      let data4 = data.evidence;
+      if (Array.isArray(data4)) {
+        if (data4.length > 32) {
+          const err17 = {
+            instancePath: instancePath + "/evidence",
+            schemaPath: "#/properties/evidence/maxItems",
+            keyword: "maxItems",
+            params: { limit: 32 },
+            message: "must NOT have more than 32 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err17];
+          } else {
+            vErrors.push(err17);
+          }
+          errors++;
+        }
+        if (data4.length < 1) {
+          const err18 = {
             instancePath: instancePath + "/evidence",
             schemaPath: "#/properties/evidence/minItems",
             keyword: "minItems",
@@ -448,18 +499,18 @@ function validate21(
             message: "must NOT have fewer than 1 items",
           };
           if (vErrors === null) {
-            vErrors = [err16];
+            vErrors = [err18];
           } else {
-            vErrors.push(err16);
+            vErrors.push(err18);
           }
           errors++;
         }
-        const len0 = data3.length;
+        const len0 = data4.length;
         for (let i0 = 0; i0 < len0; i0++) {
-          let data4 = data3[i0];
-          if (typeof data4 === "string") {
-            if (!pattern7.test(data4)) {
-              const err17 = {
+          let data5 = data4[i0];
+          if (typeof data5 === "string") {
+            if (!pattern8.test(data5)) {
+              const err19 = {
                 instancePath: instancePath + "/evidence/" + i0,
                 schemaPath: "#/properties/evidence/items/pattern",
                 keyword: "pattern",
@@ -467,14 +518,14 @@ function validate21(
                 message: 'must match pattern "' + "^\\S(.{0,254}\\S)?$" + '"',
               };
               if (vErrors === null) {
-                vErrors = [err17];
+                vErrors = [err19];
               } else {
-                vErrors.push(err17);
+                vErrors.push(err19);
               }
               errors++;
             }
           } else {
-            const err18 = {
+            const err20 = {
               instancePath: instancePath + "/evidence/" + i0,
               schemaPath: "#/properties/evidence/items/type",
               keyword: "type",
@@ -482,59 +533,20 @@ function validate21(
               message: "must be string",
             };
             if (vErrors === null) {
-              vErrors = [err18];
+              vErrors = [err20];
             } else {
-              vErrors.push(err18);
+              vErrors.push(err20);
             }
             errors++;
           }
         }
       } else {
-        const err19 = {
+        const err21 = {
           instancePath: instancePath + "/evidence",
           schemaPath: "#/properties/evidence/type",
           keyword: "type",
           params: { type: "array" },
           message: "must be array",
-        };
-        if (vErrors === null) {
-          vErrors = [err19];
-        } else {
-          vErrors.push(err19);
-        }
-        errors++;
-      }
-    }
-    if (data.added !== undefined) {
-      let data5 = data.added;
-      if (typeof data5 === "string") {
-        if (!pattern8.test(data5)) {
-          const err20 = {
-            instancePath: instancePath + "/added",
-            schemaPath: "#/$defs/date/pattern",
-            keyword: "pattern",
-            params: {
-              pattern: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
-            },
-            message:
-              'must match pattern "' +
-              "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$" +
-              '"',
-          };
-          if (vErrors === null) {
-            vErrors = [err20];
-          } else {
-            vErrors.push(err20);
-          }
-          errors++;
-        }
-      } else {
-        const err21 = {
-          instancePath: instancePath + "/added",
-          schemaPath: "#/$defs/date/type",
-          keyword: "type",
-          params: { type: "string" },
-          message: "must be string",
         };
         if (vErrors === null) {
           vErrors = [err21];
@@ -544,12 +556,12 @@ function validate21(
         errors++;
       }
     }
-    if (data.lastReviewed !== undefined) {
-      let data6 = data.lastReviewed;
+    if (data.added !== undefined) {
+      let data6 = data.added;
       if (typeof data6 === "string") {
-        if (!pattern8.test(data6)) {
+        if (!pattern9.test(data6)) {
           const err22 = {
-            instancePath: instancePath + "/lastReviewed",
+            instancePath: instancePath + "/added",
             schemaPath: "#/$defs/date/pattern",
             keyword: "pattern",
             params: {
@@ -569,7 +581,7 @@ function validate21(
         }
       } else {
         const err23 = {
-          instancePath: instancePath + "/lastReviewed",
+          instancePath: instancePath + "/added",
           schemaPath: "#/$defs/date/type",
           keyword: "type",
           params: { type: "string" },
@@ -583,16 +595,21 @@ function validate21(
         errors++;
       }
     }
-    if (data.reviewTrigger !== undefined) {
-      let data7 = data.reviewTrigger;
-      if (Array.isArray(data7)) {
-        if (data7.length > 3) {
+    if (data.lastReviewed !== undefined) {
+      let data7 = data.lastReviewed;
+      if (typeof data7 === "string") {
+        if (!pattern9.test(data7)) {
           const err24 = {
-            instancePath: instancePath + "/reviewTrigger",
-            schemaPath: "#/properties/reviewTrigger/maxItems",
-            keyword: "maxItems",
-            params: { limit: 3 },
-            message: "must NOT have more than 3 items",
+            instancePath: instancePath + "/lastReviewed",
+            schemaPath: "#/$defs/date/pattern",
+            keyword: "pattern",
+            params: {
+              pattern: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$",
+            },
+            message:
+              'must match pattern "' +
+              "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$" +
+              '"',
           };
           if (vErrors === null) {
             vErrors = [err24];
@@ -601,8 +618,42 @@ function validate21(
           }
           errors++;
         }
-        if (data7.length < 1) {
-          const err25 = {
+      } else {
+        const err25 = {
+          instancePath: instancePath + "/lastReviewed",
+          schemaPath: "#/$defs/date/type",
+          keyword: "type",
+          params: { type: "string" },
+          message: "must be string",
+        };
+        if (vErrors === null) {
+          vErrors = [err25];
+        } else {
+          vErrors.push(err25);
+        }
+        errors++;
+      }
+    }
+    if (data.reviewTrigger !== undefined) {
+      let data8 = data.reviewTrigger;
+      if (Array.isArray(data8)) {
+        if (data8.length > 3) {
+          const err26 = {
+            instancePath: instancePath + "/reviewTrigger",
+            schemaPath: "#/properties/reviewTrigger/maxItems",
+            keyword: "maxItems",
+            params: { limit: 3 },
+            message: "must NOT have more than 3 items",
+          };
+          if (vErrors === null) {
+            vErrors = [err26];
+          } else {
+            vErrors.push(err26);
+          }
+          errors++;
+        }
+        if (data8.length < 1) {
+          const err27 = {
             instancePath: instancePath + "/reviewTrigger",
             schemaPath: "#/properties/reviewTrigger/minItems",
             keyword: "minItems",
@@ -610,21 +661,21 @@ function validate21(
             message: "must NOT have fewer than 1 items",
           };
           if (vErrors === null) {
-            vErrors = [err25];
+            vErrors = [err27];
           } else {
-            vErrors.push(err25);
+            vErrors.push(err27);
           }
           errors++;
         }
-        const len1 = data7.length;
+        const len1 = data8.length;
         for (let i1 = 0; i1 < len1; i1++) {
-          let data8 = data7[i1];
+          let data9 = data8[i1];
           if (!(
-            data8 === "model" ||
-            data8 === "engine" ||
-            data8 === "milestone"
+            data9 === "model" ||
+            data9 === "engine" ||
+            data9 === "milestone"
           )) {
-            const err26 = {
+            const err28 = {
               instancePath: instancePath + "/reviewTrigger/" + i1,
               schemaPath: "#/$defs/reviewTrigger/enum",
               keyword: "enum",
@@ -632,15 +683,15 @@ function validate21(
               message: "must be equal to one of the allowed values",
             };
             if (vErrors === null) {
-              vErrors = [err26];
+              vErrors = [err28];
             } else {
-              vErrors.push(err26);
+              vErrors.push(err28);
             }
             errors++;
           }
         }
       } else {
-        const err27 = {
+        const err29 = {
           instancePath: instancePath + "/reviewTrigger",
           schemaPath: "#/properties/reviewTrigger/type",
           keyword: "type",
@@ -648,15 +699,15 @@ function validate21(
           message: "must be array",
         };
         if (vErrors === null) {
-          vErrors = [err27];
+          vErrors = [err29];
         } else {
-          vErrors.push(err27);
+          vErrors.push(err29);
         }
         errors++;
       }
     }
   } else {
-    const err28 = {
+    const err30 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -664,9 +715,9 @@ function validate21(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err28];
+      vErrors = [err30];
     } else {
-      vErrors.push(err28);
+      vErrors.push(err30);
     }
     errors++;
   }
