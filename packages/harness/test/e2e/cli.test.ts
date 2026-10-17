@@ -2806,6 +2806,24 @@ function floorSignalsOf(events: readonly Event[]) {
 /** A-dep-4: the owner's notice of an early set, as the CLI prints it. */
 const EARLY = "helmwright: floor early: ";
 
+const FLOW = new URL(
+  "../../../schema/schemas/event-flow.json",
+  import.meta.url,
+);
+
+/** Q68(b): observed ⊆ declared; each consecutive pair of types is a declared edge. */
+function expectFlowDeclared(events: readonly Event[]): void {
+  const flow = JSON.parse(readFileSync(fileURLToPath(FLOW), "utf8")) as {
+    groups: { edges: string[] }[];
+  };
+  const declared = new Set(flow.groups.flatMap((g) => g.edges));
+  const missing = events
+    .slice(1)
+    .map((e, i) => `${events[i]?.type ?? ""} -> ${e.type}`)
+    .filter((edge) => !declared.has(edge));
+  expect([...new Set(missing)], "undeclared event-flow edges").toEqual([]);
+}
+
 const PENDING = "helmwright: pending owner decisions: ";
 const KEY_FILE = "recommendation.key";
 
@@ -2864,6 +2882,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       });
       expect(run.stderr).not.toContain(PENDING);
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
+      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -2998,6 +3017,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       });
       expect(run.stderr).toContain(PENDING + id + "\n");
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
+      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3060,6 +3080,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(run.stderr).not.toContain(PENDING);
       // OQ-AD3-3: a bounded task is not reclassified.
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
+      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3133,6 +3154,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
         "helmwright: intake reclassified chore -> architectural (floor signals)\n",
       );
       expect(run.stderr).not.toContain(PENDING);
+      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3176,6 +3198,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       const said = JSON.stringify(deriveMessages(run.events, run.out.runId));
       expect(said).not.toContain("dependency.added");
       expect(run.stderr).not.toContain(PENDING);
+      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );

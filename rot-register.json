@@ -627,5 +627,18 @@
     "added": "2026-10-07",
     "lastReviewed": "2026-10-16",
     "reviewTrigger": ["model", "engine", "milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/event-flow.json",
+    "ring": 0,
+    "assumption": "Q68(a): every Ring 0 decision is a pure function of logged facts, so replay of the log reaches the same decision; Q68(b): event types follow one another only along the edges declared here, which the FX e2e logs check (observed within declared) and docs/event-flow.md draws.",
+    "evidence": [
+      "decisions Q68",
+      "packages/schema/test/event-flow.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-16",
+    "lastReviewed": "2026-10-16",
+    "reviewTrigger": ["engine", "milestone"]
   }
 ]

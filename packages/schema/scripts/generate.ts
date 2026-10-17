@@ -1,4 +1,5 @@
-// Generates TypeScript types and Ajv standalone validators from schemas/*.schema.json.
+// Generates TypeScript types and Ajv standalone validators from schemas/*.schema.json,
+// and docs/event-flow.md from schemas/event-flow.json.
 // The schemas are authoritative; CI reruns this script and fails if the output differs.
 import {
   mkdirSync,
@@ -86,3 +87,41 @@ for (const file of files) {
   );
   await write(join(outDir, `${name}.validate.d.ts`), declaration, "typescript");
 }
+
+// Q68(b): docs/event-flow.md, drawn from the declared edges in schemas/event-flow.json.
+interface EventFlow {
+  groups: { group: string; types: string[]; edges: string[] }[];
+}
+const flow = JSON.parse(
+  readFileSync(join(schemaDir, "event-flow.json"), "utf8"),
+) as EventFlow;
+const node = (type: string) => type.replaceAll(".", "_");
+const groups = [...flow.groups].sort((a, b) => (a.group < b.group ? -1 : 1));
+const edges = groups.flatMap((g) => g.edges).sort();
+const mermaid = [
+  "flowchart LR",
+  ...groups.flatMap((g) => [
+    `  subgraph ${node(g.group.replaceAll("-", "_"))}["${g.group}"]`,
+    ...[...g.types].sort().map((type) => `    ${node(type)}["${type}"]`),
+    "  end",
+  ]),
+  ...edges.map((edge) => {
+    const [from = "", to = ""] = edge.split(" -> ");
+    return `  ${node(from)} --> ${node(to)}`;
+  }),
+];
+const markdown = [
+  "<!-- Generated from packages/schema/schemas/event-flow.json by packages/schema/scripts/generate.ts. Do not edit. -->",
+  "",
+  "# Event flow",
+  "",
+  "Each arrow is a declared edge: an event of the arrow's target type may follow one of its source type in a session log (Q68(b)). The FX e2e tests check that every observed pair is declared.",
+  "",
+  "```mermaid",
+  ...mermaid,
+  "```",
+].join("\n");
+writeFileSync(
+  join(root, "..", "..", "docs", "event-flow.md"),
+  await format(markdown, { parser: "markdown" }),
+);
