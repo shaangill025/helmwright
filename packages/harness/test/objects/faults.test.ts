@@ -812,6 +812,22 @@ describe("objectFaults: floor Brief claims by rubric version (Q70-1)", () => {
     );
     expect(floor(events)).toEqual([NOT_ITS]);
   });
+
+  it("faults a rubric-1 floor.signalled after a rubric-2 one in the log, not the reverse", () => {
+    const earlier = (rubric: string) =>
+      withPayload(
+        event(-1, "floor.signalled", {}, "run-0"),
+        signalled([], LOCKFILES, rubric),
+      );
+    const old = signalledRun([runtimeAdd, devAdd], R1);
+    const NOT_MONOTONIC =
+      "seq 3: floor.signalled rubric version is older than an earlier one's";
+    expect(floor(old, [earlier(R2), ...old])).toEqual([NOT_MONOTONIC]);
+    expect(floor(old, [earlier(R1), ...old])).toEqual([]);
+    const current = signalledRun([runtimeAdd, devAdd], R2);
+    expect(floor(current, [earlier(R1), ...current])).toEqual([]);
+    expect(floor(current, [earlier(R2), ...current])).toEqual([]);
+  });
 });
 
 describe("objectFaults: intake reclassification (A-dep-3)", () => {

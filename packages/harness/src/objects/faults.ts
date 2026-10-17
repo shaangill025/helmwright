@@ -222,6 +222,7 @@ function lockfileFaults(
  * `floor.signalled` precedes that event in the log; likewise a `floor.signalled` without
  * `lockfiles` (written before the field) is legacy, its Briefs' lockfile footprints
  * checked for format only, only if no `floor.signalled` with it precedes it in the log.
+ * A rubric older than that of an earlier `floor.signalled` in the log is a fault.
  * Legacy is keyed on the field, not a detector version: the signals are the same
  * `dependency-1` ones. `lockfiles`, like `signals`, is self-attested until SIG's hash
  * chain: replay checks it against the signals, not the candidate tree.
@@ -275,6 +276,18 @@ function floorDecisionFaults(
     }
     if (!MATERIALITY_RUBRICS.includes(materiality.rubricVersion)) {
       at("rubric version is not known");
+    }
+    // Rubric versions only move forward in a log, as the lockfiles legacy rule does.
+    const rank = (v: unknown) => MATERIALITY_RUBRICS.indexOf(String(v));
+    const mine = rank(materiality.rubricVersion);
+    const later = (e: Event) => {
+      const m = e.payload["materiality"] as { rubricVersion?: unknown } | null;
+      return rank(m?.rubricVersion) > mine;
+    };
+    const earlier = (e: Event) =>
+      e.type === "floor.signalled" && e.seq < signalled.seq && later(e);
+    if (mine >= 0 && objects.some(earlier)) {
+      at("rubric version is older than an earlier one's");
     }
     if (signals.some((s, i) => s.id !== `${signalled.eventId}:${String(i)}`)) {
       at("signal ID is not <eventId>:<index>");
