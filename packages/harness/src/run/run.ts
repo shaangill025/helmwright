@@ -328,7 +328,7 @@ export interface FloorEnd {
    */
   readonly before: readonly (RunRecordEvent & { readonly eventId?: string })[];
   /** PB-1: runs only after the transaction of `before` and `checked` commits (the refs). */
-  readonly afterLogged?: () => void;
+  readonly afterLogged?: (created: string[]) => void;
 }
 
 /**
@@ -404,7 +404,10 @@ export interface RunSetup {
    * transaction (nothing is logged), means the floor could not check the candidate
    * (fail closed).
    */
-  readonly floor?: (defer?: (cleanup: () => void) => void) => FloorEnd;
+  readonly floor?: (
+    defer: (cleanup: () => void) => void,
+    completed: boolean,
+  ) => FloorEnd;
   /**
    * A-dep-4 (OQ-AD-6): the mid-run dependency check, at an engine step that offers tools,
    * once a tool call has settled since the last check and none is in flight (each call's
@@ -476,6 +479,8 @@ export interface RunEnd extends RunOutcome {
   readonly pending: readonly string[];
   /** PB-1: the refs of the provisional branches forked for them. */
   readonly provisional: readonly string[];
+  /** PB-1: the IDs of the decisions whose fork was refused at the cap. */
+  readonly refused: readonly string[];
   /** A-dep-3: the class move the floor logged; null if it logged none. */
   readonly reclassified: {
     readonly from: IntakeClass;
@@ -777,7 +782,8 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   // B3-2: only once no sandbox can still write to the worktree (S6, SF-1, SF-4).
   let logged: FloorChecked | null = null;
   let owned: string[] = [];
-  let provisional: string[] = [];
+  const provisional: string[] = [];
+  let refused: string[] = [];
   let reclassified: RunEnd["reclassified"] = null;
   // SF-2: a run with no floor cannot complete.
   let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
@@ -785,9 +791,11 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     if (halted !== SANDBOX_CLEANUP_FAILED) {
       const cleanups: (() => void)[] = [];
       try {
-        const { checked, before, afterLogged } = setup.floor((cleanup) => {
+        const completed = done.terminal.kind === "completed";
+        const defer = (cleanup: () => void) => {
           cleanups.push(cleanup);
-        });
+        };
+        const { checked, before, afterLogged } = setup.floor(defer, completed);
         // floorFaults refuses any event after floor.checked but run.terminated.
         log.transaction(() => {
           for (const { type, payload, eventId } of before) {
@@ -812,17 +820,16 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
         if (checked.verdict !== "pass") floorError = FLOOR_REJECTED;
         // PB-1: the refs only once the log has them. A failure fails the run, with its
         // own reason; so does a refusal. The floor stays logged either way.
+        refused = before.flatMap(({ type, payload: { decisionId } }) =>
+          type === "provisional.refused" && typeof decisionId === "string"
+            ? [decisionId]
+            : [],
+        );
         try {
-          afterLogged?.();
-          provisional = before.flatMap(({ type, payload: { ref } }) =>
-            type === "provisional.opened" && typeof ref === "string"
-              ? [ref]
-              : [],
-          );
-          if (before.some((e) => e.type === "provisional.refused")) {
-            floorError = PROVISIONAL_REFUSED;
-          }
+          afterLogged?.(provisional);
+          if (refused.length > 0) floorError = PROVISIONAL_REFUSED;
         } catch (error) {
+          // The refs made before the failure are in `provisional` for the owner to see.
           floorError =
             PROVISIONAL_FAILED + ": " + displayText(errorMessage(error));
         }
@@ -830,7 +837,15 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
         floorError = FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
       } finally {
         // PB-1: the floor's held objects, whether it succeeded, threw or failed to log.
-        for (const cleanup of cleanups) cleanup();
+        // A failed removal is a warning, never a failed run.
+        for (const cleanup of cleanups) {
+          try {
+            cleanup();
+          } catch (error) {
+            const warning = displayText(errorMessage(error));
+            console.error("helmwright: warning: cleanup failed: " + warning);
+          }
+        }
       }
     }
   }
@@ -841,7 +856,10 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       : done;
   try {
     append("run.terminated", { agentId: nodeId, ...end }, true);
-    return { ...end, floor: logged, pending: owned, provisional, reclassified };
+    return {
+      ...{ ...end, floor: logged, pending: owned, provisional },
+      ...{ refused, reclassified },
+    };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(
@@ -857,6 +875,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       floor: logged,
       pending: owned,
       provisional,
+      refused,
       reclassified,
     };
   }
@@ -1213,7 +1232,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         return broker.executeTool;
       },
       // B1: the host's common dir, never one the worktree names; protected = Ring 0.
-      floor: (defer) => {
+      floor: (defer, completed) => {
         const repo = { worktree: workspace, commonDir: config.repoId };
         // PB-1: the pass's objects are held for the fork, so the worktree is read once.
         const { checked, changes, held } = checkCandidate(
@@ -1223,7 +1242,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           FLOOR_LIMITS,
           true,
         );
-        defer?.(() => held?.dispose());
+        defer(() => held?.dispose());
         const eventId = randomUUID();
         const { candidateTree } = checked;
         const signalled = floorSignalled(
@@ -1267,8 +1286,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
           const owners = decisions.flatMap((d) =>
             d.authority === "owner" ? [{ id: d.id, class: d.class }] : [],
           );
+          // Owner ruling 2026-10-17: only a run that ends completed forks; a failed or
+          // incomplete one keeps its pending decision in the log and takes no slot.
           const plan =
-            checked.verdict === "pass"
+            checked.verdict === "pass" && completed
               ? planProvisional(
                   config.repoId,
                   baseCommit,

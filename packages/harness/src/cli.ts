@@ -287,6 +287,10 @@ async function main(args: readonly string[]): Promise<number> {
       const ids = pending.join(", ");
       console.error("helmwright: pending owner decisions: " + displayText(ids));
     }
+    if (end.refused.length > 0) {
+      const ids = displayText(end.refused.join(", "));
+      console.error("helmwright: provisional branch refused: " + ids);
+    }
     // PB-1: the work is on a provisional ref (never a branch) until the owner answers.
     if (provisional.length > 0) {
       const refs = displayText(provisional.join(", "));

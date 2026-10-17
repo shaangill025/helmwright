@@ -25,6 +25,10 @@ const IDENTITY = "helmwright <helmwright@localhost> 0 +0000";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DECISION = /^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$/;
 const PROVISIONAL_CLASSES = new Set(["technology", "scope"]);
+const RESERVED_TYPES = new Set([
+  "provisional.attached",
+  "provisional.resolved",
+]);
 const PROVISIONAL_TYPES = new Set([
   "provisional.opened",
   "provisional.refused",
@@ -104,8 +108,11 @@ export type ProvisionalEntry =
 export interface ProvisionalPlan {
   /** By decision ID, for each decision of a provisional class. */
   readonly entries: ReadonlyMap<string, ProvisionalEntry>;
-  /** Makes the refs, create-only; call only after the log transaction commits. */
-  readonly apply: () => void;
+  /**
+   * Makes the refs, create-only; call only after the log transaction commits. Each ref
+   * made is pushed to `created` at once, so a failure on a later one leaves the list.
+   */
+  readonly apply: (created: string[]) => void;
 }
 
 /**
@@ -161,6 +168,11 @@ export function planProvisional(
   }
   if (opened.length > 0) {
     persistHeld(held, commonDir);
+    // The tree must be complete in the host, or no commit of it is made.
+    runGit(commonDir, [
+      ...["--git-dir=" + commonDir, "rev-list", "--objects", "--quiet"],
+      ...["--missing=error", candidateTree],
+    ]);
     const temp = mkdtempSync(join(tmpdir(), "helmwright-prov-"));
     try {
       for (const p of opened) {
@@ -182,13 +194,15 @@ export function planProvisional(
     }
   }
   const zero = "0".repeat(baseCommit.length);
-  const apply = () => {
+  const apply = (created: string[]) => {
     for (const p of opened) {
       // The zero old value: create only, never move an existing ref.
       runGit(commonDir, [
         ...["--git-dir=" + commonDir, "update-ref", "--no-deref"],
         ...["--", p.ref, p.commit, zero],
       ]);
+      // Reported as made, so a later failure still names the refs that exist.
+      created.push(p.ref);
     }
   };
   return { entries, apply };
@@ -212,6 +226,11 @@ export function provisionalFaults(
   const checked = events.find((e) => e.type === "floor.checked");
   const seen = new Set<string>();
   for (const [index, e] of events.entries()) {
+    if (RESERVED_TYPES.has(e.type)) {
+      // PB-2 and PB-3 define these; until then a log holding one is not from this build.
+      faults.push(`seq ${String(e.seq)}: reserved provisional event ${e.type}`);
+      continue;
+    }
     if (!PROVISIONAL_TYPES.has(e.type)) continue;
     const fault = (text: string) =>
       faults.push(`seq ${String(e.seq)}: ${text}`);

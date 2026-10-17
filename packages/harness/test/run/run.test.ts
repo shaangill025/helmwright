@@ -589,6 +589,26 @@ describe("executeRun's Task and Run records (B5-4)", () => {
     expect(log.object(decision.id)).toMatchObject({ status: "pending" });
   });
 
+  it("still ends the run when a deferred cleanup throws (PB-1)", async () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const floor: RunSetup["floor"] = (defer) => {
+      defer(() => {
+        throw new Error("temp removal failed");
+      });
+      return floorWith([])();
+    };
+    const outcome = await run(mutatingEngine(0).engine, true, log, undefined, {
+      records,
+      floor,
+    });
+    expect(outcome.terminal).toEqual({ kind: "completed" });
+    expect(log.events({ runId: "run-1" }).at(-1)?.type).toBe("run.terminated");
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("temp removal failed"),
+    );
+    warn.mockRestore();
+  });
+
   it.each<[string, Partial<RunSetup>]>([
     ["failed", {}],
     [

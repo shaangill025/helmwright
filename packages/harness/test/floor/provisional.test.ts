@@ -121,6 +121,22 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     expect(provisionalFaults(log(change)).length).toBeGreaterThan(0);
   });
 
+  it.each(["provisional.attached", "provisional.resolved"])(
+    "faults a reserved %s until PB-2 and PB-3 define it (A1)",
+    (type) => {
+      const retyped = log();
+      retyped[1] = event(1, type, {
+        kind: type,
+        decisionId: id,
+        runId: "run-1",
+        commit: "a".repeat(40),
+      });
+      expect(provisionalFaults(retyped)).toEqual([
+        expect.stringContaining("reserved provisional event " + type),
+      ]);
+    },
+  );
+
   it("faults a rejected floor and a missing owner decision", () => {
     expect(provisionalFaults(log({}, "reject")).length).toBeGreaterThan(0);
     expect(provisionalFaults(log().slice(1)).length).toBeGreaterThan(0);
@@ -200,13 +216,13 @@ describe("planProvisional (PB-1, real git)", () => {
     expect(git(common, "cat-file", "-t", commit)).toBe("commit");
     expect(git(common, "rev-parse", commit + "^{tree}")).toBe(candidateTree);
     expect(git(common, "for-each-ref", "refs/helmwright/")).toBe("");
-    plan.apply();
+    plan.apply([]);
     const ref = provisionalRef("decision-u-0");
     expect(git(common, "rev-parse", ref)).toBe(commit);
     expect(git(common, "for-each-ref", "refs/heads")).toBe(heads);
     // A second apply finds the ref there: create-only refuses, the ref is unchanged.
     expect(() => {
-      plan.apply();
+      plan.apply([]);
     }).toThrow();
     expect(git(common, "rev-parse", ref)).toBe(commit);
   });
@@ -222,9 +238,45 @@ describe("planProvisional (PB-1, real git)", () => {
       held,
     );
     expect(() => {
-      plan.apply();
+      plan.apply([]);
     }).toThrow();
     expect(git(common, "rev-parse", ref)).toBe(baseCommit);
+  });
+
+  it("reports the refs made before a later one fails (C5)", () => {
+    // A ref below the second decision's name makes its ref a directory/file conflict.
+    git(
+      common,
+      "update-ref",
+      provisionalRef("decision-u-1") + "/x",
+      baseCommit,
+    );
+    const plan = planProvisional(
+      common,
+      baseCommit,
+      candidateTree,
+      decisions(2),
+      held,
+    );
+    const created: string[] = [];
+    expect(() => {
+      plan.apply(created);
+    }).toThrow();
+    expect(created).toEqual([provisionalRef("decision-u-0")]);
+  });
+
+  it("fails closed, with no commit made, if the held objects are packed (A2)", () => {
+    const gitDir = join(held.objects, "..");
+    git(gitDir, "--git-dir=" + gitDir, "repack", "-a", "-d", "-q");
+    expect(() =>
+      planProvisional(common, baseCommit, candidateTree, decisions(1), held),
+    ).toThrow(/packed/);
+    const commit = provisionalCommitId(
+      candidateTree,
+      baseCommit,
+      "decision-u-0",
+    );
+    expect(() => git(common, "cat-file", "-e", commit)).toThrow();
   });
 
   it("logs a refusal, not a fork, past the cap, and writes no commit", () => {
@@ -252,7 +304,7 @@ describe("planProvisional (PB-1, real git)", () => {
         reason: "cap",
       },
     });
-    plan.apply();
+    plan.apply([]);
     const count = git(common, "for-each-ref", "refs/helmwright/").split("\n");
     expect(count).toHaveLength(MAX_PROVISIONAL);
   });
