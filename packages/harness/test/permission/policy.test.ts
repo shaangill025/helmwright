@@ -192,8 +192,8 @@ describe("evaluate with the default policy", () => {
     ["execute", x("sh", "-c", "npm i x"), "ask", "deps.add"],
     ["deps.add", { packages: ["left-pad"] }, "ask", "deps.add"],
     ["fs.read", p("src/a.ts"), "allow", "fs.read.worktree"],
-    ["offload.grep", grepIn("a".repeat(64)), "ask", "default.ask"],
-    ["offload.grep", grepIn("a".repeat(64), 200), "ask", "default.ask"],
+    ["offload.grep", grepIn("a".repeat(64)), "allow", "offload.grep.run"],
+    ["offload.grep", grepIn("a".repeat(64), 200), "allow", "offload.grep.run"],
     ["fs.read", p(".github/workflows/ci.yml"), "allow", "fs.read.worktree"],
     ["fs.edit", p("/workspace/src/a.ts"), "allow", "fs.edit.worktree"],
     ["fs.delete", p("src/a.ts"), "allow", "fs.delete.worktree"],
@@ -1189,7 +1189,7 @@ describe("verdicts carry what the event writer needs (B9b-2a)", () => {
       action: "deps.add",
       requested: "execute",
       guard: "policy",
-      policyVersion: "default-2",
+      policyVersion: "default-3",
     });
   });
 

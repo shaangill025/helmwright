@@ -36,7 +36,11 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
-        "truncatedAtSource": { "type": "boolean" }
+        "truncatedAtSource": { "type": "boolean" },
+        "pointerVersion": {
+          "description": "Which pointer text the engine saw (Q69). Absent means 1, the original text; 2 adds the hint to search the file with `offload.grep`. The pointer is a pure function of this payload, so an old log keeps its old text on replay.",
+          "enum": [1, 2]
+        }
       }
     }
   }

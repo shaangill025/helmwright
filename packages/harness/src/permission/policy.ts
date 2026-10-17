@@ -291,7 +291,7 @@ const OPTIONAL_FIELDS: ReadonlySet<string> = new Set(["maxMatches"]);
 /** Typed actions without an M1 handler; they exist so the policy can rule on them (Q6). */
 export const PERMISSION_ONLY_ACTIONS: readonly PermissionAction[] = deepFreeze(
   (Object.keys(ACTIONS) as PermissionAction[]).filter(
-    (action) => action !== "execute",
+    (action) => action !== "execute" && action !== "offload.grep",
   ),
 );
 
@@ -362,13 +362,16 @@ const rule = (
 /** B9 initial policy. Deletes outside the worktree and Ring 0 edits are in the always-ask floor. */
 export const DEFAULT_PERMISSION_POLICY: PermissionPolicy = deepFreeze({
   // default-2 (B6-5): the floor's Ring 0 paths no longer list helmwright's source.
-  version: "default-2",
+  // default-3 (Q69): adds offload.grep, a read of the run's offloaded output.
+  version: "default-3",
   governance: "tiered",
   rules: [
     rule("execute.worktree", "execute", "worktree", "allow"),
     rule("fs.read.worktree", "fs.read", "worktree", "allow"),
     rule("fs.edit.worktree", "fs.edit", "worktree", "allow"),
     rule("fs.delete.worktree", "fs.delete", "worktree", "allow"),
+    // Scope "any": the input is a SHA-256 mapped to the offload dir, never a path.
+    rule("offload.grep.run", "offload.grep", "any", "allow"),
     rule("fs.read.outside", "fs.read", "any", "ask"),
     rule("fs.edit.outside", "fs.edit", "any", "ask"),
     rule("commit.run-branch", "commit", "runBranch", "allow"),

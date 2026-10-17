@@ -192,7 +192,7 @@
   {
     "component": "packages/harness/src/permission/policy.ts",
     "ring": 0,
-    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy changed (default-2), so every repo with a default-1 baseline is asked once at its next run.",
+    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy changed (default-2), so every repo with a default-1 baseline is asked once at its next run. The default policy is now default-3 (Q69 adds the offload.grep rule), so every repo with a default-2 baseline is asked once at its next run.",
     "evidence": [
       "06 Ring 0 contents",
       "decisions Q51",

@@ -39,6 +39,11 @@ const schema31 = {
           maximum: 9007199254740991,
         },
         truncatedAtSource: { type: "boolean" },
+        pointerVersion: {
+          description:
+            "Which pointer text the engine saw (Q69). Absent means 1, the original text; 2 adds the hint to search the file with `offload.grep`. The pointer is a pure function of this payload, so an old log keeps its old text on replay.",
+          enum: [1, 2],
+        },
       },
     },
   },
@@ -71,6 +76,11 @@ const schema32 = {
       maximum: 9007199254740991,
     },
     truncatedAtSource: { type: "boolean" },
+    pointerVersion: {
+      description:
+        "Which pointer text the engine saw (Q69). Absent means 1, the original text; 2 adds the hint to search the file with `offload.grep`. The pointer is a pure function of this payload, so an old log keeps its old text on replay.",
+      enum: [1, 2],
+    },
   },
 };
 const pattern4 = new RegExp("^[!-~]{1,256}$", "u");
@@ -196,7 +206,8 @@ function validate20(
         key0 === "toolCallId" ||
         key0 === "sha256" ||
         key0 === "bytes" ||
-        key0 === "truncatedAtSource"
+        key0 === "truncatedAtSource" ||
+        key0 === "pointerVersion"
       )) {
         const err6 = {
           instancePath,
@@ -370,8 +381,26 @@ function validate20(
         errors++;
       }
     }
+    if (data.pointerVersion !== undefined) {
+      let data5 = data.pointerVersion;
+      if (!(data5 === 1 || data5 === 2)) {
+        const err16 = {
+          instancePath: instancePath + "/pointerVersion",
+          schemaPath: "#/$defs/offloaded/properties/pointerVersion/enum",
+          keyword: "enum",
+          params: { allowedValues: schema32.properties.pointerVersion.enum },
+          message: "must be equal to one of the allowed values",
+        };
+        if (vErrors === null) {
+          vErrors = [err16];
+        } else {
+          vErrors.push(err16);
+        }
+        errors++;
+      }
+    }
   } else {
-    const err16 = {
+    const err17 = {
       instancePath,
       schemaPath: "#/$defs/offloaded/type",
       keyword: "type",
@@ -379,9 +408,9 @@ function validate20(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err16];
+      vErrors = [err17];
     } else {
-      vErrors.push(err16);
+      vErrors.push(err17);
     }
     errors++;
   }
@@ -392,7 +421,7 @@ function validate20(
     var props0 = true;
   }
   if (!valid0) {
-    const err17 = {
+    const err18 = {
       instancePath,
       schemaPath: "#/oneOf",
       keyword: "oneOf",
@@ -400,9 +429,9 @@ function validate20(
       message: "must match exactly one schema in oneOf",
     };
     if (vErrors === null) {
-      vErrors = [err17];
+      vErrors = [err18];
     } else {
-      vErrors.push(err17);
+      vErrors.push(err18);
     }
     errors++;
   } else {

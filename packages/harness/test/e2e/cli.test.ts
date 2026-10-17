@@ -444,7 +444,7 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
   // The digest covers the tools offered (logged in run.started) and the context.
   const started = events.find((e) => e.type === "run.started");
   const tools = started?.payload["tools"] as ToolSpec[] | undefined;
-  expect(tools?.map((t) => t.name)).toEqual(["execute"]);
+  expect(tools?.map((t) => t.name)).toEqual(["execute", "offload.grep"]);
   const messages = deriveMessages(events, runId);
   expect(recorded).toBe(contextDigest(messages, tools ?? []));
   // B5-4b: the whole log's projections match, and the Task and Run relations hold.
@@ -488,7 +488,7 @@ describe("helmwright CLI (e2e)", () => {
         ...["message.appended", "floor.signalled", "floor.checked"],
         "run.terminated",
       ]);
-      expect(events[0]?.payload["policyVersion"]).toBe("default-2");
+      expect(events[0]?.payload["policyVersion"]).toBe("default-3");
       // Allowed in the worktree without asking: one ruling, then the effect.
       const evaluated = events.find((e) => e.type === "permission.evaluated");
       expect(evaluated?.payload).toMatchObject({
@@ -498,7 +498,7 @@ describe("helmwright CLI (e2e)", () => {
         tier: "allow",
         guard: "policy",
         ruleId: "execute.worktree",
-        policyVersion: "default-2",
+        policyVersion: "default-3",
       });
       const called = events.find((e) => e.type === "loop.tool.called");
       expect(called?.payload).toMatchObject({ name: "execute", status: "ok" });
@@ -1652,7 +1652,7 @@ describe("helmwright.config.json (e2e)", () => {
       const started = startedOf(first.out.runId);
       expect(started).toMatchObject({
         baseCommit: base,
-        policyVersion: "default-2",
+        policyVersion: "default-3",
         config: { source: "default" },
       });
       const config = started?.["config"] as Record<string, string>;
@@ -1678,7 +1678,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(second.status, second.stderr).toBe(0);
       expect(startedOf(second.out.runId)).toMatchObject({
         baseCommit: git("-C", repo, "rev-parse", "HEAD").trim(),
-        policyVersion: "default-2",
+        policyVersion: "default-3",
         config: {
           source: "file",
           sha256: sha256(text),
@@ -2037,7 +2037,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
         {
           ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
-          ...{ policyVersion: "default-2", target: { value: "permissions" } },
+          ...{ policyVersion: "default-3", target: { value: "permissions" } },
         },
         { toolCallId: RING0_ID, presence: "none" },
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },

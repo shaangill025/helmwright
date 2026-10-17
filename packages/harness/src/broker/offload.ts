@@ -24,6 +24,11 @@ export interface OffloadFact {
   readonly bytes: number;
   /** The sandbox hit OFFLOAD_SOURCE_CEILING_BYTES, so the file is itself cut. */
   readonly truncatedAtSource: boolean;
+  /**
+   * The logged `pointerVersion`: absent or 1 is the original text; 2 adds the
+   * `offload.grep` hint. A field of the event, so an old log replays with its old text.
+   */
+  readonly pointerVersion?: 1 | 2 | undefined;
 }
 
 /** Sets `mode` on `path` if it exists with any group/other permission bit. */
@@ -111,11 +116,13 @@ export function offloadFaults(events: readonly Event[], dir: string): string[] {
 
 /** The pointer line of a tool result, built from the logged facts alone (Q68a). */
 export function pointerLine(fact: OffloadFact): string {
-  const { sha256, bytes, truncatedAtSource } = fact;
+  const { sha256, bytes, truncatedAtSource, pointerVersion } = fact;
   const cut = truncatedAtSource
     ? `, truncated at source: only the first ${String(OFFLOAD_SOURCE_CEILING_BYTES)} bytes of each stream were captured`
     : "";
-  return `[output offloaded: ${String(bytes)} bytes${cut}, sha256 ${sha256}]`;
+  const hint =
+    pointerVersion === 2 ? `; search it with offload.grep id ${sha256}` : "";
+  return `[output offloaded: ${String(bytes)} bytes${cut}, sha256 ${sha256}${hint}]`;
 }
 
 const isContinuation = (byte: number | undefined): boolean =>
@@ -142,4 +149,90 @@ export function withPreview(
   const head = bytes.subarray(0, headEnd).toString("utf8");
   const tail = bytes.subarray(tailStart).toString("utf8");
   return [head, tail, pointer].join("\n");
+}
+
+/** Q69: the most matches `offload.grep` returns, and how many it returns by default. */
+export const GREP_MAX_MATCHES = 200;
+export const GREP_DEFAULT_MATCHES = 50;
+/** The most bytes of one matching line shown; a longer line is cut on a character edge. */
+const GREP_LINE_BYTES = 512;
+/** Room kept for the closing count line. */
+const GREP_FOOTER_BYTES = 96;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** What `grepOffload` returns: the broker maps it onto a tool result. */
+export interface GrepResult {
+  readonly status: "ok" | "error" | "denied";
+  readonly output: string;
+}
+
+const cutBytes = (text: string, max: number): string => {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= max) return text;
+  let end = max;
+  while (end > 0 && isContinuation(bytes[end])) end -= 1;
+  return bytes.subarray(0, end).toString("utf8") + "…";
+};
+
+/**
+ * Q69: the lines of the offloaded output `id` that contain `pattern` as a literal
+ * string (no regex, so no ReDoS), as `<line number>: <text>`, at most `maxMatches`
+ * of them and `maxBytes` bytes in all (each line is cut to GREP_LINE_BYTES), then a
+ * count line. The file is `<dir>/<id>.txt` only: `id` is 64 lowercase hex characters
+ * or the call is denied, so no path is ever accepted. A file that no longer hashes to
+ * its id is refused, as `offloadFaults` would flag it.
+ */
+export function grepOffload(
+  dir: string,
+  input: {
+    readonly id: string;
+    readonly pattern: string;
+    readonly maxMatches?: number | undefined;
+  },
+  maxBytes: number,
+): GrepResult {
+  const { id, pattern, maxMatches = GREP_DEFAULT_MATCHES } = input;
+  if (
+    !HEX64.test(id) ||
+    pattern === "" ||
+    !Number.isInteger(maxMatches) ||
+    maxMatches < 1 ||
+    maxMatches > GREP_MAX_MATCHES
+  ) {
+    return { status: "denied", output: "invalid input for offload.grep" };
+  }
+  let data: Buffer;
+  try {
+    data = readFileSync(join(dir, id + ".txt"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "error", output: "no offloaded output with that id" };
+    }
+    return { status: "error", output: "offloaded output could not be read" };
+  }
+  if (createHash("sha256").update(data).digest("hex") !== id) {
+    return { status: "error", output: "offloaded file does not match its id" };
+  }
+  const budget = maxBytes - GREP_FOOTER_BYTES;
+  const lines: string[] = [];
+  let used = 0;
+  let total = 0;
+  let number = 0;
+  let full = false;
+  for (const line of data.toString("utf8").split("\n")) {
+    number += 1;
+    if (!line.includes(pattern)) continue;
+    total += 1;
+    if (full || lines.length >= maxMatches) continue;
+    const shown = `${String(number)}: ${cutBytes(line, GREP_LINE_BYTES)}`;
+    const size = Buffer.byteLength(shown) + 1;
+    if (used + size > budget) {
+      full = true;
+      continue;
+    }
+    lines.push(shown);
+    used += size;
+  }
+  const footer = `[${String(lines.length)} of ${String(total)} matches shown]`;
+  return { status: "ok", output: [...lines, footer].join("\n") };
 }

@@ -29,6 +29,12 @@
           "tier": "allow"
         },
         {
+          "id": "offload.grep.run",
+          "action": "offload.grep",
+          "scope": "any",
+          "tier": "allow"
+        },
+        {
           "id": "fs.read.outside",
           "action": "fs.read",
           "scope": "any",
