@@ -43,6 +43,9 @@ flowchart LR
     permission_evaluated["permission.evaluated"]
     permission_rejected["permission.rejected"]
   end
+  subgraph tool_event["tool-event"]
+    tool_output_offloaded["tool.output.offloaded"]
+  end
   config_accepted --> floor_signalled
   config_accepted --> intake_classified
   config_accepted --> run_terminated
@@ -71,6 +74,7 @@ flowchart LR
   loop_halted --> message_appended
   loop_halted --> permission_answered
   loop_halted --> run_terminated
+  loop_halted --> tool_output_offloaded
   loop_handoff_failed --> floor_signalled
   loop_handoff_failed --> intake_reclassified
   loop_handoff_failed --> run_terminated
@@ -110,11 +114,13 @@ flowchart LR
   permission_answered --> loop_halted
   permission_answered --> loop_tool_called
   permission_answered --> run_terminated
+  permission_answered --> tool_output_offloaded
   permission_asked --> loop_halted
   permission_asked --> permission_answered
   permission_evaluated --> loop_halted
   permission_evaluated --> loop_tool_called
   permission_evaluated --> permission_asked
+  permission_evaluated --> tool_output_offloaded
   permission_rejected --> floor_signalled
   permission_rejected --> loop_halted
   permission_rejected --> loop_tool_called
@@ -129,4 +135,9 @@ flowchart LR
   run_terminated --> run_recorded
   run_terminated --> task_created
   task_created --> run_recorded
+  tool_output_offloaded --> floor_signalled
+  tool_output_offloaded --> intake_reclassified
+  tool_output_offloaded --> loop_halted
+  tool_output_offloaded --> loop_tool_called
+  tool_output_offloaded --> run_terminated
 ```

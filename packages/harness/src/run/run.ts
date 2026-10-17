@@ -77,6 +77,7 @@ import { objectFaults } from "../objects/faults.ts";
 import type { ProjectionCheck } from "../objects/projection.ts";
 import { INVISIBLE, hasControl } from "../permission/normalize.ts";
 import { permissionFaults } from "../permission/faults.ts";
+import { offloadFaults } from "../broker/offload.ts";
 import {
   MAX_LIMIT,
   runLoop,
@@ -1118,6 +1119,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         };
         const broker = createBroker({
           ...{ image, workspace, workspaceRoot, halt, containers },
+          offloadDir: join(stateDir, "offload"),
           permission: { ...permission, agentId: nodeId },
         });
         const repo = config.repoId;
@@ -1407,7 +1409,11 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
       derivedDigest,
       recordedDigest,
       events: events.length,
-      permissionFaults: [...permissionFaults(events), ...floorFaults(events)],
+      permissionFaults: [
+        ...permissionFaults(events),
+        ...floorFaults(events),
+        ...offloadFaults(events, join(resolve(stateDir), "offload")),
+      ],
       objectFaults: objectFaults(events, [
         ...log.events({ type: "task.created" }),
         ...log.events({ type: "run.recorded" }),
