@@ -77,6 +77,12 @@ export interface HelmwrightConfig {
     tutor?:
       "justInTimeAndConceptMap" | "justInTimeOnly" | "withSpacedFollowUps";
   };
+  tools?: {
+    /**
+     * The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2).
+     */
+    offloadBytes?: number;
+  };
   /**
    * Process topology: session and harness in one process, the sandbox out of process (default); all in one process; or all separate. Moves to a deployment file in M5.
    */

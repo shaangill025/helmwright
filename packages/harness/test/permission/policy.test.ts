@@ -69,6 +69,10 @@ afterAll(() => {
 
 const branch = "helmwright/run/run_01";
 const p = (path: string) => ({ path });
+const grepIn = (id: string, maxMatches?: number) => ({
+  ...{ id, pattern: "needle" },
+  ...(maxMatches === undefined ? {} : { maxMatches }),
+});
 const x = (...argv: string[]) => ({ argv });
 const to = (destination: string, ref = branch) => ({ destination, ref });
 const set = (setting: string, value: unknown = 1) => ({ setting, value });
@@ -188,6 +192,8 @@ describe("evaluate with the default policy", () => {
     ["execute", x("sh", "-c", "npm i x"), "ask", "deps.add"],
     ["deps.add", { packages: ["left-pad"] }, "ask", "deps.add"],
     ["fs.read", p("src/a.ts"), "allow", "fs.read.worktree"],
+    ["offload.grep", grepIn("a".repeat(64)), "ask", "default.ask"],
+    ["offload.grep", grepIn("a".repeat(64), 200), "ask", "default.ask"],
     ["fs.read", p(".github/workflows/ci.yml"), "allow", "fs.read.worktree"],
     ["fs.edit", p("/workspace/src/a.ts"), "allow", "fs.edit.worktree"],
     ["fs.delete", p("src/a.ts"), "allow", "fs.delete.worktree"],
@@ -238,6 +244,18 @@ describe("evaluate with the default policy", () => {
     expect(verdict(action, input)).toEqual({ tier, ruleId });
   });
 
+  it("shows an offload.grep target by its id and pattern, never a path", () => {
+    const { target } = evaluate(
+      BASE,
+      req("offload.grep", grepIn("b".repeat(64))),
+    );
+    expect(target).toMatchObject({
+      kind: "path",
+      value: `offload/${"b".repeat(64)}.txt`,
+      detail: '"needle"',
+    });
+  });
+
   it("returns the normalized target", () => {
     const request = req("fs.edit", p("/workspace/./src/a.ts"));
     const { target } = evaluate(BASE, request);
@@ -250,6 +268,12 @@ describe("evaluate with the default policy", () => {
     ["__proto__", {}],
     ["toString", {}],
     ["execute", { argv: [] }],
+    ["offload.grep", { id: "../x", pattern: "a" }],
+    ["offload.grep", { id: "A".repeat(64), pattern: "a" }],
+    ["offload.grep", { id: "a".repeat(64), pattern: "" }],
+    ["offload.grep", { id: "a".repeat(64), pattern: "a", maxMatches: 201 }],
+    ["offload.grep", { id: "a".repeat(64), pattern: "a", maxMatches: 0 }],
+    ["offload.grep", { id: "a".repeat(64), pattern: "a", path: "/etc" }],
     ["execute", { argv: "ls" }],
     ["execute", x("ls", "")],
     ["execute", { argv: ["ls"], cwd: "/" }],

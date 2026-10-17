@@ -201,6 +201,7 @@ const schema31 = {
         "fs.read",
         "fs.edit",
         "fs.delete",
+        "offload.grep",
         "commit",
         "deps.add",
         "config.set",
@@ -328,6 +329,7 @@ const schema35 = {
     "fs.read",
     "fs.edit",
     "fs.delete",
+    "offload.grep",
     "commit",
     "deps.add",
     "config.set",
@@ -907,6 +909,7 @@ function validate21(
         data3 === "fs.read" ||
         data3 === "fs.edit" ||
         data3 === "fs.delete" ||
+        data3 === "offload.grep" ||
         data3 === "commit" ||
         data3 === "deps.add" ||
         data3 === "config.set" ||
@@ -940,6 +943,7 @@ function validate21(
         data4 === "fs.read" ||
         data4 === "fs.edit" ||
         data4 === "fs.delete" ||
+        data4 === "offload.grep" ||
         data4 === "commit" ||
         data4 === "deps.add" ||
         data4 === "config.set" ||

@@ -88,6 +88,7 @@ describe("HelmwrightConfig", () => {
       "permissions.policy",
       "permissions.untrustedContent.hintBytes",
       "permissions.untrustedContent.mode",
+      "tools.offloadBytes",
       "topology",
     ]);
   });
@@ -140,6 +141,22 @@ describe("HelmwrightConfig", () => {
   it.each([0, -1, 1025, 1.5, "1024", null])("rejects hintBytes %j", (value) => {
     expect(validate(at(hintBytes, value))).toBe(false);
   });
+
+  const offloadBytes = ["tools", "offloadBytes"];
+  it("defaults tools.offloadBytes to 16384 (Q69)", () => {
+    expect(CONFIG_DEFAULTS.tools.offloadBytes).toBe(16_384);
+  });
+
+  it.each([1024, 16_384, 65_536])("accepts offloadBytes %j", (value) => {
+    expect(validate(at(offloadBytes, value))).toBe(true);
+  });
+
+  it.each([0, 1023, 65_537, 1.5, "16384", null])(
+    "rejects offloadBytes %j (owner bounds 1024 to 65536)",
+    (value) => {
+      expect(validate(at(offloadBytes, value))).toBe(false);
+    },
+  );
 
   it.each(["sessionHarnessOneProcess", "allInOneProcess", "allSeparate"])(
     "accepts topology %j",

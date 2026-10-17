@@ -21,6 +21,7 @@ export type PermissionAction =
   | "fs.read"
   | "fs.edit"
   | "fs.delete"
+  | "offload.grep"
   | "commit"
   | "deps.add"
   | "config.set"

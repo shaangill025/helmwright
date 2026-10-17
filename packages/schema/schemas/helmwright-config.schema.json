@@ -142,6 +142,20 @@
         }
       }
     },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "offloadBytes": {
+          "description": "The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2).",
+          "$comment": "Default 16384. Ring 0: no. Consumer: B11 (the broker's MAX_TOOL_OUTPUT_BYTES). Only the default is admitted until a fixture exists for another value (07 rule 1). Q69.",
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65536,
+          "default": 16384
+        }
+      }
+    },
     "topology": {
       "description": "Process topology: session and harness in one process, the sandbox out of process (default); all in one process; or all separate. Moves to a deployment file in M5.",
       "$comment": "Default \"sessionHarnessOneProcess\". Ring 0: no. Consumer: none in M1 (only the default is admitted, owner OQ3 2026-10-07); deployment file in M5 (T-06-35). 08 row Architecture / Topology; 06.",

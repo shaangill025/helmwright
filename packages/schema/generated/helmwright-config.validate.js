@@ -175,6 +175,22 @@ const schema31 = {
         },
       },
     },
+    tools: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        offloadBytes: {
+          description:
+            "The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2).",
+          $comment:
+            "Default 16384. Ring 0: no. Consumer: B11 (the broker's MAX_TOOL_OUTPUT_BYTES). Only the default is admitted until a fixture exists for another value (07 rule 1). Q69.",
+          type: "integer",
+          minimum: 1024,
+          maximum: 65536,
+          default: 16384,
+        },
+      },
+    },
     topology: {
       description:
         "Process topology: session and harness in one process, the sandbox out of process (default); all in one process; or all separate. Moves to a deployment file in M5.",
@@ -213,6 +229,7 @@ function validate20(
         key0 === "decisions" ||
         key0 === "permissions" ||
         key0 === "ownerLoop" ||
+        key0 === "tools" ||
         key0 === "topology"
       )) {
         const err0 = {
@@ -833,14 +850,107 @@ function validate20(
         errors++;
       }
     }
+    if (data.tools !== undefined) {
+      let data20 = data.tools;
+      if (data20 && typeof data20 == "object" && !Array.isArray(data20)) {
+        for (const key7 in data20) {
+          if (!(key7 === "offloadBytes")) {
+            const err29 = {
+              instancePath: instancePath + "/tools",
+              schemaPath: "#/properties/tools/additionalProperties",
+              keyword: "additionalProperties",
+              params: { additionalProperty: key7 },
+              message: "must NOT have additional properties",
+            };
+            if (vErrors === null) {
+              vErrors = [err29];
+            } else {
+              vErrors.push(err29);
+            }
+            errors++;
+          }
+        }
+        if (data20.offloadBytes !== undefined) {
+          let data21 = data20.offloadBytes;
+          if (!(
+            typeof data21 == "number" &&
+            !(data21 % 1) &&
+            !isNaN(data21) &&
+            isFinite(data21)
+          )) {
+            const err30 = {
+              instancePath: instancePath + "/tools/offloadBytes",
+              schemaPath: "#/properties/tools/properties/offloadBytes/type",
+              keyword: "type",
+              params: { type: "integer" },
+              message: "must be integer",
+            };
+            if (vErrors === null) {
+              vErrors = [err30];
+            } else {
+              vErrors.push(err30);
+            }
+            errors++;
+          }
+          if (typeof data21 == "number" && isFinite(data21)) {
+            if (data21 > 65536 || isNaN(data21)) {
+              const err31 = {
+                instancePath: instancePath + "/tools/offloadBytes",
+                schemaPath:
+                  "#/properties/tools/properties/offloadBytes/maximum",
+                keyword: "maximum",
+                params: { comparison: "<=", limit: 65536 },
+                message: "must be <= 65536",
+              };
+              if (vErrors === null) {
+                vErrors = [err31];
+              } else {
+                vErrors.push(err31);
+              }
+              errors++;
+            }
+            if (data21 < 1024 || isNaN(data21)) {
+              const err32 = {
+                instancePath: instancePath + "/tools/offloadBytes",
+                schemaPath:
+                  "#/properties/tools/properties/offloadBytes/minimum",
+                keyword: "minimum",
+                params: { comparison: ">=", limit: 1024 },
+                message: "must be >= 1024",
+              };
+              if (vErrors === null) {
+                vErrors = [err32];
+              } else {
+                vErrors.push(err32);
+              }
+              errors++;
+            }
+          }
+        }
+      } else {
+        const err33 = {
+          instancePath: instancePath + "/tools",
+          schemaPath: "#/properties/tools/type",
+          keyword: "type",
+          params: { type: "object" },
+          message: "must be object",
+        };
+        if (vErrors === null) {
+          vErrors = [err33];
+        } else {
+          vErrors.push(err33);
+        }
+        errors++;
+      }
+    }
     if (data.topology !== undefined) {
-      let data20 = data.topology;
+      let data22 = data.topology;
       if (!(
-        data20 === "sessionHarnessOneProcess" ||
-        data20 === "allInOneProcess" ||
-        data20 === "allSeparate"
+        data22 === "sessionHarnessOneProcess" ||
+        data22 === "allInOneProcess" ||
+        data22 === "allSeparate"
       )) {
-        const err29 = {
+        const err34 = {
           instancePath: instancePath + "/topology",
           schemaPath: "#/properties/topology/enum",
           keyword: "enum",
@@ -848,15 +958,15 @@ function validate20(
           message: "must be equal to one of the allowed values",
         };
         if (vErrors === null) {
-          vErrors = [err29];
+          vErrors = [err34];
         } else {
-          vErrors.push(err29);
+          vErrors.push(err34);
         }
         errors++;
       }
     }
   } else {
-    const err30 = {
+    const err35 = {
       instancePath,
       schemaPath: "#/type",
       keyword: "type",
@@ -864,9 +974,9 @@ function validate20(
       message: "must be object",
     };
     if (vErrors === null) {
-      vErrors = [err30];
+      vErrors = [err35];
     } else {
-      vErrors.push(err30);
+      vErrors.push(err35);
     }
     errors++;
   }
