@@ -79,7 +79,7 @@ export interface HelmwrightConfig {
   };
   tools?: {
     /**
-     * The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2).
+     * The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2). Note (2026-10-17, M2): the broker reads CONFIG_DEFAULTS until the first fixture PR wires the loaded value.
      */
     offloadBytes?: number;
   };

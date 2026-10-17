@@ -147,7 +147,7 @@
       "additionalProperties": false,
       "properties": {
         "offloadBytes": {
-          "description": "The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2).",
+          "description": "The bytes of a tool output the engine sees (head and tail) before the rest is offloaded to a file with a pointer and offload.grep retrieval. Owner bounds 1024 to 65536; the tuned value will live in the Ring 1 compaction file (M2). Note (2026-10-17, M2): the broker reads CONFIG_DEFAULTS until the first fixture PR wires the loaded value.",
           "$comment": "Default 16384. Ring 0: no. Consumer: B11 (the broker's MAX_TOOL_OUTPUT_BYTES). Only the default is admitted until a fixture exists for another value (07 rule 1). Q69.",
           "type": "integer",
           "minimum": 1024,

@@ -89,6 +89,11 @@ export interface PermissionRequest {
 }
 
 export interface PermissionTarget {
+  /**
+   * Exception (Q69): `offload.grep` has kind "path", but its value is the pseudo-path
+   * `offload/<id>.txt` (the id is 64 hex characters), not a resolved host path; no
+   * handler acts on it, and the handler maps the id itself.
+   */
   readonly kind: "path" | "ref" | "remote" | "setting" | "argv" | "amount";
   /** Display only: normalized (a path is its resolved host path) and escaped. */
   readonly value: string;
