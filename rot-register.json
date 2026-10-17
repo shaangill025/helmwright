@@ -801,5 +801,31 @@
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
     "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/proxy",
+    "ring": 0,
+    "assumption": "The native engine reaches the model only through a local credential proxy (Ring 0 per owner decision 2026-10-17): the key comes from the macOS Keychain (service helmwright-anthropic, no env fallback) and stays in the proxy process; spend is capped by a ledger file ($25 cumulative, $2 per run, both owner-set, raising either is always-ask) and the log carries only an allowlist of fields.",
+    "evidence": [
+      "decisions Native engine credentials",
+      "decisions Spend",
+      "packages/harness/test/proxy/keychain.test.ts",
+      "packages/harness/test/proxy/redact.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/proxy/keychain.ts",
+    "ring": 0,
+    "assumption": "The key is read with execFile (argv array, no shell, scrubbed environment) of `security find-generic-password -s helmwright-anthropic -w`; only exit status 44 (errSecItemNotFound, checked on macOS) maps to not_found, every other status, a timeout and an output overrun map to unavailable, and there is no environment-variable fallback. macOS only; Linux owners need a secret-store reader from M2.",
+    "evidence": [
+      "decisions Native engine credentials",
+      "packages/harness/test/proxy/keychain.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
   }
 ]
