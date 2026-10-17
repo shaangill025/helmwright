@@ -414,6 +414,31 @@
           "type": "array",
           "maxItems": 1024,
           "items": { "$ref": "#/$defs/artifactId" }
+        },
+        "claims": {
+          "description": "The Brief's claims, each with an evidence tier (Q70-1). Optional here so a log written before them still validates; the floor writer and replay require them under `materiality-rubric-2`. The tier rules (evidence that resolves in the log, a claim reference, no evidence) are checked by the writer and on every read.",
+          "type": "array",
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/briefClaim" }
+        }
+      }
+    },
+    "briefClaim": {
+      "title": "BriefClaim",
+      "description": "One claim of a Brief with its evidence tier (Q70-1). Direct and Supported cite evidence IDs; Inferred cites earlier claims as `claim:<index>`; Speculative and Unknown cite nothing.",
+      "$comment": "Copy of objects.schema.json's `briefClaim`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "tier", "evidence"],
+      "properties": {
+        "text": { "$ref": "#/$defs/line" },
+        "tier": {
+          "enum": ["Direct", "Supported", "Inferred", "Speculative", "Unknown"]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "type": "string", "pattern": "^[!-~]{1,200}$" }
         }
       }
     },
