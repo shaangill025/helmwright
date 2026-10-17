@@ -95,13 +95,13 @@ interface EventFlow {
 const flow = JSON.parse(
   readFileSync(join(schemaDir, "event-flow.json"), "utf8"),
 ) as EventFlow;
-const node = (type: string) => type.replaceAll(".", "_");
+const node = (type: string) => type.replace(/[.-]/g, "_");
 const groups = [...flow.groups].sort((a, b) => (a.group < b.group ? -1 : 1));
 const edges = groups.flatMap((g) => g.edges).sort();
 const mermaid = [
   "flowchart LR",
   ...groups.flatMap((g) => [
-    `  subgraph ${node(g.group.replaceAll("-", "_"))}["${g.group}"]`,
+    `  subgraph ${node(g.group)}["${g.group}"]`,
     ...[...g.types].sort().map((type) => `    ${node(type)}["${type}"]`),
     "  end",
   ]),
@@ -115,7 +115,7 @@ const markdown = [
   "",
   "# Event flow",
   "",
-  "Each arrow is a declared edge: an event of the arrow's target type may follow one of its source type in a session log (Q68(b)). The FX e2e tests check that every observed pair is declared.",
+  "Each arrow is a declared edge: an event of the arrow's target type may follow one of its source type in a session log (Q68(b)). The e2e tests check that every observed pair in their logs is declared.",
   "",
   "```mermaid",
   ...mermaid,

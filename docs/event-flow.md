@@ -2,7 +2,7 @@
 
 # Event flow
 
-Each arrow is a declared edge: an event of the arrow's target type may follow one of its source type in a session log (Q68(b)). The FX e2e tests check that every observed pair is declared.
+Each arrow is a declared edge: an event of the arrow's target type may follow one of its source type in a session log (Q68(b)). The e2e tests check that every observed pair in their logs is declared.
 
 ```mermaid
 flowchart LR
@@ -45,7 +45,6 @@ flowchart LR
   end
   config_accepted --> floor_signalled
   config_accepted --> intake_classified
-  config_accepted --> intake_reclassified
   config_accepted --> run_terminated
   decision_opened --> decision_opened
   decision_opened --> floor_checked
@@ -69,7 +68,6 @@ flowchart LR
   intake_reclassified --> decision_opened
   loop_halted --> floor_signalled
   loop_halted --> intake_reclassified
-  loop_halted --> loop_handoff_failed
   loop_halted --> message_appended
   loop_halted --> permission_answered
   loop_halted --> run_terminated
@@ -85,7 +83,6 @@ flowchart LR
   loop_reminder_sent --> intake_reclassified
   loop_reminder_sent --> loop_halted
   loop_reminder_sent --> loop_iteration_started
-  loop_reminder_sent --> loop_tool_skipped
   loop_reminder_sent --> loop_tool_started
   loop_reminder_sent --> message_appended
   loop_reminder_sent --> run_terminated
@@ -99,6 +96,7 @@ flowchart LR
   message_appended --> floor_signalled
   message_appended --> intake_reclassified
   message_appended --> loop_halted
+  message_appended --> loop_handoff_failed
   message_appended --> loop_iteration_started
   message_appended --> loop_reminder_sent
   message_appended --> loop_tool_skipped
@@ -118,7 +116,6 @@ flowchart LR
   permission_evaluated --> loop_tool_called
   permission_evaluated --> permission_asked
   permission_rejected --> floor_signalled
-  permission_rejected --> intake_reclassified
   permission_rejected --> loop_halted
   permission_rejected --> loop_tool_called
   permission_rejected --> run_terminated
@@ -126,12 +123,10 @@ flowchart LR
   run_started --> config_accepted
   run_started --> floor_signalled
   run_started --> intake_classified
-  run_started --> intake_reclassified
   run_started --> permission_evaluated
   run_started --> permission_rejected
   run_started --> run_terminated
   run_terminated --> run_recorded
-  run_terminated --> run_started
   run_terminated --> task_created
   task_created --> run_recorded
 ```

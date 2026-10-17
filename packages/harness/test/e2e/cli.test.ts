@@ -428,6 +428,7 @@ function expectWellFormedLog(runId: string): Event[] {
   }
   expect(all.filter((e) => e.type === "run.terminated")).toHaveLength(1);
   expect(all.at(-1)?.type).toBe("run.terminated");
+  expectFlowDeclared(all);
   return all.slice(2);
 }
 
@@ -2811,7 +2812,7 @@ const FLOW = new URL(
   import.meta.url,
 );
 
-/** Q68(b): observed ⊆ declared; each consecutive pair of types is a declared edge. */
+/** Q68(b): observed ⊆ declared; each consecutive pair of types in every e2e log is a declared edge. */
 function expectFlowDeclared(events: readonly Event[]): void {
   const flow = JSON.parse(readFileSync(fileURLToPath(FLOW), "utf8")) as {
     groups: { edges: string[] }[];
@@ -2882,7 +2883,6 @@ describe("seeded fixture repo (e2e, FX)", () => {
       });
       expect(run.stderr).not.toContain(PENDING);
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
-      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3017,7 +3017,6 @@ describe("seeded fixture repo (e2e, FX)", () => {
       });
       expect(run.stderr).toContain(PENDING + id + "\n");
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
-      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3080,7 +3079,6 @@ describe("seeded fixture repo (e2e, FX)", () => {
       expect(run.stderr).not.toContain(PENDING);
       // OQ-AD3-3: a bounded task is not reclassified.
       expect(payloadsOf(run.events, "intake.reclassified")).toEqual([]);
-      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3154,7 +3152,6 @@ describe("seeded fixture repo (e2e, FX)", () => {
         "helmwright: intake reclassified chore -> architectural (floor signals)\n",
       );
       expect(run.stderr).not.toContain(PENDING);
-      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
@@ -3198,7 +3195,6 @@ describe("seeded fixture repo (e2e, FX)", () => {
       const said = JSON.stringify(deriveMessages(run.events, run.out.runId));
       expect(said).not.toContain("dependency.added");
       expect(run.stderr).not.toContain(PENDING);
-      expectFlowDeclared(run.events);
       expectReplayMatches(run.out.runId, run.events);
     },
   );
