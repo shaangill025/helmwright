@@ -3696,3 +3696,320 @@ describe("provisional branch (e2e, PB-1)", () => {
     },
   );
 });
+
+/** PB-2b: a task on the fx repo, with its own Task ID. */
+function afterTask(
+  turns: string,
+  id: string,
+  scope: string[] = ["app/src/**"],
+) {
+  const extra = { id, title: "after " + id, intake: { scope } };
+  return writeTask(turns, LIMITS, join(tmp, "fx"), extra);
+}
+
+/** PB-2b: `run --after decision` on the fx repo; the events of that run, from its first. */
+function runAfter(
+  decision: string,
+  turns = "fx-after.turns.json",
+  id = "task-2",
+  scope?: string[],
+) {
+  const result = runWith(afterTask(turns, id, scope), ...["--after", decision]);
+  const events = logEvents().filter((e) => e.runId === result.out.runId);
+  const workspace = join(stateDir, "workspaces", result.out.runId);
+  const started = events.findIndex((e) => e.type === "run.started");
+  return { ...result, events, workspace, fromStarted: events.slice(started) };
+}
+
+/** PB-2b: the decision of a first dependency run, and its provisional commit. */
+function firstFork() {
+  const run = runFx("dependency");
+  expect(run.status, run.stderr).toBe(0);
+  const id = String(floorSignalsOf(run.events).decisions[0]?.["id"]);
+  const opened = run.events.find((e) => e.type === "provisional.opened");
+  return {
+    run,
+    id,
+    commit: String(opened?.payload["commit"]),
+    fx: join(tmp, "fx"),
+  };
+}
+
+const workspaceNames = () =>
+  existsSync(join(stateDir, "workspaces"))
+    ? readdirSync(join(stateDir, "workspaces")).sort()
+    : [];
+
+/** PB-2b: a refused `--after` is exit 64 with fixed text, and writes nothing. */
+function expectAfterRefused(decision: string, text: string) {
+  const before = logEvents().length;
+  const dirs = workspaceNames();
+  const task = afterTask("fx-after.turns.json", "task-9");
+  const out = cli("run", task, "--state-dir", stateDir, "--after", decision);
+  expect(out.status, out.stderr).toBe(64);
+  expect(out.stderr).toContain("helmwright: " + text + "\n");
+  expect(logEvents()).toHaveLength(before);
+  expect(workspaceNames()).toEqual(dirs);
+}
+
+/** Appends a raw row to the log, as a forger with a raw connection would. */
+function forgeRow(runId: string, type: string, payload: object): void {
+  const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+  try {
+    const last = db
+      .prepare("SELECT * FROM events ORDER BY seq DESC LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+    const seq = Number(last?.["seq"]) + 1;
+    db.prepare(
+      "INSERT INTO events (seq, schema_version, event_id, graph_id, run_id, node_id, type, at, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(
+      ...[seq, Number(last?.["schema_version"]), "forged-" + String(seq)],
+      ...[String(last?.["graph_id"]), runId, String(last?.["node_id"])],
+      ...[type, String(last?.["at"]), JSON.stringify(payload)],
+    );
+  } finally {
+    db.close();
+  }
+}
+
+describe("dependent run, --after (e2e, PB-2b)", () => {
+  it(
+    "builds on the provisional commit, keeps its work on reap, and replays",
+    { timeout: 3 * T },
+    () => {
+      const { run, id, commit, fx } = firstFork();
+      const heads = git("-C", fx, "for-each-ref", "refs/heads");
+      const refs = helmwrightRefs(fx);
+      const dep = runAfter(id);
+      expect(dep.status, dep.stderr).toBe(0);
+      expect(dep.out.terminal).toEqual({ kind: "completed" });
+      expect(dep.events.map((e) => e.type).slice(0, 4)).toEqual([
+        ...["task.created", "run.recorded", "provisional.attached"],
+        "run.started",
+      ]);
+      expect(dep.events[2]?.payload).toEqual({
+        ...{ kind: "provisional.attached", decisionId: id },
+        runId: dep.out.runId,
+        commit,
+      });
+      expect(dep.events[3]?.payload["baseCommit"]).toBe(commit);
+      expect(dep.events[1]?.payload["baseCommit"]).toBe(commit);
+      expect(git("-C", dep.workspace, "rev-parse", "HEAD").trim()).toBe(commit);
+      const checked = dep.events.find((e) => e.type === "floor.checked");
+      expect(checked?.payload).toMatchObject({
+        baseCommit: commit,
+        verdict: "pass",
+      });
+      // The ancestor's dependency is not signalled again: no new decision, no new fork.
+      expect(
+        dep.events.some(
+          (e) =>
+            e.type === "decision.opened" && e.payload["source"] === "floor",
+        ),
+      ).toBe(false);
+      expect(
+        dep.events.some(
+          (e) =>
+            e.type.startsWith("provisional.") &&
+            e.type !== "provisional.attached",
+        ),
+      ).toBe(false);
+      expect(git("-C", fx, "for-each-ref", "refs/heads")).toBe(heads);
+      expect(helmwrightRefs(fx)).toEqual(refs);
+      expect(dep.stderr).toContain(
+        "helmwright: provisional until " +
+          id +
+          " is resolved (chain: " +
+          id +
+          ")\n",
+      );
+      expect(dep.stderr).not.toContain("provisional ref:");
+      expectFlowDeclared(logEvents());
+      expectReplayMatches(dep.out.runId, dep.fromStarted);
+      expectReplayMatches(run.out.runId, run.events);
+      const reaped = cli("reap", "--state-dir", stateDir);
+      expect(reaped.status, reaped.stderr).toBe(0);
+      const result = JSON.parse(reaped.stdout) as {
+        worktrees: string[];
+        kept: string[];
+      };
+      expect(result.worktrees).toEqual([run.out.runId]);
+      expect(result.kept).toEqual([dep.out.runId]);
+      expect(existsSync(dep.workspace)).toBe(true);
+      expect(existsSync(run.workspace)).toBe(false);
+    },
+  );
+
+  it(
+    "chains: a dependent run forks from the provisional commit and a third builds on it",
+    { timeout: 4 * T },
+    () => {
+      const { id, commit, fx } = firstFork();
+      const second = runAfter(id, "fx-after-dep.turns.json", "task-2", [
+        ...["app/package.json", "app/pnpm-lock.yaml"],
+      ]);
+      expect(second.status, second.stderr).toBe(0);
+      const opened = second.events.find((e) => e.type === "provisional.opened");
+      const id2 = String(opened?.payload["decisionId"]);
+      const commit2 = String(opened?.payload["commit"]);
+      expect(opened?.payload["baseCommit"]).toBe(commit);
+      expect(git("-C", fx, "rev-parse", commit2 + "^").trim()).toBe(commit);
+      expect(helmwrightRefs(fx)).toContain(PROVISIONAL + id2 + " " + commit2);
+      const third = runAfter(id2, "fx-after.turns.json", "task-3");
+      expect(third.status, third.stderr).toBe(0);
+      expect(
+        third.events.find((e) => e.type === "provisional.attached")?.payload[
+          "commit"
+        ],
+      ).toBe(commit2);
+      expect(third.stderr).toContain("(chain: " + id2 + ", " + id + ")\n");
+      expectFlowDeclared(logEvents());
+      expectReplayMatches(second.out.runId, second.fromStarted);
+      expectReplayMatches(third.out.runId, third.fromStarted);
+      const reaped = JSON.parse(
+        cli("reap", "--state-dir", stateDir).stdout,
+      ) as { kept: string[] };
+      expect([...reaped.kept].sort()).toEqual(
+        [second.out.runId, third.out.runId].sort(),
+      );
+    },
+  );
+
+  it("refuses with exit 64 and writes nothing", { timeout: 4 * T }, () => {
+    const { id, commit, fx } = firstFork();
+    const ref = PROVISIONAL + id;
+    expectAfterRefused("decision-nope", "--after: unknown decision");
+    expectAfterRefused("not a decision", "--after: not a decision ID");
+    // Another repository never opened this decision.
+    materializeFx(join(tmp, "fx2"));
+    const other = writeTask("fx-after.turns.json", LIMITS, join(tmp, "fx2"), {
+      id: "task-8",
+    });
+    const before = logEvents().length;
+    const foreign = cli("run", other, "--state-dir", stateDir, "--after", id);
+    expect(foreign.status, foreign.stderr).toBe(64);
+    expect(foreign.stderr).toContain(
+      "helmwright: --after: the decision was opened in another repository\n",
+    );
+    expect(logEvents()).toHaveLength(before);
+    // A ref that moved is not the log's.
+    git("-C", fx, "update-ref", ref, FX_BASE_COMMIT);
+    expectAfterRefused(
+      id,
+      "--after: the provisional ref does not match the log",
+    );
+    // A deleted ref with its commit present is re-created, create-only.
+    git("-C", fx, "update-ref", "-d", ref);
+    const again = runAfter(id);
+    expect(again.status, again.stderr).toBe(0);
+    expect(helmwrightRefs(fx)).toContain(ref + " " + commit);
+    expectReplayMatches(again.out.runId, again.fromStarted);
+    // A deleted ref and a pruned commit: nothing left to build on.
+    git("-C", fx, "worktree", "remove", "--force", again.workspace);
+    git("-C", fx, "update-ref", "-d", ref);
+    git("-C", fx, "reflog", "expire", "--expire=now", "--all");
+    git("-C", fx, "worktree", "prune");
+    git("-C", fx, "gc", "--prune=now", "--quiet");
+    expectAfterRefused(
+      id,
+      "--after: the provisional commit is missing from the repository",
+    );
+    // Resolved (forged here: PB-3 is its writer).
+    forgeRow("run-resolve-x", "provisional.resolved", {
+      ...{ kind: "provisional.resolved", decisionId: id, outcome: "discarded" },
+      ...{ chosenOption: "b", resolvedBy: "owner-tty:none" },
+    });
+    expectAfterRefused(id, "--after: the decision is already resolved");
+  });
+
+  it("refuses a cap-refused decision", { timeout: 4 * T }, () => {
+    const taken = Array.from(
+      { length: 10 },
+      (_, i) => PROVISIONAL + "decision-pre-" + String(i),
+    );
+    const capped = runFx("dependency", (fx) => {
+      for (const ref of taken) git("-C", fx, "update-ref", ref, FX_BASE_COMMIT);
+    });
+    const cappedId = String(floorSignalsOf(capped.events).decisions[0]?.["id"]);
+    expectAfterRefused(
+      cappedId,
+      "--after: the provisional branch was refused at the cap",
+    );
+  });
+
+  it(
+    "refuses a decision whose run did not complete, and an architecture decision",
+    { timeout: 4 * T },
+    () => {
+      const dep = fxTask("dependency");
+      const fx = materializeFx(join(tmp, "fx"));
+      const { title, intake, turns } = dep;
+      const short = runWith(
+        writeTask(turns, { ...LIMITS, maxIterations: 1 }, fx.repo, {
+          title,
+          intake,
+        }),
+      );
+      expect(short.out.terminal.kind).not.toBe("completed");
+      const open = logEvents().find(
+        (e) =>
+          e.type === "decision.opened" && e.payload["authority"] === "owner",
+      );
+      const id = String(open?.payload["id"]);
+      expectAfterRefused(id, "--after: the decision has no provisional branch");
+      const arch = {
+        ...open?.payload,
+        id: "decision-arch",
+        class: "architecture",
+      };
+      forgeRow(short.out.runId, "decision.opened", arch);
+      expectAfterRefused(
+        "decision-arch",
+        "--after: an architecture decision has no provisional branch",
+      );
+    },
+  );
+
+  it("replays a forged attached event as a fault", { timeout: 3 * T }, () => {
+    const { id } = firstFork();
+    const dep = runAfter(id);
+    expect(dep.status, dep.stderr).toBe(0);
+    const edit = (change: string, ...values: string[]) => {
+      const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+      try {
+        db.exec("DROP TRIGGER IF EXISTS events_no_update");
+        db.prepare(
+          "UPDATE events SET payload = json_set(payload, " +
+            change +
+            ") WHERE type = 'provisional.attached'",
+        ).run(...values);
+      } finally {
+        db.close();
+      }
+    };
+    const faults = () => {
+      const out = cli("replay", dep.out.runId, "--state-dir", stateDir);
+      expect(out.status, out.stdout).toBe(3);
+      return (
+        JSON.parse(out.stdout) as { permissionFaults: string[] }
+      ).permissionFaults.join("\n");
+    };
+    const real = String(
+      dep.events.find((e) => e.type === "provisional.attached")?.payload[
+        "commit"
+      ],
+    );
+    edit("'$.commit', ?", "e".repeat(40));
+    expect(faults()).toContain(
+      "attached commit is not the decision's provisional commit",
+    );
+    edit("'$.commit', ?", real);
+    edit("'$.runId', ?", "run-other");
+    expect(faults()).toContain("attached runId is not the event's");
+    edit("'$.runId', ?", dep.out.runId);
+    edit("'$.decisionId', ?", "decision-other");
+    expect(faults()).toContain(
+      "attached decision has no earlier provisional.opened",
+    );
+  });
+});

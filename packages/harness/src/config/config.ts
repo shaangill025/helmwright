@@ -299,22 +299,30 @@ function admit(bytes: Uint8Array): unknown {
  * and no `__proto__`, `constructor` or `prototype` key at any level, valid against
  * its schema, with every setting at its default (07 rule 1) except
  * `permissions.policy`, which may only make the default policy stricter.
+ * PB-2b: with `onCommit` (a full object ID) the commit is that one, not HEAD, and
+ * everything is read from its tree.
  * Every git call goes through `runGit`.
  * @throws ConfigError naming the file (or HEAD) and the first problem, escaped; it
  * never quotes the file's raw content.
  */
-export function loadRunConfig(repo: string): RunConfig {
+export function loadRunConfig(repo: string, onCommit?: string): RunConfig {
+  const missing =
+    onCommit === undefined
+      ? "task.repo has no commit at HEAD"
+      : "task.repo has no such base commit";
+  if (onCommit !== undefined && !OID.test(onCommit)) {
+    throw new ConfigError(missing);
+  }
   let baseCommit: string;
   try {
-    const args = ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"];
+    const rev = (onCommit ?? "HEAD") + "^{commit}";
+    const args = ["rev-parse", "--verify", "--quiet", rev];
     baseCommit = git(repo, args).toString("utf8").trim();
   } catch (error) {
     if (error instanceof GitTimeoutError) throw new ConfigError(error.message);
-    throw new ConfigError("task.repo has no commit at HEAD");
+    throw new ConfigError(missing);
   }
-  if (!OID.test(baseCommit)) {
-    throw new ConfigError("task.repo has no commit at HEAD");
-  }
+  if (!OID.test(baseCommit)) throw new ConfigError(missing);
   const read = (args: readonly string[], max?: number) => {
     try {
       return git(repo, args, max);

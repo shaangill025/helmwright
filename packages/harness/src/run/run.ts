@@ -42,6 +42,13 @@ import {
   planProvisional,
   provisionalFaults,
 } from "../floor/provisional.ts";
+import { provisionalState } from "../floor/provisional-state.ts";
+import {
+  AFTER_REFUSALS,
+  AfterRefused,
+  preflightAfter,
+  type AfterPlan,
+} from "./after.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
@@ -915,6 +922,8 @@ export interface RunTaskOptions {
   readonly onIntake?: (shown: IntakeShown) => void;
   /** A-dep-4: called with what the early dependency check shows (`RunSetup.onEarly`). */
   readonly onEarly?: (shown: EarlyShown) => void;
+  /** PB-2b: build on the provisional commit of this owner decision (`--after`). */
+  readonly after?: string;
 }
 
 /** What a run shows of its intake: the class and its friction (N8). */
@@ -961,6 +970,8 @@ export interface RunTaskResult extends RunEnd {
   readonly runId: string;
   readonly nodeId: string;
   readonly workspace: string;
+  /** PB-2b: the decisions this run waits on (`--after`, then its chain); else empty. */
+  readonly provisionalOn: readonly string[];
 }
 
 const LOG_FILE = "session.sqlite";
@@ -1018,9 +1029,19 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     throw new UsageError(`task.engine.turns: ${errorMessage(error)}`);
   }
   checkRepoRoot(task.repo);
+  // PB-2b: --after is checked against the log and the repo before anything is created.
+  let after: AfterPlan | undefined;
+  if (options.after !== undefined) {
+    try {
+      after = preflightAfter(options.stateDir, task.repo, options.after);
+    } catch (error) {
+      if (!(error instanceof AfterRefused)) throw error;
+      throw new UsageError(error.message, { cause: error });
+    }
+  }
   let config: RunConfig;
   try {
-    config = loadRunConfig(task.repo);
+    config = loadRunConfig(task.repo, after?.commit);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     throw new UsageError(error.message, { cause: error });
@@ -1089,6 +1110,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     if (!(error instanceof RangeError)) throw error;
     throw new UsageError(`--state-dir: ${errorMessage(error)}`);
   }
+  // PB-2b: a missing ref is re-created (create-only) once nothing else can refuse the run.
+  after?.restoreRef();
   const log = openSessionLog(join(stateDir, LOG_FILE));
   try {
     // OD-B54-1: a changed Task is refused before anything else is created.
@@ -1161,9 +1184,22 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       // OD-B54-1: checked again in run.started's transaction; a same Task is reused.
       records: () => {
         const run = { type: "run.recorded", payload: { ...recorded } };
-        return recordedTask(log, created) === "new"
-          ? [{ type: "task.created", payload: { ...created } }, run]
-          : [run];
+        const head =
+          recordedTask(log, created) === "new"
+            ? [{ type: "task.created", payload: { ...created } }, run]
+            : [run];
+        if (after === undefined) return head;
+        // PB-2b: in run.started's transaction, so a resolve cannot slip in between.
+        const now = provisionalState(log.events()).decisions;
+        if (now.get(after.decisionId)?.resolved !== undefined) {
+          throw new Error("run refused: " + AFTER_REFUSALS.resolved);
+        }
+        const attached = {
+          ...{ kind: "provisional.attached", decisionId: after.decisionId },
+          runId,
+          commit: after.commit,
+        };
+        return [...head, { type: "provisional.attached", payload: attached }];
       },
       engine,
       tools: BROKER_TOOLS,
@@ -1363,7 +1399,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       }
       throw error;
     });
-    return { ...outcome, graphId, runId, nodeId, workspace };
+    const provisionalOn = after?.chain ?? [];
+    return { ...outcome, graphId, runId, nodeId, workspace, provisionalOn };
   } finally {
     log.close();
   }
@@ -1525,6 +1562,8 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
 export interface ReapResult {
   /** Run IDs whose worktrees were removed. */
   readonly worktrees: string[];
+  /** PB-2b: completed runs on an unresolved provisional decision, whose worktrees stay. */
+  readonly kept: string[];
   /** Orphaned sandbox containers removed; null if reaping them failed. */
   readonly containers: number | null;
   /** What could not be reaped (a run ID or "containers"), and why. */
@@ -1555,12 +1594,24 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
     events.filter((e) => e.type === "run.terminated").map((e) => e.runId),
   );
   const worktrees: string[] = [];
+  const kept: string[] = [];
   const failures: { target: string; error: string }[] = [];
+  // PB-2b (owner): a COMPLETED run built on a still-unresolved decision keeps its
+  // worktree: nothing else holds its work.
+  const state = provisionalState(events);
   for (const { type, runId, payload } of events) {
     const { repo, workspace } = payload;
     if (type !== "run.started" || !ended.has(runId)) continue;
     if (typeof repo !== "string" || typeof workspace !== "string") continue;
     if (!existsSync(workspace)) continue;
+    if (
+      state.attached.has(runId) &&
+      state.completed.has(runId) &&
+      state.provisional(runId)
+    ) {
+      kept.push(runId);
+      continue;
+    }
     try {
       const own = join(realpathSync(join(root, WORKSPACES)), runId);
       if (realpathSync(workspace) !== own) continue;
@@ -1576,5 +1627,5 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
   } catch (error) {
     failures.push({ target: "containers", error: errorMessage(error) });
   }
-  return { worktrees, containers, failures };
+  return { worktrees, kept, containers, failures };
 }

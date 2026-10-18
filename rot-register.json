@@ -542,7 +542,7 @@
   {
     "component": "packages/harness/src/floor/provisional.ts",
     "ring": 0,
-    "assumption": "PB-1 (X3 revised): a run that ends COMPLETED with a passing floor and an owner decision of class technology or scope forks one provisional commit per decision (owner ruling 2026-10-17: a failed or incomplete run forks none). The commit holds the floor's candidateTree, whose loose objects come from the floor's own pass (a pack or incomplete tree fails closed), the base commit as parent, a fixed identity, epoch 0 and the decision ID, so replay recomputes it. Host objects are written before the log transaction and may stay unreferenced (gc-able) if it fails. The ref refs/helmwright/provisional/<id> is created create-only after the log commits. Past 10 open, provisional.refused is logged and the run fails; the count is advisory across concurrent runs. Owner unblock: git update-ref -d <ref>. PB-2a: replay checks provisional.attached (nine rules) and the floor base rule. No writer of attached until PB-2b; resolved is PB-3. PB-2b/PB-3 treat the log as truth and will re-create a lost ref create-only.",
+    "assumption": "PB-1 (X3 revised): a run that ends COMPLETED with a passing floor and an owner decision of class technology or scope forks one provisional commit per decision (owner ruling 2026-10-17: a failed or incomplete run forks none). The commit holds the floor's candidateTree, whose loose objects come from the floor's own pass (a pack or incomplete tree fails closed), the base commit as parent, a fixed identity, epoch 0 and the decision ID, so replay recomputes it. Host objects are written before the log transaction and may stay unreferenced (gc-able) if it fails. The ref refs/helmwright/provisional/<id> is created create-only after the log commits. Past 10 open, provisional.refused is logged and the run fails; the count is advisory across concurrent runs. Owner unblock: git update-ref -d <ref>. PB-2a: replay checks provisional.attached (nine rules) and the floor base rule. PB-2b writes attached (run --after); resolved is PB-3. The log is truth: --after re-creates a lost ref create-only; PB-3 will too.",
     "evidence": [
       "decisions X3",
       "decisions PB-1 fork rule",
@@ -576,6 +576,19 @@
     "evidence": [
       "decisions X3",
       "packages/harness/test/floor/provisional-state.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/run/after.ts",
+    "ring": 0,
+    "assumption": "PB-2b: run --after <decisionId> is refused (exit 64, fixed text, nothing written to the log or disk) for an unknown, architecture, cap-refused, fork-less, resolved or other-repository decision, a ref that differs from the log, or a missing ref and commit. A missing ref with its commit present is re-created create-only. The run's base, config and worktree come from the provisional commit; run.recorded, provisional.attached, run.started are logged in one transaction that re-checks the decision is unresolved. Owner ruling: reap keeps only COMPLETED runs on an unresolved decision (reap result field kept). The repo is matched by realpath of the logged run.started.repo.",
+    "evidence": [
+      "decisions X3",
+      "packages/harness/test/e2e/cli.test.ts",
+      "packages/harness/test/config/config.test.ts"
     ],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
