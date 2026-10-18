@@ -20,6 +20,9 @@ import {
 import { IntakeError } from "../intake/rubric.ts";
 
 // Ring 0 (B5-4b): replay's object relations; this module reads events only.
+// PB-1: it only steps over a `provisional.opened` or `provisional.refused` between floor
+// decisions; their content (commit, tree, ref, position, a missing one) is checked by
+// `provisionalFaults` (floor/provisional.ts), which replay must run with this.
 
 /** The fields a Run records that must be its `run.started`'s. */
 const SAME_AS_STARTED = ["taskId", "baseCommit", "engine"] as const;
@@ -297,8 +300,21 @@ function floorDecisionFaults(
     const task = objects.find(
       (e) => e.type === "task.created" && e.payload["id"] === taskId,
     );
+    // PB-1: a provisional event directly after an owner decision is not a slot.
+    let next = signalled.seq + 1;
+    const skipFork = () => {
+      while (
+        (events.find((x) => x.seq === next)?.type ?? "").startsWith(
+          "provisional.",
+        )
+      ) {
+        next += 1;
+      }
+    };
     for (const [index, signal] of signals.entries()) {
-      const seq = signalled.seq + 1 + index;
+      if (index > 0) skipFork();
+      const seq = next;
+      next += 1;
       const e = events.find((x) => x.seq === seq);
       if (
         e === undefined ||
@@ -322,10 +338,8 @@ function floorDecisionFaults(
         fault(seq, "floor decision is not its signal's");
       }
     }
-    if (
-      checked !== undefined &&
-      checked.seq !== signalled.seq + 1 + signals.length
-    ) {
+    skipFork();
+    if (checked !== undefined && checked.seq !== next) {
       at("and its decisions are not just before floor.checked");
     }
   }

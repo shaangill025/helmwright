@@ -520,6 +520,20 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/harness/src/floor/provisional.ts",
+    "ring": 0,
+    "assumption": "PB-1 (X3 revised): a run that ends with a passing floor and an owner decision of class technology or scope forks one provisional commit per decision, at run end only. The commit holds the floor's candidateTree, whose objects come from the floor's own pass (the worktree is read once), has the base commit as parent, a fixed identity, epoch 0 and a fixed message with the decision ID, so replay recomputes its ID from logged facts; the log holds no recommendation (Q48). The ref refs/helmwright/provisional/<decisionId> is created create-only after the log commits; never under refs/heads, never pushed. At most 10 open per repository: past it provisional.refused is logged, the floor is kept and the run fails (PROVISIONAL_REFUSED). A ref that failed or is missing after the log (PROVISIONAL_FAILED) is not repaired in PB-1: PB-2 and PB-3 treat the log as truth, re-create it create-only from the logged facts while the commit object exists, and log a fact when it does not. Architecture is never provisional.",
+    "evidence": [
+      "decisions X3",
+      "decisions OQ-AD-3",
+      "packages/harness/test/floor/provisional.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/index.ts",
     "ring": 2,
     "assumption": "The harness is a private workspace package used in process: its index re-exports the module APIs, and no authenticated state/action API exists until B13.",
