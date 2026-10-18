@@ -45,7 +45,14 @@ describe("event-flow.json (Q68(b))", () => {
   });
 
   it("covers every event-schema kind as a node", () => {
-    for (const group of ["permission", "intake", "object", "floor", "tool"]) {
+    for (const group of [
+      "permission",
+      "intake",
+      "object",
+      "floor",
+      "tool",
+      "provisional",
+    ]) {
       for (const kind of schemaKinds(group + "-event")) {
         expect(nodes, kind).toContain(kind);
       }

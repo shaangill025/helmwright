@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/shaangill025/helmwright/schemas/provisional-event.schema.json",
+  "title": "ProvisionalEvent",
+  "description": "Payload of a provisional-branch event in the session log (PB, X3 revised), validated before it is appended. `kind` equals the event's `type`; the writer checks that relation. A run that ends with a pending owner decision of class technology or scope forks one provisional commit per decision from the floor's own candidate tree. Fork and discard are Ring 0 and pure functions of logged facts: the commit ID is recomputed on replay. The log holds no recommendation (Q48). PB-1 writes `provisional.opened` or `provisional.refused`; the other two are reserved for the work that builds on a provisional branch (PB-2) and for the owner's answer (PB-3).",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/opened" },
+    { "$ref": "#/$defs/refused" },
+    { "$ref": "#/$defs/attached" },
+    { "$ref": "#/$defs/resolved" }
+  ],
+  "$defs": {
+    "opened": {
+      "title": "ProvisionalOpened",
+      "description": "A provisional commit was made for the owner decision `decisionId`, logged after that `decision.opened` and before `floor.checked`, in the floor's transaction. `ref` is `refs/helmwright/provisional/<decisionId>` in the host repository's common git dir; it is created only after the transaction commits, is never under `refs/heads` and is never pushed. `commit` is the deterministic commit of `tree` (the floor's `candidateTree`) on `baseCommit`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "decisionId",
+        "class",
+        "commit",
+        "tree",
+        "baseCommit",
+        "ref"
+      ],
+      "properties": {
+        "kind": { "const": "provisional.opened" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "class": {
+          "description": "The decision's class: architecture is never provisional.",
+          "enum": ["scope", "technology"]
+        },
+        "commit": { "$ref": "#/$defs/oid" },
+        "tree": {
+          "$ref": "#/$defs/oid",
+          "description": "The commit's tree: `floor.checked.candidateTree`."
+        },
+        "baseCommit": {
+          "$ref": "#/$defs/oid",
+          "description": "The commit's only parent: `run.started.baseCommit`."
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^refs/helmwright/provisional/decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+        }
+      }
+    },
+    "refused": {
+      "title": "ProvisionalRefused",
+      "description": "The fork for the owner decision `decisionId` was refused, logged in place of `provisional.opened`: `cap` means the repository already has the most open provisional branches. The floor is logged as usual; only the run fails.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decisionId", "reason"],
+      "properties": {
+        "kind": { "const": "provisional.refused" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "reason": { "enum": ["cap"] }
+      }
+    },
+    "attached": {
+      "title": "ProvisionalAttached",
+      "description": "Reserved (PB-2): a run's work was built on the provisional commit `commit` of the pending decision `decisionId`. Not written by PB-1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decisionId", "runId", "commit"],
+      "properties": {
+        "kind": { "const": "provisional.attached" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "runId": { "$ref": "#/$defs/runId" },
+        "commit": { "$ref": "#/$defs/oid" }
+      }
+    },
+    "resolved": {
+      "title": "ProvisionalResolved",
+      "description": "Reserved (PB-3): the owner answered `decisionId`, so its provisional branch was confirmed or discarded. Not written by PB-1.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "decisionId",
+        "outcome",
+        "chosenOption",
+        "resolvedBy"
+      ],
+      "properties": {
+        "kind": { "const": "provisional.resolved" },
+        "decisionId": { "$ref": "#/$defs/decisionId" },
+        "outcome": { "enum": ["confirmed", "discarded"] },
+        "chosenOption": { "$ref": "#/$defs/optionId" },
+        "resolvedBy": {
+          "description": "Who resolved it: the ID of the event or the owner answer that did, as shown text.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        }
+      }
+    },
+    "decisionId": {
+      "type": "string",
+      "pattern": "^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^run-[A-Za-z0-9][A-Za-z0-9_-]{0,123}$"
+    },
+    "optionId": {
+      "description": "A Brief option ID.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,31}$"
+    },
+    "oid": {
+      "description": "A full lowercase hex git object ID (SHA-1 or SHA-256).",
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    }
+  }
+}

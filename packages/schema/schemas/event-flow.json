@@ -115,6 +115,8 @@
         "decision.opened -> message.appended",
         "decision.opened -> permission.evaluated",
         "decision.opened -> permission.rejected",
+        "decision.opened -> provisional.opened",
+        "decision.opened -> provisional.refused",
         "decision.opened -> run.terminated",
         "run.recorded -> run.started",
         "task.created -> run.recorded"
@@ -167,6 +169,21 @@
         "tool.output.offloaded -> intake.reclassified",
         "tool.output.offloaded -> loop.tool.called",
         "tool.output.offloaded -> run.terminated"
+      ]
+    },
+    {
+      "group": "provisional-event",
+      "types": [
+        "provisional.attached",
+        "provisional.opened",
+        "provisional.refused",
+        "provisional.resolved"
+      ],
+      "edges": [
+        "provisional.opened -> decision.opened",
+        "provisional.opened -> floor.checked",
+        "provisional.refused -> decision.opened",
+        "provisional.refused -> floor.checked"
       ]
     }
   ]

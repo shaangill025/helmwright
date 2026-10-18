@@ -715,5 +715,14 @@
     "added": "2026-10-16",
     "lastReviewed": "2026-10-16",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/schema/schemas/provisional-event.schema.json",
+    "ring": 0,
+    "assumption": "provisional.opened logs the decision, its class (scope or technology), the commit, tree and base commit and the ref under refs/helmwright/provisional/, never a recommendation (Q48); provisional.refused logs a fork refused at the cap; provisional.attached and provisional.resolved are reserved (PB-2, PB-3) and not written yet. That the commit is recomputed from the tree, base commit and decision ID, and its position after its owner decision, are replay's checks, not the schema's.",
+    "evidence": ["decisions X3", "packages/schema/test/event-flow.test.ts"],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["milestone"]
   }
 ]

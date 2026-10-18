@@ -58,6 +58,14 @@ export type {
 } from "../generated/tool-event.ts";
 export { validate as validateToolEvent } from "../generated/tool-event.validate.js";
 export type {
+  ProvisionalAttached,
+  ProvisionalEvent,
+  ProvisionalOpened,
+  ProvisionalRefused,
+  ProvisionalResolved,
+} from "../generated/provisional-event.ts";
+export { validate as validateProvisionalEvent } from "../generated/provisional-event.validate.js";
+export type {
   RotRegister,
   RotRegisterDate,
   RotRegisterEntry,
