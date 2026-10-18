@@ -7,7 +7,6 @@ import {
   readdirSync,
   rmSync,
   statSync,
-  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,15 +152,6 @@ describe("offloadFaults re-validates the payload (hardening 1)", () => {
     expect(
       offloadFaults([event("tool.output.offloaded", good())], dir),
     ).toEqual([]);
-  });
-
-  it("faults a file over twice the source ceiling without reading it (C1)", () => {
-    const file = join(dir, sha(text) + ".txt");
-    writeFileSync(file, "");
-    truncateSync(file, 2 * OFFLOAD_SOURCE_CEILING_BYTES + 17);
-    expect(
-      offloadFaults([event("tool.output.offloaded", good())], dir),
-    ).toEqual(["seq 7: tool.output.offloaded file is too large to check"]);
   });
 
   it("faults a wrong kind, a missing toolCallId and an extra key", () => {

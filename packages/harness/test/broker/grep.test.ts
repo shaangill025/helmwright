@@ -8,7 +8,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PermissionPolicy, PermissionRule } from "@helmwright/schema";
+import type {
+  Event,
+  PermissionPolicy,
+  PermissionRule,
+} from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   BROKER_TOOLS,
@@ -21,6 +25,7 @@ import {
 import {
   OFFLOAD_SOURCE_CEILING_BYTES,
   offload,
+  offloadFaults,
   pointerLine,
 } from "../../src/broker/offload.ts";
 
@@ -151,6 +156,26 @@ describe("offload.grep", () => {
       status: "error",
       output: "offloaded file is too large to search",
     });
+  });
+
+  it("makes replay fault, not read, a file over twice the source ceiling (C1)", () => {
+    const sha256 = "d".repeat(64);
+    mkdirSync(offloadDir(), { recursive: true });
+    const file = join(offloadDir(), sha256 + ".txt");
+    writeFileSync(file, "");
+    truncateSync(file, 2 * OFFLOAD_SOURCE_CEILING_BYTES + 17);
+    const payload = {
+      ...{ kind: "tool.output.offloaded", toolCallId: "call-1", sha256 },
+      ...{ bytes: 1, truncatedAtSource: false },
+    };
+    const event: Event = {
+      ...{ schemaVersion: 1, eventId: "e1", seq: 7, graphId: "g", runId: "r" },
+      ...{ nodeId: "n", at: "2026-10-17T00:00:00.000Z", payload },
+      type: "tool.output.offloaded",
+    };
+    expect(offloadFaults([event], offloadDir())).toEqual([
+      "seq 7: tool.output.offloaded file is too large to check",
+    ]);
   });
 
   it("stays fast on a long pattern that nearly matches every line (C5)", async () => {
