@@ -583,7 +583,7 @@ describe("floorSignalled and changedLockfiles (A-dep)", () => {
       ...{ kind: "floor.signalled", detector: "dependency-1", phase: "final" },
       ...{ baseCommit: OID, candidateTree: "b".repeat(40) },
       materiality: {
-        rubricVersion: "materiality-rubric-1",
+        rubricVersion: "materiality-rubric-2",
         threshold: "runtimeAddOrMajor",
       },
     });

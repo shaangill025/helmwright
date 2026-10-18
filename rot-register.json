@@ -369,6 +369,19 @@
     "reviewTrigger": ["engine", "milestone"]
   },
   {
+    "component": "packages/harness/src/floor/materiality.ts",
+    "facet": "claims",
+    "ring": 0,
+    "assumption": "materiality-rubric-2 is current (Q70-1): each floor Brief gets a fixed claims table: Direct citing the signal, Unknown for what was not checked, Inferred cost citing claim 0. materiality-rubric-1 stays pinned with no claims, so old logs replay byte for byte; the Q53 table and its text rules hold in both versions. An unknown rubric version is one replay fault. The claims' wording is the rubric's, not a model's. Review when a rubric version is added or at B11's brief step.",
+    "evidence": [
+      "decisions Q70",
+      "packages/harness/test/floor/rubric2.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/floor/key.ts",
     "ring": 0,
     "assumption": "The recommendation key (OQ-AD-3) is 32 random bytes in <stateDir>/recommendation.key, made on first Brief by a wx temp file set to 0600, fsynced, hard-linked into place (never replacing a key), the dir fsynced. It is refused unless the state dir is this user's with no group or other bits and the opened file (O_NOFOLLOW) is a regular 0600 file of this user, 32 bytes, one link. Refusals are fixed text (at most an errno code) and fail closed. A crash before linking can leave a harmless, never-read recommendation.key.<uuid> temp (no reaper). Node has no openat or linkat, so path ops are not anchored to the checked dir fd: a parent-path swap is out of scope; the key's own fd checks keep it secret. It assumes a POSIX state dir that keeps modes and hard links (macOS, Linux); the key's dir is never mounted (only <stateDir>/workspaces/<run> is bind-mounted). The commitment hides the recommendation from a log holder, not the owner, who can read the key. Review at B11's brief step or when the state dir moves.",
@@ -491,6 +504,19 @@
     ],
     "added": "2026-10-09",
     "lastReviewed": "2026-10-15",
+    "reviewTrigger": ["milestone"]
+  },
+  {
+    "component": "packages/harness/src/objects/faults.ts",
+    "facet": "claims",
+    "ring": 0,
+    "assumption": "Q70-1: floor decisions are recomputed by floor.signalled's rubric version (-1 or -2): a -2 Brief must carry its claims, a -1 Brief none. An unknown version is one fault, its decisions not recomputed. Rubric versions only move forward in a log: a rubric-1 floor.signalled after a rubric-2 one is a fault (the same pattern as the lockfiles legacy rule), so an older build cannot write below a newer one's records.",
+    "evidence": [
+      "decisions Q70",
+      "packages/harness/test/objects/faults.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
     "reviewTrigger": ["milestone"]
   },
   {

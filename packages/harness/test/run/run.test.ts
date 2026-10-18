@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { validateFloorEvent, type FloorFinding } from "@helmwright/schema";
+import {
+  validateFloorEvent,
+  type FloorFinding,
+  type FloorSignal,
+} from "@helmwright/schema";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SANDBOX_CLEANUP_FAILED,
@@ -544,18 +548,20 @@ describe("executeRun's Task and Run records (B5-4)", () => {
 
   // A-dep: floor.signalled, its decisions and floor.checked commit together, or none do.
   const oid = "a".repeat(40);
+  const floorSignal: FloorSignal = {
+    ...{ id: "evt-signalled:0", type: "dependency.added" },
+    ...{ path: "package.json", field: "dependencies", name: "left-pad" },
+    ...{ runtime: true, from: null, to: "^1.0.0" },
+  };
+  // Its Brief's Direct claim cites the signal, which must be in the log (Q70-1).
   const signalled = {
     type: "floor.signalled",
-    payload: { kind: "floor.signalled" },
+    payload: { kind: "floor.signalled", signals: [floorSignal] },
     eventId: "evt-signalled",
   };
   const decision = floorDecision({
     ...{ runId: "run-1", taskId: "task-1", repoId: "/r/.git", index: 0 },
-    signal: {
-      ...{ id: "evt-signalled:0", type: "dependency.added" },
-      ...{ path: "package.json", field: "dependencies", name: "left-pad" },
-      ...{ runtime: true, from: null, to: "^1.0.0" },
-    },
+    signal: floorSignal,
     ...{ threshold: "runtimeAddOrMajor", lockfiles: [], seed: "0".repeat(32) },
     key: new Uint8Array(32),
   });
@@ -855,7 +861,7 @@ describe("executeRun's sensor floor (B3-2)", () => {
       baseCommit,
       candidateTree,
       materiality: {
-        rubricVersion: "materiality-rubric-1",
+        rubricVersion: "materiality-rubric-2",
         threshold: "runtimeAddOrMajor",
       },
       signals: [],

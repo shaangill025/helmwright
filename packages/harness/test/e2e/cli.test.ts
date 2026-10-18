@@ -1284,6 +1284,71 @@ describe("helmwright CLI (e2e)", () => {
     },
   );
 
+  // Q70-1: the tier rules hold on every read, so a raw-inserted Brief whose Direct claim
+  // cites nothing in the log is refused by inspect and fails every replay closed.
+  it(
+    "refuses a raw-inserted Brief with an unresolvable Direct claim (Q70-1)",
+    { timeout: T },
+    () => {
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(0);
+      const option = (id: string) => ({
+        id,
+        label: "Option " + id,
+        tradeoffs: "x",
+      });
+      rawAppend(
+        "decision.opened",
+        {
+          kind: "decision.opened",
+          id: "decision-raw-1",
+          authority: "owner",
+          taskId: "task-1",
+          runId: out.runId,
+          signalIds: ["floor-dep-1"],
+          class: "technology",
+          source: "floor",
+          brief: {
+            question: "Which client?",
+            options: [option("a"), option("b")],
+            recommendationSha256: "d".repeat(64),
+            optionOrderSeed: "e".repeat(32),
+            confidence: "low",
+            costIfWrong: "x",
+            reversibility: "costly",
+            uncertainty: "x",
+            blocked: "x",
+            concepts: [],
+            proposedFootprint: [],
+            claims: [
+              { text: "It is so.", tier: "Direct", evidence: ["evt-nope"] },
+            ],
+          },
+        },
+        out.runId,
+      );
+      const seq = lastSeqRaw();
+      const shown = cli("inspect", "--state-dir", stateDir);
+      expect(shown.status, shown.stderr).toBe(0);
+      const rows = shown.stdout
+        .trim()
+        .split("\n")
+        .map(
+          (line) => JSON.parse(line) as { seq: number; refused: string | null },
+        );
+      const refused = rows.filter((r) => r.refused !== null);
+      expect(refused.map((r) => r.seq)).toEqual([seq]);
+      expect(refused[0]?.refused).toContain(
+        "decision.opened claim 0 (Direct) needs evidence from this run in the log",
+      );
+      const replay = cli("replay", out.runId, "--state-dir", stateDir);
+      expect(replay.status).not.toBe(0);
+      expect(replay.stderr).toContain(
+        "session log: corrupt event at seq " + String(seq) + ": ",
+      );
+    },
+  );
+
   it(
     "replays a legacy run, and faults a later run with no Run (OD-B54-3)",
     { timeout: T },
@@ -2928,7 +2993,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
         phase: "final",
         baseCommit: FX_BASE_COMMIT,
         materiality: {
-          rubricVersion: "materiality-rubric-1",
+          rubricVersion: "materiality-rubric-2",
           threshold: "runtimeAddOrMajor",
         },
         candidateTree: run.checked["candidateTree"],
@@ -2992,6 +3057,25 @@ describe("seeded fixture repo (e2e, FX)", () => {
             file("app/package.json"),
             file("app/pnpm-lock.yaml"),
           ],
+          // Q70-1: a Direct claim citing the signal, the unchecked line as Unknown, and
+          // an Inferred removal cost that cites the Direct claim.
+          claims: [
+            {
+              text: `Manifest app/package.json adds ${name} file:vendor/fx-duration`,
+              tier: "Direct",
+              evidence: [signalId],
+            },
+            {
+              text: "The harness did not check the package's licence, upkeep, size or known vulnerabilities.",
+              tier: "Unknown",
+              evidence: [],
+            },
+            {
+              text: "Removing the package later means rewriting the code that calls it and its tests.",
+              tier: "Inferred",
+              evidence: ["claim:0"],
+            },
+          ],
         },
       });
       expect(objectOf(id)).toMatchObject({
@@ -3037,7 +3121,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
       );
       const id = "decision-floor-" + run.out.runId.slice("run-".length) + "-0";
       const why =
-        "materiality-rubric-1, threshold runtimeAddOrMajor: a lockfile-only change is under the brief threshold";
+        "materiality-rubric-2, threshold runtimeAddOrMajor: a lockfile-only change is under the brief threshold";
       expect(decisions).toEqual([
         {
           ...{ kind: "decision.opened", id, taskId: "task-1" },
@@ -3052,7 +3136,7 @@ describe("seeded fixture repo (e2e, FX)", () => {
             why: why + "\nsignal " + signalId,
             costIfWrong:
               "If it matters, a transitive version changed without an owner brief.",
-            rubricVersion: "materiality-rubric-1",
+            rubricVersion: "materiality-rubric-2",
           },
         },
       ]);
