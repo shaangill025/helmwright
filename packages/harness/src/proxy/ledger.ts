@@ -233,7 +233,16 @@ export class SpendLedger {
       throw new RangeError("lockTimeoutMs must be a finite number >= 0");
     }
     this.#lockTimeout = timeout;
-    this.#lockStale = options.lockStaleMs ?? 30_000;
+    // The stale age must be positive and at least the wait: a shorter age would
+    // let a waiter break a lock whose holder is still inside its short critical
+    // section.
+    const stale = options.lockStaleMs ?? 30_000;
+    if (!Number.isFinite(stale) || stale <= 0 || stale < timeout) {
+      throw new RangeError(
+        "lockStaleMs must be a finite number > 0 and >= lockTimeoutMs",
+      );
+    }
+    this.#lockStale = stale;
   }
 
   #read(): State {

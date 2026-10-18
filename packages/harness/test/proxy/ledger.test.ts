@@ -291,6 +291,29 @@ describe("file lock", () => {
     }
     expect(() => open(25, 2, { lockTimeoutMs: 0 })).not.toThrow();
   });
+
+  it("rejects a bad stale age", () => {
+    for (const bad of [NaN, 0, -1, Infinity]) {
+      expect(() => open(25, 2, { lockStaleMs: bad }), String(bad)).toThrow(
+        RangeError,
+      );
+    }
+    // A stale age below the wait would let a waiter break a live lock.
+    expect(() =>
+      open(25, 2, { lockTimeoutMs: 5000, lockStaleMs: 1000 }),
+    ).toThrow(RangeError);
+    expect(() =>
+      open(25, 2, { lockTimeoutMs: 1000, lockStaleMs: 1000 }),
+    ).not.toThrow();
+  });
+
+  it("does not break a fresh lock, only waits and throws", () => {
+    open().reserve("seed", 1);
+    writeFileSync(lock(), "");
+    const ledger = open(25, 2, { lockTimeoutMs: 100, lockStaleMs: 60_000 });
+    expect(() => ledger.reserve("run-1", 10)).toThrow(/lock/);
+    expect(existsSync(lock())).toBe(true);
+  });
 });
 
 describe("settle when the hold is gone", () => {
