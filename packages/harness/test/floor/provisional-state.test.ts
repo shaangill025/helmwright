@@ -181,6 +181,35 @@ describe("provisionalState (PB-2a)", () => {
     expect(looped.chain("run-1")).toEqual(["decision-2", "decision-1"]);
   });
 
+  it("counts an attach to an unknown decision as unresolved", () => {
+    seq = 0;
+    const state = provisionalState([
+      event(
+        "run-5",
+        "provisional.attached",
+        attached("decision-x", "run-5", "c"),
+      ),
+    ]);
+    expect(state.decisions.size).toBe(0);
+    expect(state.chain("run-5")).toEqual(["decision-x"]);
+    expect(state.provisional("run-5")).toBe(true);
+  });
+
+  it("ignores opened, refused and resolved with no owner decision.opened", () => {
+    seq = 0;
+    const state = provisionalState([
+      started("run-1"),
+      event("run-1", "provisional.opened", opened("decision-g", "c")),
+      event("run-1", "provisional.refused", {
+        kind: "provisional.refused",
+        decisionId: "decision-g",
+        reason: "cap",
+      }),
+      event("run-9", "provisional.resolved", resolved("decision-g")),
+    ]);
+    expect(state.decisions.size).toBe(0);
+  });
+
   it("is a pure function of the events: same log, same answer", () => {
     const log = chain();
     const a = provisionalState(log);

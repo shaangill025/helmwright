@@ -288,6 +288,9 @@ function attachedFaults(
       }
     }
   }
+  // The floor base rule is strict for now: PB-3a will exempt a fork whose decision was
+  // resolved confirmed before this run's run.started, so that a main branch fast-forwarded
+  // onto a confirmed commit replays clean.
   const forkCommits = new Set(forks.map((f) => f.payload["commit"]));
   for (const base of [started, checked]) {
     const commit = base?.payload["baseCommit"];

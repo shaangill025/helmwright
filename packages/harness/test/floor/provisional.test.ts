@@ -231,6 +231,17 @@ describe("provisional.attached replay rules (PB-2a)", () => {
     }
   });
 
+  it("faults a schema-valid payload of another kind (kind is not the type)", () => {
+    const run = [
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(11, "provisional.attached", refused),
+      event(12, "run.started", { baseCommit: base }),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(run, history())).toEqual([
+      "seq 11: provisional.attached that is not a valid provisional event",
+    ]);
+  });
+
   // Rule 2.
   it("faults a payload runId that is not the event's", () => {
     expect(
@@ -261,6 +272,12 @@ describe("provisional.attached replay rules (PB-2a)", () => {
       event(14, "provisional.attached", attachedPayload()),
     ].map((e) => inRun("run-2", e));
     expect(provisionalFaults(late, history())).toEqual([text(14)]);
+    const early = [
+      event(9, "provisional.attached", attachedPayload()),
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(12, "run.started", { baseCommit: commit }),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(early, history())).toEqual([text(9)]);
     const unrecorded = dependent().slice(1);
     expect(provisionalFaults(unrecorded, history())).toEqual([text(11)]);
   });
@@ -308,9 +325,12 @@ describe("provisional.attached replay rules (PB-2a)", () => {
         : e,
     ) as Event[];
     const fork = ownAttached.filter((e) => e.type === "provisional.opened");
-    expect(provisionalFaults(ownAttached, fork)).toContain(
+    expect(provisionalFaults(ownAttached, fork)).toEqual([
       "seq 11: attached to a decision opened in the same run",
-    );
+      // The forged fork row is also out of place for a plain PB-1 check.
+      "seq 5: provisional.opened is not directly after its owner decision",
+      "seq 5: provisional base commit is not floor.checked's",
+    ]);
   });
 
   // Rule 8.
