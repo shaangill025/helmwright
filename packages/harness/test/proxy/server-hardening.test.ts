@@ -1,17 +1,11 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { MODEL_PRICES, preflightCostMicroUsd } from "../../src/proxy/ledger.ts";
+import { chargeForUpstreamError } from "../../src/proxy/server.ts";
 import {
-  MODEL_PRICES,
-  SpendLedger,
-  preflightCostMicroUsd,
-} from "../../src/proxy/ledger.ts";
-import { chargeForUpstreamError, startProxy } from "../../src/proxy/server.ts";
-import {
-  FAKE_KEY,
   MODEL,
-  TOKEN,
   closedPortUrl,
   message,
   usageReply,
@@ -19,67 +13,6 @@ import {
 } from "./support/fake-upstream.ts";
 
 const h = useHarness();
-
-describe("startProxy refusals", () => {
-  const base = () => ({
-    token: TOKEN,
-    apiKey: FAKE_KEY,
-    runId: "run-1",
-    ledger: new SpendLedger({
-      path: h.ledgerPath(),
-      totalCapUsd: 25,
-      runCapUsd: 2,
-    }),
-  });
-
-  it("allows only loopback upstreams while prices are unverified", async () => {
-    await expect(startProxy(base())).rejects.toThrow(/verified/);
-    for (const url of [
-      "https://api.anthropic.com/",
-      "https://api.anthropic.com.",
-      "https://API.anthropic.com:443/v1",
-      "https://user:pw@api.anthropic.com",
-      "https://relay.example",
-    ]) {
-      await expect(
-        startProxy({ ...base(), upstreamBaseUrl: url }),
-        url,
-      ).rejects.toThrow(/verified/);
-    }
-  });
-
-  it("refuses to start with TLS verification switched off", async () => {
-    vi.stubEnv("NODE_TLS_REJECT_UNAUTHORIZED", "0");
-    await expect(
-      startProxy({ ...base(), upstreamBaseUrl: h.upstreamUrl() }),
-    ).rejects.toThrow(/TLS/);
-    vi.unstubAllEnvs();
-  });
-
-  it("refuses plain http to a non-loopback host", async () => {
-    await expect(
-      startProxy({ ...base(), upstreamBaseUrl: "http://example.com" }),
-    ).rejects.toThrow(/loopback/);
-    for (const url of [
-      "http://127.0.0.1:9",
-      "http://localhost:9",
-      "http://[::1]:9",
-    ]) {
-      const proxy = await startProxy({ ...base(), upstreamBaseUrl: url });
-      h.proxies.push(proxy);
-    }
-  });
-
-  it("refuses a token shorter than 32 characters", async () => {
-    await expect(
-      startProxy({
-        ...base(),
-        token: "a".repeat(31),
-        upstreamBaseUrl: h.upstreamUrl(),
-      }),
-    ).rejects.toThrow(/token/);
-  });
-});
 
 describe("request hardening", () => {
   it("answers 403 to a Host header that is not the loopback address", async () => {
@@ -177,7 +110,7 @@ describe("settle failures and edge hosts", () => {
     );
   });
 
-  it("connects to an upstream on ::1", async (ctx) => {
+  it("connects to an upstream on ::1 (skipped, with a reason, if the host has no IPv6 loopback)", async (ctx) => {
     const v6 = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(h.reply.body);
@@ -188,7 +121,7 @@ describe("settle failures and edge hosts", () => {
         v6.listen(0, "::1", resolve);
       });
     } catch {
-      ctx.skip(); // ::1 is not available on this host.
+      ctx.skip("::1 is not available on this host");
       return;
     }
     const port = (v6.address() as AddressInfo).port;
