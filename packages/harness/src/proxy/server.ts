@@ -1,6 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
-  Agent,
   createServer,
   request as httpRequest,
   type IncomingMessage,
@@ -24,7 +23,13 @@ export const DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000;
 const MIN_TOKEN_LENGTH = 32;
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
+/**
+ * Upstream hosts allowed while prices are unverified, and the only hosts that
+ * may be reached over plain http. `localhost` is not here: a resolver or hosts
+ * file can point it elsewhere. It stays in the client Host set below, where it
+ * only names this proxy.
+ */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]"]);
 
 const PATHS = new Set(["/v1/messages", "/v1/messages/count_tokens"]);
 /**
@@ -133,7 +138,11 @@ function forward(
         method: "POST",
         path,
         headers: { ...headers, host: base.host, "content-length": body.length },
-        agent: new Agent({ keepAlive: false }),
+        // `false` gives a one-off agent of the right protocol with no keep-alive
+        // reuse (an http Agent passed to https.request throws).
+        agent: false,
+        // Explicit, so the process env is not the only thing keeping TLS checked.
+        ...(base.protocol === "https:" ? { rejectUnauthorized: true } : {}),
         timeout: UPSTREAM_TIMEOUT_MS,
       },
       (res) => {
