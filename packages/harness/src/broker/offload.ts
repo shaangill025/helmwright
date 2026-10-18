@@ -17,6 +17,12 @@ import { validateToolEvent, type Event } from "@helmwright/schema";
  */
 export const OFFLOAD_SOURCE_CEILING_BYTES = 8_388_608;
 
+/**
+ * The most bytes of an offload file that replay or `offload.grep` reads: stdout and
+ * stderr, each cut at OFFLOAD_SOURCE_CEILING_BYTES, joined by a short marker line.
+ */
+export const MAX_OFFLOAD_FILE_BYTES = 2 * OFFLOAD_SOURCE_CEILING_BYTES + 16;
+
 /** What the log records of one offload; the pointer line is a function of it alone. */
 export interface OffloadFact {
   /** Lowercase hex SHA-256 of the offloaded text (UTF-8). */
@@ -101,7 +107,12 @@ export function offloadFaults(events: readonly Event[], dir: string): string[] {
     }
     let data: Buffer;
     try {
-      data = readFileSync(join(dir, sha256 + ".txt"));
+      const path = join(dir, sha256 + ".txt");
+      if (statSync(path).size > MAX_OFFLOAD_FILE_BYTES) {
+        fault("file is too large to check");
+        continue;
+      }
+      data = readFileSync(path);
     } catch {
       fault("file is missing");
       continue;
@@ -154,8 +165,10 @@ export function withPreview(
 /** Q69: the most matches `offload.grep` returns, and how many it returns by default. */
 export const GREP_MAX_MATCHES = 200;
 export const GREP_DEFAULT_MATCHES = 50;
-/** The most bytes of one matching line shown; a longer line is cut on a character edge. */
+/** The most bytes of one matching line shown (512 bytes plus a marker at each cut end). */
 const GREP_LINE_BYTES = 512;
+/** The bytes of a long line shown before its first match. */
+const GREP_CONTEXT_BYTES = 128;
 /** Room kept for the closing count line. */
 const GREP_FOOTER_BYTES = 96;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -166,18 +179,27 @@ export interface GrepResult {
   readonly output: string;
 }
 
-const cutBytes = (text: string, max: number): string => {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= max) return text;
-  let end = max;
-  while (end > 0 && isContinuation(bytes[end])) end -= 1;
-  return bytes.subarray(0, end).toString("utf8") + "…";
+/**
+ * `line` if it fits `max` bytes; else a window of at most `max` bytes that starts
+ * about GREP_CONTEXT_BYTES before the first `pattern` (so the match shows), both
+ * ends on character edges, each cut end marked with `…`.
+ */
+const windowAround = (line: string, pattern: string, max: number): string => {
+  const bytes = Buffer.from(line, "utf8");
+  if (bytes.length <= max) return line;
+  const at = Buffer.byteLength(line.slice(0, line.indexOf(pattern)));
+  let start = Math.max(0, at - GREP_CONTEXT_BYTES);
+  while (start < bytes.length && isContinuation(bytes[start])) start += 1;
+  let end = Math.min(bytes.length, start + max);
+  while (end > start && isContinuation(bytes[end])) end -= 1;
+  const text = bytes.subarray(start, end).toString("utf8");
+  return (start > 0 ? "…" : "") + text + (end < bytes.length ? "…" : "");
 };
 
 /**
  * Q69: the lines of the offloaded output `id` that contain `pattern` as a literal
  * string (no regex, so no ReDoS), as `<line number>: <text>`, at most `maxMatches`
- * of them and `maxBytes` bytes in all (each line is cut to GREP_LINE_BYTES), then a
+ * of them and `maxBytes` bytes in all (a long line is shown as a GREP_LINE_BYTES window around its first match), then a
  * count line. The file is `<dir>/<id>.txt` only: `id` is 64 lowercase hex characters
  * or the call is denied, so no path is ever accepted. A file that no longer hashes to
  * its id is refused, as `offloadFaults` would flag it.
@@ -203,7 +225,14 @@ export function grepOffload(
   }
   let data: Buffer;
   try {
-    data = readFileSync(join(dir, id + ".txt"));
+    const path = join(dir, id + ".txt");
+    if (statSync(path).size > MAX_OFFLOAD_FILE_BYTES) {
+      return {
+        status: "error",
+        output: "offloaded file is too large to search",
+      };
+    }
+    data = readFileSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { status: "error", output: "no offloaded output with that id" };
@@ -224,7 +253,7 @@ export function grepOffload(
     if (!line.includes(pattern)) continue;
     total += 1;
     if (full || lines.length >= maxMatches) continue;
-    const shown = `${String(number)}: ${cutBytes(line, GREP_LINE_BYTES)}`;
+    const shown = `${String(number)}: ${windowAround(line, pattern, GREP_LINE_BYTES)}`;
     const size = Buffer.byteLength(shown) + 1;
     if (used + size > budget) {
       full = true;

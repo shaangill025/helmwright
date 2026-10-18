@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,7 +18,11 @@ import {
   runRing0,
   type ToolResult,
 } from "../../src/index.ts";
-import { offload, pointerLine } from "../../src/broker/offload.ts";
+import {
+  OFFLOAD_SOURCE_CEILING_BYTES,
+  offload,
+  pointerLine,
+} from "../../src/broker/offload.ts";
 
 // The broker with its real policy; the sandbox is not started (offload.grep is host-only).
 let dir: string;
@@ -108,13 +113,53 @@ describe("offload.grep", () => {
   });
 
   it("bounds its output by MAX_TOOL_OUTPUT_BYTES, even for huge lines", async () => {
-    const id = store(("x".repeat(100_000) + " hit\n").repeat(200));
+    const id = store(("x".repeat(100_000) + " hit\n").repeat(100));
     const r = await grep({ id, pattern: "hit", maxMatches: 200 });
     expect(r.status).toBe("ok");
     expect(Buffer.byteLength(r.output)).toBeLessThanOrEqual(
       MAX_TOOL_OUTPUT_BYTES,
     );
     expect(r.output).toContain("matches shown");
+    // S1: the match sits past byte 512 of its line, so the line is a window around it.
+    expect(r.output).toContain("hit");
+    expect(r.output.split("\n")[0]).toMatch(/^1: …x+ hit/);
+    expect(entries.map((e) => e.type)).toEqual(["permission.evaluated"]);
+  });
+
+  it("shows a window around a match deep in a line, marking both cut ends", async () => {
+    const line = "a".repeat(1000) + "NEEDLE" + "b".repeat(1000);
+    const id = store(line + "\n");
+    const r = await grep({ id, pattern: "NEEDLE" });
+    const [shown = ""] = r.output.split("\n");
+    expect(shown.startsWith("1: …")).toBe(true);
+    expect(shown.endsWith("…")).toBe(true);
+    expect(shown).toContain("NEEDLE");
+    // 128 bytes of context before the match, at most 512 bytes plus two markers.
+    expect(shown).toContain("a".repeat(128) + "NEEDLE");
+    expect(shown).not.toContain("a".repeat(129) + "NEEDLE");
+    expect(Buffer.byteLength(shown)).toBeLessThanOrEqual(512 + 3 * 2 + 3);
+  });
+
+  it("refuses a file over twice the source ceiling without reading it (C1)", async () => {
+    const id = "c".repeat(64);
+    mkdirSync(offloadDir(), { recursive: true });
+    const file = join(offloadDir(), id + ".txt");
+    writeFileSync(file, "");
+    truncateSync(file, 2 * OFFLOAD_SOURCE_CEILING_BYTES + 17);
+    const r = await grep({ id, pattern: "x" });
+    expect(r).toEqual({
+      status: "error",
+      output: "offloaded file is too large to search",
+    });
+  });
+
+  it("stays fast on a long pattern that nearly matches every line (C5)", async () => {
+    const id = store(("a".repeat(5000) + "\n").repeat(1000));
+    const started = performance.now();
+    const r = await grep({ id, pattern: "a".repeat(4095) + "b" });
+    expect(performance.now() - started).toBeLessThan(20_000);
+    expect(r.status).toBe("ok");
+    expect(r.output).toContain("0 of 0 matches shown");
   });
 
   it.each([
@@ -156,6 +201,7 @@ describe("offload.grep", () => {
   it("is ruled by the permission policy: allow by default, deny when ruled", async () => {
     const id = store("needle\n");
     await grep({ id, pattern: "needle" });
+    expect(entries.map((e) => e.type)).toEqual(["permission.evaluated"]);
     expect(entries[0]).toMatchObject({
       type: "permission.evaluated",
       payload: { action: "offload.grep", tier: "allow" },

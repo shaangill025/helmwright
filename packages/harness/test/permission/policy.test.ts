@@ -491,7 +491,7 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
 
   it("lists every helmwright-source glob in helmwright's own policy", () => {
     const own = helmwrightPolicy();
-    expect(own.version).toBe("helmwright-1");
+    expect(own.version).toBe("helmwright-2");
     expect(own.ring0Paths).toEqual([...BASE.ring0Paths, ...HELMWRIGHT_GLOBS]);
     expect({
       ...own,

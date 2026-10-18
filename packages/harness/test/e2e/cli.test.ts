@@ -1968,7 +1968,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
       const events = expectWellFormedLog(out.runId);
       expect(events[0]?.payload).toMatchObject({
-        policyVersion: "helmwright-1",
+        policyVersion: "helmwright-2",
         config: { source: "file", sha256: sha256(bytes) },
       });
       expect(
@@ -1979,7 +1979,7 @@ describe("helmwright.config.json (e2e)", () => {
         {
           ...{ toolCallId: RING0_ID, action: "config.set", tier: "alwaysAsk" },
           ...{ ruleId: "always-ask.ring0-setting" },
-          policyVersion: "helmwright-1",
+          policyVersion: "helmwright-2",
         },
         { toolCallId: RING0_ID, presence: "none" },
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
@@ -2038,6 +2038,56 @@ describe("helmwright.config.json (e2e)", () => {
         {
           ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
           ...{ policyVersion: "default-3", target: { value: "permissions" } },
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
+    },
+  );
+
+  it(
+    "asks once in a repo whose latest baseline is a default-2 one (Q69, S4)",
+    { timeout: T },
+    () => {
+      // The default-2 policy: the same Ring 0 paths, no offload.grep rule.
+      const policy = {
+        ...DEFAULT_PERMISSION_POLICY,
+        version: "default-2",
+        rules: DEFAULT_PERMISSION_POLICY.rules.filter(
+          (r) => r.id !== "offload.grep.run",
+        ),
+      };
+      expect(policy.rules).toHaveLength(
+        DEFAULT_PERMISSION_POLICY.rules.length - 1,
+      );
+      const scratch = join(tmp, "scratch");
+      git("init", "--quiet", scratch);
+      writeFileSync(
+        join(scratch, CONFIG),
+        JSON.stringify({ permissions: { policy } }),
+      );
+      git("-C", scratch, "add", CONFIG);
+      git(
+        ...["-C", scratch, "-c", "user.name=e2e", "-c", "user.email=e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "old"],
+      );
+      const before = loadRunConfig(scratch);
+      expect(runTask("write-file.turns.json").status).toBe(0);
+      const ring0Sha256 = before.record.ring0Sha256;
+      rawAppend("run.started", { config: { ring0Sha256 } });
+      rawAppend("config.accepted", {
+        ...{ repo: join(repo, ".git"), ring0Sha256, how: "default" },
+        settings: ring0SettingDigests(before.ring0),
+      });
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      // Only `permissions` changed: it is the first changed setting, the ask's target.
+      expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
+          ...{ tier: "alwaysAsk", target: { value: "permissions" } },
         },
         { toolCallId: RING0_ID, presence: "none" },
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
