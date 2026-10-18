@@ -16,6 +16,8 @@ import {
   type TaskCreated,
 } from "@helmwright/schema";
 
+import { RESOLVES_ANY, claimsReason, type EvidenceResolver } from "./claims.ts";
+
 // Ring 0 (B5-2): this module must not import the session log, which imports it.
 
 /** An object event could not be built or mapped (fail closed); the message is fixed text. */
@@ -80,7 +82,10 @@ function rulingReason(p: DecisionOpenedRuling): string | undefined {
 }
 
 /** The relations of a schema-valid payload that the schema cannot express. */
-function relationReason(p: ObjectEvent): string | undefined {
+function relationReason(
+  p: ObjectEvent,
+  resolves: EvidenceResolver,
+): string | undefined {
   switch (p.kind) {
     case "task.created":
       return sortedUnique(p.scope)
@@ -105,9 +110,10 @@ function relationReason(p: ObjectEvent): string | undefined {
         return "decision.opened option IDs repeat";
       }
       if (!unique(p.brief.concepts)) return "decision.opened concepts repeat";
-      return unique(p.brief.proposedFootprint)
-        ? undefined
-        : "decision.opened proposedFootprint repeats";
+      if (!unique(p.brief.proposedFootprint)) {
+        return "decision.opened proposedFootprint repeats";
+      }
+      return claimsReason(p.brief.claims ?? [], resolves);
     case "decision.footprint.recorded":
     case "decision.outcome.signalled":
       return unique(p.artifactIds) ? undefined : p.kind + " artifactIds repeat";
@@ -115,7 +121,11 @@ function relationReason(p: ObjectEvent): string | undefined {
 }
 
 /** Steps 1 to 4 of checkObjectEvent, which need only the type and payload. */
-function payloadReason(type: string, payload: unknown): string | undefined {
+function payloadReason(
+  type: string,
+  payload: unknown,
+  resolves: EvidenceResolver,
+): string | undefined {
   if (type.startsWith(OWNER_PREFIX)) {
     return "decision.owner.* events are refused until SIG";
   }
@@ -129,7 +139,7 @@ function payloadReason(type: string, payload: unknown): string | undefined {
   }
   if (!validateObjectEvent(payload)) return "invalid object event payload";
   if (payload.kind !== type) return "object event kind is not its type";
-  return relationReason(payload);
+  return relationReason(payload, resolves);
 }
 
 /**
@@ -178,10 +188,15 @@ function mapRecord(event: Event): Record<string, unknown> | undefined {
  * payload is not a valid object event of that kind, breaks a relation the schema cannot
  * express (sorted unique scope, unique IDs, the footprint content address, an intake
  * Ruling's null class), or creates a record that objects.schema.json rejects; (4) any
- * other `task.`, `artifact.` or `decision.` type (OD-4). Other types pass.
+ * other `task.`, `artifact.` or `decision.` type (OD-4). Other types pass. A Brief's
+ * claims must also follow the tier rules (`claimsReason`); `resolves` says which
+ * evidence IDs are in the log and is required, so a caller cannot skip the step.
  */
-export function checkObjectEvent(event: Event): string | undefined {
-  const reason = payloadReason(event.type, event.payload);
+export function checkObjectEvent(
+  event: Event,
+  resolves: EvidenceResolver,
+): string | undefined {
+  const reason = payloadReason(event.type, event.payload, resolves);
   if (reason !== undefined) return reason;
   const record = mapRecord(event);
   return record === undefined || validateObjectRecord(record)
@@ -195,7 +210,8 @@ export function checkObjectEvent(event: Event): string | undefined {
  * @throws ObjectEventError with fixed text if `event` is not a valid creation event
  */
 export function createdRecord(event: Event): ObjectRecord {
-  const reason = checkObjectEvent(event);
+  // The log resolved the claims' evidence when it stored the event; here only the shape is read.
+  const reason = checkObjectEvent(event, RESOLVES_ANY);
   if (reason !== undefined) throw new ObjectEventError(reason);
   const record = mapRecord(event);
   if (record === undefined || !validateObjectRecord(record)) {
@@ -206,7 +222,7 @@ export function createdRecord(event: Event): ObjectRecord {
 
 /** `payload` if the log would accept it as its kind. @throws ObjectEventError with fixed text */
 function checked<P extends ObjectEvent>(payload: P): P {
-  const reason = payloadReason(payload.kind, { ...payload });
+  const reason = payloadReason(payload.kind, { ...payload }, RESOLVES_ANY);
   if (reason !== undefined) {
     throw new ObjectEventError(payload.kind + " cannot be logged: " + reason);
   }

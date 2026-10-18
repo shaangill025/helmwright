@@ -46,6 +46,19 @@
     "reviewTrigger": ["milestone"]
   },
   {
+    "component": "packages/harness/src/objects/claims.ts",
+    "ring": 0,
+    "assumption": "A Brief claim carries one of five evidence tiers whose meaning is fixed Ring 0 wording (Q70-1), not a setting. The tier rules are mechanical: Direct cites at least one evidence ID that is in the log before the event and belongs to the Brief's own run (an event ID or a floor signal ID of that run); Supported cites at least one such ID of another run; an artifact ID is accepted for both; Inferred cites only earlier claims of the same Brief as claim:<index>; Speculative and Unknown cite nothing; no claim repeats a reference. They are checked on write and on every read and rebuild. A resolvable ID shows the log holds that record, not that the claim's text is true; a claim's wording is the writer's, fixed by the rubric version for the floor.",
+    "evidence": [
+      "decisions Q45",
+      "decisions Q70",
+      "packages/harness/test/objects/brief-claims.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
     "component": "packages/harness/src/log/messages.ts",
     "ring": 0,
     "assumption": "The model's context is the run's logged context messages, derived again from the log on every turn; the dev-mode check compares those messages only, not the full API request, until B11.",
