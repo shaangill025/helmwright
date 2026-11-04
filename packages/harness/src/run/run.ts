@@ -36,6 +36,7 @@ import {
   runGit,
   type RunConfig,
 } from "../config/config.ts";
+import { planProvisional, provisionalFaults } from "../floor/provisional.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
@@ -326,6 +327,8 @@ export interface FloorEnd {
    * the class.
    */
   readonly before: readonly (RunRecordEvent & { readonly eventId?: string })[];
+  /** PB-1: runs only after the transaction of `before` and `checked` commits (the refs). */
+  readonly afterLogged?: () => void;
 }
 
 /**
@@ -401,7 +404,7 @@ export interface RunSetup {
    * transaction (nothing is logged), means the floor could not check the candidate
    * (fail closed).
    */
-  readonly floor?: () => FloorEnd;
+  readonly floor?: (defer?: (cleanup: () => void) => void) => FloorEnd;
   /**
    * A-dep-4 (OQ-AD-6): the mid-run dependency check, at an engine step that offers tools,
    * once a tool call has settled since the last check and none is in flight (each call's
@@ -439,6 +442,11 @@ const CLEANUP_UNCONFIRMED =
 export const FLOOR_REJECTED = "sensor floor rejected the candidate";
 /** Why a run that would have completed fails when the floor cannot check (fail closed). */
 export const FLOOR_UNCHECKED = "sensor floor could not check the candidate";
+/** PB-1: the floor is logged, but a provisional fork was refused at the cap. */
+export const PROVISIONAL_REFUSED =
+  "provisional branch refused: too many open provisional branches";
+/** PB-1: the floor is logged, but a provisional ref could not be created. */
+export const PROVISIONAL_FAILED = "provisional branch ref could not be created";
 
 /** Resolves true once every call in `pending` has settled, or false after `ms`. */
 async function settled(
@@ -466,6 +474,8 @@ export interface RunEnd extends RunOutcome {
   readonly floor: FloorChecked | null;
   /** A-dep: the IDs of the owner decisions the floor opened, pending: completed is not done. */
   readonly pending: readonly string[];
+  /** PB-1: the refs of the provisional branches forked for them. */
+  readonly provisional: readonly string[];
   /** A-dep-3: the class move the floor logged; null if it logged none. */
   readonly reclassified: {
     readonly from: IntakeClass;
@@ -767,13 +777,17 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
   // B3-2: only once no sandbox can still write to the worktree (S6, SF-1, SF-4).
   let logged: FloorChecked | null = null;
   let owned: string[] = [];
+  let provisional: string[] = [];
   let reclassified: RunEnd["reclassified"] = null;
   // SF-2: a run with no floor cannot complete.
   let floorError = setup.floor === undefined ? FLOOR_UNCHECKED : undefined;
   if (setup.floor !== undefined && !unconfirmed) {
     if (halted !== SANDBOX_CLEANUP_FAILED) {
+      const cleanups: (() => void)[] = [];
       try {
-        const { checked, before } = setup.floor();
+        const { checked, before, afterLogged } = setup.floor((cleanup) => {
+          cleanups.push(cleanup);
+        });
         // floorFaults refuses any event after floor.checked but run.terminated.
         log.transaction(() => {
           for (const { type, payload, eventId } of before) {
@@ -796,8 +810,27 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
           reclassified = { from: from as IntakeClass, to: to as IntakeClass };
         }
         if (checked.verdict !== "pass") floorError = FLOOR_REJECTED;
+        // PB-1: the refs only once the log has them. A failure fails the run, with its
+        // own reason; so does a refusal. The floor stays logged either way.
+        try {
+          afterLogged?.();
+          provisional = before.flatMap(({ type, payload: { ref } }) =>
+            type === "provisional.opened" && typeof ref === "string"
+              ? [ref]
+              : [],
+          );
+          if (before.some((e) => e.type === "provisional.refused")) {
+            floorError = PROVISIONAL_REFUSED;
+          }
+        } catch (error) {
+          floorError =
+            PROVISIONAL_FAILED + ": " + displayText(errorMessage(error));
+        }
       } catch (error) {
         floorError = FLOOR_UNCHECKED + ": " + displayText(errorMessage(error));
+      } finally {
+        // PB-1: the floor's held objects, whether it succeeded, threw or failed to log.
+        for (const cleanup of cleanups) cleanup();
       }
     }
   }
@@ -808,7 +841,7 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
       : done;
   try {
     append("run.terminated", { agentId: nodeId, ...end }, true);
-    return { ...end, floor: logged, pending: owned, reclassified };
+    return { ...end, floor: logged, pending: owned, provisional, reclassified };
   } catch (error) {
     // An unlogged end is a failed run; retry once, best effort.
     const lost = failed(
@@ -819,7 +852,13 @@ export async function executeRun(setup: RunSetup): Promise<RunEnd> {
     } catch {
       // The log itself may be what failed.
     }
-    return { ...lost, floor: logged, pending: owned, reclassified };
+    return {
+      ...lost,
+      floor: logged,
+      pending: owned,
+      provisional,
+      reclassified,
+    };
   }
 }
 
@@ -1174,13 +1213,17 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         return broker.executeTool;
       },
       // B1: the host's common dir, never one the worktree names; protected = Ring 0.
-      floor: () => {
+      floor: (defer) => {
         const repo = { worktree: workspace, commonDir: config.repoId };
-        const { checked, changes } = checkCandidate(
+        // PB-1: the pass's objects are held for the fork, so the worktree is read once.
+        const { checked, changes, held } = checkCandidate(
           repo,
           baseCommit,
           ring0Paths,
+          FLOOR_LIMITS,
+          true,
         );
+        defer?.(() => held?.dispose());
         const eventId = randomUUID();
         const { candidateTree } = checked;
         const signalled = floorSignalled(
@@ -1220,16 +1263,36 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
               seed: randomBytes(16).toString("hex"),
             }),
           );
+          // PB-1: a passing candidate with a pending owner decision is forked per decision.
+          const owners = decisions.flatMap((d) =>
+            d.authority === "owner" ? [{ id: d.id, class: d.class }] : [],
+          );
+          const plan =
+            checked.verdict === "pass"
+              ? planProvisional(
+                  config.repoId,
+                  baseCommit,
+                  candidateTree,
+                  owners,
+                  held,
+                )
+              : undefined;
           return {
             checked,
             before: [
               ...raised,
               { type: "floor.signalled", payload: { ...signalled }, eventId },
-              ...decisions.map((d) => ({
-                type: "decision.opened",
-                payload: { ...d },
-              })),
+              ...decisions.flatMap((d) => {
+                const fork = plan?.entries.get(d.id);
+                return [
+                  { type: "decision.opened", payload: { ...d } },
+                  ...(fork === undefined
+                    ? []
+                    : [{ type: fork.type, payload: { ...fork.payload } }]),
+                ];
+              }),
             ],
+            ...(plan === undefined ? {} : { afterLogged: plan.apply }),
           };
         } finally {
           // L6: made or failed, the commitments need this copy of the key no more.
@@ -1413,6 +1476,10 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
         ...permissionFaults(events),
         ...floorFaults(events),
         ...offloadFaults(events, join(resolve(stateDir), "offload")),
+        ...provisionalFaults(events, [
+          ...log.events({ type: "provisional.opened" }),
+          ...log.events({ type: "provisional.refused" }),
+        ]),
       ],
       objectFaults: objectFaults(events, [
         ...log.events({ type: "task.created" }),

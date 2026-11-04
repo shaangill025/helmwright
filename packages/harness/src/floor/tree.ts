@@ -1,6 +1,7 @@
 import {
   closeSync,
   constants,
+  copyFileSync,
   fstatSync,
   lstatSync,
   mkdirSync,
@@ -67,6 +68,15 @@ export interface CandidateChanges {
   readonly findings: readonly FloorFinding[];
   /** S3: the case-folded paths the base commit's configs extend or import. */
   readonly chain: ReadonlySet<string>;
+  /** PB-1: with `options.hold`, the first pass's temporary objects; the caller disposes. */
+  readonly held?: HeldObjects;
+}
+
+/** The objects of a floor pass, kept until `dispose` so a fork never re-reads the worktree. */
+export interface HeldObjects {
+  readonly tree: string;
+  readonly objects: string;
+  readonly dispose: () => void;
 }
 
 /** What `candidateChanges` reads beyond the change list. */
@@ -77,6 +87,35 @@ export interface CandidateOptions {
    * config-chain findings. For the mid-run check only; the final check reads everything.
    */
   readonly select?: boolean;
+  /**
+   * PB-1: keep the temporary git dir (and so the objects of the candidate tree) after the
+   * pass, as `held`; the caller must call `held.dispose()`. The result is otherwise the same.
+   */
+  readonly hold?: boolean;
+}
+
+const LOOSE = /^[0-9a-f]{2}$/;
+const LOOSE_FILE = /^[0-9a-f]{38}$|^[0-9a-f]{62}$/;
+
+/** Copies the loose objects of `from` that `to` lacks (a pack, if any, fails the fork closed). */
+function keepObjects(from: string, to: string): void {
+  const copy = (source: string, target: string) => {
+    mkdirSync(join(target, ".."), { recursive: true });
+    try {
+      copyFileSync(source, target, constants.COPYFILE_EXCL);
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== "EEXIST") throw error;
+    }
+  };
+  for (const dir of readdirSync(from)) {
+    if (LOOSE.test(dir)) {
+      for (const file of readdirSync(join(from, dir))) {
+        if (LOOSE_FILE.test(file)) {
+          copy(join(from, dir, file), join(to, dir, file));
+        }
+      }
+    }
+  }
 }
 
 /** Whether the dependency detector reads `path`: a manifest or a lockfile. */
@@ -218,6 +257,7 @@ export function candidateChanges(
   const format = trusted(["rev-parse", "--show-object-format"]);
   const exclude = readMeta(join(common, "info", "exclude"), true);
   const temp = mkdtempSync(join(tmpdir(), "helmwright-floor-"));
+  let keep = false;
   try {
     const dir = join(temp, "git");
     const init = ["init", "--quiet", "--bare", "--template="];
@@ -244,10 +284,29 @@ export function candidateChanges(
     const candidateTree = git(["write-tree"]).toString("utf8").trim();
     const select = options.select === true;
     const found = read(git, baseCommit, candidateTree, limits, select);
-    return { candidateTree, ...found };
+    if (options.hold !== true) return { candidateTree, ...found };
+    // PB-1: the caller disposes of the temporary dir, which is not removed below.
+    keep = true;
+    const dispose = () => {
+      rmSync(temp, { recursive: true, force: true });
+    };
+    const held = {
+      tree: candidateTree,
+      objects: join(dir, "objects"),
+      dispose,
+    };
+    return { candidateTree, ...found, held };
   } finally {
-    rmSync(temp, { recursive: true, force: true });
+    if (!keep) rmSync(temp, { recursive: true, force: true });
   }
+}
+
+/**
+ * PB-1: copies the held pass's new objects into the host's common dir, so a commit of its
+ * tree can be made there. The worktree is not read again.
+ */
+export function persistHeld(held: HeldObjects, commonDir: string): void {
+  keepObjects(held.objects, join(commonDir, "objects"));
 }
 
 type Git = (args: string[], maxBuffer?: number, okExit?: number) => Buffer;
@@ -657,20 +716,29 @@ export function checkCandidate(
   baseCommit: string,
   protectedGlobs: readonly string[],
   limits: FloorLimits = FLOOR_LIMITS,
+  hold = false,
 ): {
   readonly checked: FloorChecked;
   readonly changes: readonly FloorChange[];
+  /** PB-1: with `hold`, the pass's objects; the caller disposes. */
+  readonly held?: HeldObjects;
 } {
-  const { candidateTree, changes, findings, chain } = candidateChanges(
+  const { candidateTree, changes, findings, chain, held } = candidateChanges(
     repo,
     baseCommit,
     limits,
+    { hold },
   );
-  const checked = floorChecked(baseCommit, candidateTree, [
-    ...findings,
-    ...floorFindings(changes, protectedGlobs, chain),
-  ]);
-  return { checked, changes };
+  try {
+    const checked = floorChecked(baseCommit, candidateTree, [
+      ...findings,
+      ...floorFindings(changes, protectedGlobs, chain),
+    ]);
+    return { checked, changes, ...(held === undefined ? {} : { held }) };
+  } catch (error) {
+    held?.dispose();
+    throw error;
+  }
 }
 
 /**

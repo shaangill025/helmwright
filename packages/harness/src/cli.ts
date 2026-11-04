@@ -274,6 +274,7 @@ async function main(args: readonly string[]): Promise<number> {
         : {}),
     });
     const { runId, terminal, summary, floor, pending, reclassified } = end;
+    const { provisional } = end;
     // A-dep-3: the floor's signals raised the task's class (a record only in M1).
     if (reclassified !== null) {
       const { from, to } = reclassified;
@@ -285,6 +286,11 @@ async function main(args: readonly string[]): Promise<number> {
     if (pending.length > 0) {
       const ids = pending.join(", ");
       console.error("helmwright: pending owner decisions: " + displayText(ids));
+    }
+    // PB-1: the work is on a provisional ref (never a branch) until the owner answers.
+    if (provisional.length > 0) {
+      const refs = displayText(provisional.join(", "));
+      console.error("helmwright: provisional ref: " + refs);
     }
     console.log(jsonLine({ runId, terminal, summary }));
     return EXIT[terminal.kind === "completed" ? "ok" : terminal.kind];
