@@ -2815,11 +2815,15 @@ describe("sensor floor (e2e, B3-2)", () => {
 });
 
 /** FX: runs `kind`'s task on a fresh copy of the seeded fixture repo (T-12-06). */
-function runFx(kind: FxKind, prepare?: (fxRepo: string) => void) {
+function runFx(
+  kind: FxKind,
+  prepare?: (fxRepo: string) => void,
+  limits: object = LIMITS,
+) {
   const fx = materializeFx(join(tmp, "fx"));
   prepare?.(fx.repo);
   const { title, intake, turns } = fxTask(kind);
-  const result = runWith(writeTask(turns, LIMITS, fx.repo, { title, intake }));
+  const result = runWith(writeTask(turns, limits, fx.repo, { title, intake }));
   const events = expectWellFormedLog(result.out.runId);
   const tools = deriveMessages(events, result.out.runId).flatMap((m) =>
     m.role === "tool" ? [m] : [],
@@ -3286,6 +3290,35 @@ const helmwrightRefs = (host: string) =>
 
 describe("provisional branch (e2e, PB-1)", () => {
   it(
+    "replays an incomplete run with a pending Brief, after a forked run, as no fault (B1)",
+    { timeout: 2 * T },
+    () => {
+      const dep = fxTask("dependency");
+      const start = (dir: string, id: string, limits: object) => {
+        const fx = materializeFx(join(tmp, dir));
+        const { title, intake, turns } = dep;
+        const extra = { title, intake, id };
+        return runWith(writeTask(turns, limits, fx.repo, extra));
+      };
+      // Run 1 completes and forks: from then on the log is no longer legacy.
+      const first = start("fx-1", "task-1", LIMITS);
+      expect(first.status, first.stderr).toBe(0);
+      // Run 2 stops after one iteration: a passing floor, a Brief, and no fork.
+      const second = start("fx-2", "task-2", { ...LIMITS, maxIterations: 1 });
+      expect(second.out.terminal.kind).not.toBe("completed");
+      const events = logEvents().filter((e) => e.runId === second.out.runId);
+      expect(events.some((e) => e.type === "decision.opened")).toBe(true);
+      expect(events.some((e) => e.type.startsWith("provisional."))).toBe(false);
+      const replay = cli("replay", second.out.runId, "--state-dir", stateDir);
+      expect(replay.status, replay.stdout).toBe(0);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        permissionFaults: [],
+        objectFaults: [],
+      });
+    },
+  );
+
+  it(
     "forks a deterministic commit of the candidate for the pending Brief",
     { timeout: T },
     () => {
@@ -3381,9 +3414,33 @@ describe("provisional branch (e2e, PB-1)", () => {
       expect(run.events.some((e) => e.type === "provisional.opened")).toBe(
         false,
       );
+      expect(run.stderr).toContain(
+        "helmwright: provisional branch refused: " + id + "\n",
+      );
       expect(helmwrightRefs(join(tmp, "fx"))).toHaveLength(10);
       expect(helmwrightRefs(join(tmp, "fx")).join("\n")).not.toContain(id);
       expectReplayMatches(run.out.runId, run.events);
+    },
+  );
+
+  it(
+    "forks nothing and takes no slot when the run does not end completed (owner ruling 2026-10-17)",
+    { timeout: T },
+    () => {
+      // One iteration: the dependency is added, but the run ends incomplete.
+      const run = runFx("dependency", undefined, {
+        ...LIMITS,
+        maxIterations: 1,
+      });
+      expect(run.out.terminal.kind).not.toBe("completed");
+      const { decisions } = floorSignalsOf(run.events);
+      expect(decisions, "its pending decision stays logged").toHaveLength(1);
+      expect(run.checked["verdict"]).toBe("pass");
+      expect(
+        run.events.filter((e) => e.type.startsWith("provisional.")),
+      ).toEqual([]);
+      expect(helmwrightRefs(join(tmp, "fx"))).toEqual([]);
+      expect(run.stderr).not.toContain("provisional");
     },
   );
 
@@ -3444,6 +3501,24 @@ describe("provisional branch (e2e, PB-1)", () => {
       expect(dropped.status, dropped.stdout).toBe(3);
       expect(dropped.stdout).toContain(
         "owner decision without provisional.opened",
+      );
+      // A1: the single opened row retyped to a reserved, schema-valid attached event.
+      const db = new DatabaseSync(join(stateDir, "session.sqlite"));
+      try {
+        const attached = JSON.stringify({
+          ...{ kind: "provisional.attached", decisionId: "decision-other" },
+          ...{ runId: run.out.runId, commit: original },
+        });
+        db.prepare(
+          "UPDATE events SET type = 'provisional.attached', payload = ? WHERE type = 'provisional.opened'",
+        ).run(attached);
+      } finally {
+        db.close();
+      }
+      const reserved = cli("replay", run.out.runId, "--state-dir", stateDir);
+      expect(reserved.status, reserved.stdout).toBe(3);
+      expect(reserved.stdout).toContain(
+        "reserved provisional event provisional.attached",
       );
     },
   );

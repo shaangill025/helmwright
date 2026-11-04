@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Event } from "@helmwright/schema";
 import {
   MAX_PROVISIONAL,
+  PROVISIONAL_FAILED,
+  PROVISIONAL_REFUSED,
   planProvisional,
   provisionalCommitId,
   provisionalFaults,
@@ -97,18 +99,50 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     const missing = [
       event(0, "decision.opened", decision),
       event(1, "floor.checked", checkedPayload()),
+      event(2, "run.terminated", { terminal: { kind: "completed" } }),
     ];
     // Another run's earlier provisional event: the log is no longer legacy.
     const earlier = [event(0, "provisional.opened", opened())];
     expect(provisionalFaults(missing, earlier)).toEqual([
       expect.stringContaining("owner decision without provisional.opened"),
     ]);
+    // B1 (owner ruling 2026-10-17): a run that did not end completed is due no fork.
+    const ended = (terminal: object) => [
+      ...missing.slice(0, 2),
+      event(2, "run.terminated", { terminal }),
+    ];
+    for (const terminal of [
+      { kind: "incomplete", reason: "limit" },
+      { kind: "failed", error: "engine failed" },
+    ]) {
+      expect(provisionalFaults(ended(terminal), earlier)).toEqual([]);
+    }
+    // S1: the terminal's text decides nothing. A run failed by these texts, with or
+    // without entries, is not owed a fork, and an engine error cannot spoof them.
+    for (const error of [
+      PROVISIONAL_REFUSED,
+      PROVISIONAL_REFUSED + " (suffix)",
+      PROVISIONAL_FAILED + ": x",
+    ]) {
+      expect(
+        provisionalFaults(ended({ kind: "failed", error }), earlier),
+      ).toEqual([]);
+    }
     // Architecture is never provisional, and a harness Ruling has no fork.
     const architecture = [
       event(0, "decision.opened", { ...decision, class: "architecture" }),
       event(1, "floor.checked", checkedPayload()),
     ];
     expect(provisionalFaults(architecture, earlier)).toEqual([]);
+    // A provisional event after a harness Ruling (not an owner decision) is a fault.
+    const afterRuling = [
+      event(0, "decision.opened", { ...decision, authority: "harness" }),
+      event(1, "provisional.opened", opened()),
+      event(2, "floor.checked", checkedPayload()),
+    ];
+    expect(provisionalFaults(afterRuling)).toEqual([
+      expect.stringContaining("not directly after its owner decision"),
+    ]);
   });
 
   it.each([
@@ -120,6 +154,22 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
   ])("faults %s", (_name, change) => {
     expect(provisionalFaults(log(change)).length).toBeGreaterThan(0);
   });
+
+  it.each(["provisional.attached", "provisional.resolved"])(
+    "faults a reserved %s until PB-2 and PB-3 define it (A1)",
+    (type) => {
+      const retyped = log();
+      retyped[1] = event(1, type, {
+        kind: type,
+        decisionId: id,
+        runId: "run-1",
+        commit: "a".repeat(40),
+      });
+      expect(provisionalFaults(retyped)).toEqual([
+        expect.stringContaining("reserved provisional event " + type),
+      ]);
+    },
+  );
 
   it("faults a rejected floor and a missing owner decision", () => {
     expect(provisionalFaults(log({}, "reject")).length).toBeGreaterThan(0);
@@ -200,13 +250,13 @@ describe("planProvisional (PB-1, real git)", () => {
     expect(git(common, "cat-file", "-t", commit)).toBe("commit");
     expect(git(common, "rev-parse", commit + "^{tree}")).toBe(candidateTree);
     expect(git(common, "for-each-ref", "refs/helmwright/")).toBe("");
-    plan.apply();
+    plan.apply([]);
     const ref = provisionalRef("decision-u-0");
     expect(git(common, "rev-parse", ref)).toBe(commit);
     expect(git(common, "for-each-ref", "refs/heads")).toBe(heads);
     // A second apply finds the ref there: create-only refuses, the ref is unchanged.
     expect(() => {
-      plan.apply();
+      plan.apply([]);
     }).toThrow();
     expect(git(common, "rev-parse", ref)).toBe(commit);
   });
@@ -222,9 +272,67 @@ describe("planProvisional (PB-1, real git)", () => {
       held,
     );
     expect(() => {
-      plan.apply();
+      plan.apply([]);
     }).toThrow();
     expect(git(common, "rev-parse", ref)).toBe(baseCommit);
+  });
+
+  it("reports the refs made before a later one fails (C5)", () => {
+    // A ref below the second decision's name makes its ref a directory/file conflict.
+    git(
+      common,
+      "update-ref",
+      provisionalRef("decision-u-1") + "/x",
+      baseCommit,
+    );
+    const plan = planProvisional(
+      common,
+      baseCommit,
+      candidateTree,
+      decisions(2),
+      held,
+    );
+    const created: string[] = [];
+    expect(() => {
+      plan.apply(created);
+    }).toThrow();
+    expect(created).toEqual([provisionalRef("decision-u-0")]);
+  });
+
+  it("fails closed, with no commit made, if the held objects are packed (A2)", () => {
+    const gitDir = join(held.objects, "..");
+    git(gitDir, "--git-dir=" + gitDir, "repack", "-a", "-d", "-q");
+    expect(() =>
+      planProvisional(common, baseCommit, candidateTree, decisions(1), held),
+    ).toThrow(/packed/);
+    const commit = provisionalCommitId(
+      candidateTree,
+      baseCommit,
+      "decision-u-0",
+    );
+    expect(() => git(common, "cat-file", "-e", commit)).toThrow();
+  });
+
+  it("fails closed, with no commit made, if a held object is missing (B4)", () => {
+    // The tree is only in the held dir until the fork copies it.
+    const gitDir = join(held.objects, "..");
+    const blob = git(
+      gitDir,
+      "--git-dir=" + gitDir,
+      "rev-parse",
+      candidateTree + ":a.txt",
+    );
+    rmSync(join(held.objects, blob.slice(0, 2), blob.slice(2)));
+    // The rev-list completeness guard fails, with git's own text.
+    expect(() =>
+      planProvisional(common, baseCommit, candidateTree, decisions(1), held),
+    ).toThrow(/rev-list/);
+    const commit = provisionalCommitId(
+      candidateTree,
+      baseCommit,
+      "decision-u-0",
+    );
+    expect(() => git(common, "cat-file", "-e", commit)).toThrow();
   });
 
   it("logs a refusal, not a fork, past the cap, and writes no commit", () => {
@@ -252,7 +360,7 @@ describe("planProvisional (PB-1, real git)", () => {
         reason: "cap",
       },
     });
-    plan.apply();
+    plan.apply([]);
     const count = git(common, "for-each-ref", "refs/helmwright/").split("\n");
     expect(count).toHaveLength(MAX_PROVISIONAL);
   });

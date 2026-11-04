@@ -300,14 +300,12 @@ function floorDecisionFaults(
     const task = objects.find(
       (e) => e.type === "task.created" && e.payload["id"] === taskId,
     );
-    // PB-1: a provisional event directly after an owner decision is not a slot.
+    // PB-1: a provisional.opened or provisional.refused directly after an owner decision
+    // is not a slot; any other provisional event is a fault of provisionalFaults.
     let next = signalled.seq + 1;
+    const forks = new Set(["provisional.opened", "provisional.refused"]);
     const skipFork = () => {
-      while (
-        (events.find((x) => x.seq === next)?.type ?? "").startsWith(
-          "provisional.",
-        )
-      ) {
+      while (forks.has(events.find((x) => x.seq === next)?.type ?? "")) {
         next += 1;
       }
     };

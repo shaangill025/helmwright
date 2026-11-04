@@ -18,6 +18,11 @@ import { persistHeld, type HeldObjects } from "./tree.ts";
 
 /** The most open provisional branches in one repository; past it a fork is refused. */
 export const MAX_PROVISIONAL = 10;
+/** PB-1: the floor is logged, but a provisional fork was refused at the cap. */
+export const PROVISIONAL_REFUSED =
+  "provisional branch refused: too many open provisional branches";
+/** PB-1: the floor is logged, but a provisional ref could not be created. */
+export const PROVISIONAL_FAILED = "provisional branch ref could not be created";
 /** Where the refs live in the host repo's common dir: never under refs/heads, never pushed. */
 export const PROVISIONAL_PREFIX = "refs/helmwright/provisional/";
 
@@ -25,6 +30,10 @@ const IDENTITY = "helmwright <helmwright@localhost> 0 +0000";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DECISION = /^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$/;
 const PROVISIONAL_CLASSES = new Set(["technology", "scope"]);
+const RESERVED_TYPES = new Set([
+  "provisional.attached",
+  "provisional.resolved",
+]);
 const PROVISIONAL_TYPES = new Set([
   "provisional.opened",
   "provisional.refused",
@@ -104,8 +113,11 @@ export type ProvisionalEntry =
 export interface ProvisionalPlan {
   /** By decision ID, for each decision of a provisional class. */
   readonly entries: ReadonlyMap<string, ProvisionalEntry>;
-  /** Makes the refs, create-only; call only after the log transaction commits. */
-  readonly apply: () => void;
+  /**
+   * Makes the refs, create-only; call only after the log transaction commits. Each ref
+   * made is pushed to `created` at once, so a failure on a later one leaves the list.
+   */
+  readonly apply: (created: string[]) => void;
 }
 
 /**
@@ -161,6 +173,11 @@ export function planProvisional(
   }
   if (opened.length > 0) {
     persistHeld(held, commonDir);
+    // The tree must be complete in the host, or no commit of it is made.
+    runGit(commonDir, [
+      ...["--git-dir=" + commonDir, "rev-list", "--objects", "--quiet"],
+      ...["--missing=error", candidateTree],
+    ]);
     const temp = mkdtempSync(join(tmpdir(), "helmwright-prov-"));
     try {
       for (const p of opened) {
@@ -182,13 +199,15 @@ export function planProvisional(
     }
   }
   const zero = "0".repeat(baseCommit.length);
-  const apply = () => {
+  const apply = (created: string[]) => {
     for (const p of opened) {
       // The zero old value: create only, never move an existing ref.
       runGit(commonDir, [
         ...["--git-dir=" + commonDir, "update-ref", "--no-deref"],
         ...["--", p.ref, p.commit, zero],
       ]);
+      // Reported as made, so a later failure still names the refs that exist.
+      created.push(p.ref);
     }
   };
   return { entries, apply };
@@ -202,7 +221,10 @@ export function planProvisional(
  * one for a decision, or a floor that did not pass. A passing floor whose owner decision
  * of class technology or scope has neither `provisional.opened` nor `provisional.refused`
  * is a fault, unless the log is from before PB-1: `history` (all provisional events of
- * the whole log; default this run's) has none before that `floor.checked`.
+ * the whole log; default this run's) has none before that `floor.checked`. An extra fork
+ * (one logged for a run that is not owed one, such as a failed run) is not faulted for
+ * that: the run-end retry path can end a run with its floor events already logged, and
+ * each event is still checked for itself above.
  */
 export function provisionalFaults(
   events: readonly Event[],
@@ -212,6 +234,11 @@ export function provisionalFaults(
   const checked = events.find((e) => e.type === "floor.checked");
   const seen = new Set<string>();
   for (const [index, e] of events.entries()) {
+    if (RESERVED_TYPES.has(e.type)) {
+      // PB-2 and PB-3 define these; until then a log holding one is not from this build.
+      faults.push(`seq ${String(e.seq)}: reserved provisional event ${e.type}`);
+      continue;
+    }
     if (!PROVISIONAL_TYPES.has(e.type)) continue;
     const fault = (text: string) =>
       faults.push(`seq ${String(e.seq)}: ${text}`);
@@ -270,7 +297,14 @@ export function provisionalFaults(
     const legacy = !history.some(
       (h) => PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
     );
-    if (!legacy) {
+    // Owner ruling 2026-10-17: only a run that ended completed forks, so a fork is due
+    // only for a `completed` terminal. A run failed by PROVISIONAL_REFUSED or
+    // PROVISIONAL_FAILED needs no check: its entries were logged before those terminals
+    // were set, and keying on their text would let an engine error spoof them.
+    const terminal: unknown = events.find((e) => e.type === "run.terminated")
+      ?.payload["terminal"];
+    const { kind } = (terminal ?? {}) as Record<string, unknown>;
+    if (!legacy && kind === "completed") {
       for (const e of events) {
         const forkable =
           e.type === "decision.opened" &&

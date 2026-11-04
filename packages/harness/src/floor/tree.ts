@@ -306,6 +306,10 @@ export function candidateChanges(
  * tree can be made there. The worktree is not read again.
  */
 export function persistHeld(held: HeldObjects, commonDir: string): void {
+  // Only loose objects are copied, so a pack (any entry) fails the fork closed.
+  if (readdirSync(join(held.objects, "pack")).length > 0) {
+    throw new FloorError("the floor's objects are packed");
+  }
   keepObjects(held.objects, join(commonDir, "objects"));
 }
 
