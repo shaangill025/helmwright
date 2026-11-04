@@ -4012,4 +4012,109 @@ describe("dependent run, --after (e2e, PB-2b)", () => {
       "attached decision has no earlier provisional.opened",
     );
   });
+
+  it(
+    "refuses a run whose decision is resolved after the preflight, and logs nothing of it",
+    { timeout: 3 * T },
+    async () => {
+      const { id } = firstFork();
+      const known = workspaceNames();
+      const before = logEvents().length;
+      const task = afterTask("fx-after.turns.json", "task-2");
+      const { exited } = startCli(
+        ...["run", task, "--state-dir", stateDir, "--after", id],
+      );
+      // The preflight passed once the run makes its workspace; run.started comes later.
+      const until = performance.now() + 60_000;
+      while (
+        workspaceNames().length === known.length &&
+        performance.now() < until
+      ) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      expect(workspaceNames()).toHaveLength(known.length + 1);
+      // The forged resolve may meet the run's own log write: retry while locked.
+      for (let tries = 0; ; tries++) {
+        try {
+          forgeRow("run-resolve-x", "provisional.resolved", {
+            ...{ kind: "provisional.resolved", decisionId: id },
+            ...{ outcome: "discarded", chosenOption: "b" },
+            resolvedBy: "owner-tty:none",
+          });
+          break;
+        } catch (error) {
+          if (tries > 50) throw error;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      }
+      const { status, stdout } = await exited;
+      expect(status, stdout).not.toBe(0);
+      expect(stdout).toContain(
+        "run refused: --after: the decision is already resolved",
+      );
+      const types = logEvents().map((e) => e.type);
+      expect(types).toHaveLength(before + 1);
+      expect(types.at(-1)).toBe("provisional.resolved");
+      expect(types.slice(before)).not.toContain("provisional.attached");
+    },
+  );
+
+  it(
+    "reaps the worktree of a dependent run that did not complete",
+    { timeout: 3 * T },
+    () => {
+      const { run, id } = firstFork();
+      const fx = join(tmp, "fx");
+      const short = runWith(
+        writeTask("fx-after.turns.json", { ...LIMITS, maxIterations: 1 }, fx, {
+          ...{ id: "task-2", title: "after short" },
+          intake: { scope: ["app/src/**"] },
+        }),
+        ...["--after", id],
+      );
+      expect(short.out.terminal.kind).not.toBe("completed");
+      expect(
+        logEvents().some(
+          (e) =>
+            e.type === "provisional.attached" && e.runId === short.out.runId,
+        ),
+      ).toBe(true);
+      const reaped = JSON.parse(
+        cli("reap", "--state-dir", stateDir).stdout,
+      ) as {
+        worktrees: string[];
+        kept: string[];
+      };
+      expect(reaped.kept).toEqual([]);
+      expect([...reaped.worktrees].sort()).toEqual(
+        [run.out.runId, short.out.runId].sort(),
+      );
+    },
+  );
+
+  it(
+    "reaps the worktree of a completed dependent run once its decision is resolved",
+    { timeout: 3 * T },
+    () => {
+      const { run, id } = firstFork();
+      const dep = runAfter(id);
+      expect(dep.status, dep.stderr).toBe(0);
+      forgeRow("run-resolve-x", "provisional.resolved", {
+        ...{ kind: "provisional.resolved", decisionId: id },
+        ...{ outcome: "discarded", chosenOption: "b" },
+        resolvedBy: "owner-tty:none",
+      });
+      const reaped = JSON.parse(
+        cli("reap", "--state-dir", stateDir).stdout,
+      ) as {
+        worktrees: string[];
+        kept: string[];
+      };
+      expect(reaped.kept).toEqual([]);
+      expect([...reaped.worktrees].sort()).toEqual(
+        [run.out.runId, dep.out.runId].sort(),
+      );
+      expect(existsSync(dep.workspace)).toBe(false);
+    },
+  );
 });
