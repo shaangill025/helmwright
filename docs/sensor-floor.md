@@ -45,7 +45,8 @@ CI1a was gated only by its own copy, the same as before the change; CI1b was the
 - **sensors** (`.github/workflows/sensors.yml`, `pull_request_target` on PRs to `main`; a PR to
   another branch gets no scanning run until its branch is proposed to `main`, and a PR retargeted to
   `main` gets one on its next push, so its required checks stay missing until then): gitleaks over
-  full history ignoring `gitleaks:allow`; osv-scanner on the lockfile; Semgrep (pinned image and rules,
+  full history ignoring `gitleaks:allow`; osv-scanner on the lockfile, with only the owner exceptions
+  written in `sensors.yml` (see Owner exceptions); Semgrep (pinned image and rules,
   `nosemgrep` ignored, owner ignore file, git ignore files not honored); actionlint (owner config) and
   zizmor (no ignores or config, all inputs collected regardless of `.gitignore`, unparsable inputs
   fail). The token is read-only and is used only by checkout (to fetch, not persisted) and by zizmor's
@@ -73,6 +74,17 @@ CI1a was gated only by its own copy, the same as before the change; CI1b was the
   package of the same name in the pnpm store, and each checker binary must run from that package.
 - **main ruleset**: PRs only; all of the above required and up to date; linear history. Required
   checks match by job name and by the GitHub Actions app.
+
+## Owner exceptions
+
+Design 06: an exception is owner-approved with a reason, a scope and an expiry. osv-scanner reads
+them only from the config that the `osv-scanner` job writes in `sensors.yml`, which comes from
+`main`, so a PR cannot add one for its own run. `ignoreUntil` ends each one, and the scan then fails
+again. Candidate-supplied `osv-scanner.toml` files stay rejected by the config guard.
+
+- GHSA-g3hv-75wg-m249 (minimatch 10.2.6, DoS via an attacker-supplied glob). Scope: ESLint only, a
+  dev dependency; no fixed 10.x exists and ESLint requires `^10.2.6`. Expiry 2026-12-04. Owner
+  2026-11-04.
 
 ## Known gaps
 

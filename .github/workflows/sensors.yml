@@ -198,8 +198,17 @@ jobs:
             "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
           echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/osv-scanner"
+      # Owner exceptions (06: reason, scope, expiry). They live in this workflow, which main supplies,
+      # so a PR cannot add one for its own run; ignoreUntil ends each one, and the scan fails again.
       - name: Scan
-        run: '"$RUNNER_TEMP/osv-scanner" scan source --lockfile pnpm-lock.yaml'
+        run: |
+          cat > "$RUNNER_TEMP/osv-scanner.toml" <<'EOF'
+          [[IgnoredVulns]]
+          id = "GHSA-g3hv-75wg-m249"
+          ignoreUntil = 2026-12-04
+          reason = "minimatch 10.2.6 via ESLint only (dev); no fixed 10.x and ESLint needs ^10.2.6. Owner 2026-11-04."
+          EOF
+          "$RUNNER_TEMP/osv-scanner" scan source --config "$RUNNER_TEMP/osv-scanner.toml" --lockfile pnpm-lock.yaml
 
   static:
     name: semgrep
