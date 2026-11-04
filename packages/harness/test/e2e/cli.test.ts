@@ -4056,8 +4056,18 @@ describe("dependent run, --after (e2e, PB-2b)", () => {
       expect(types).toHaveLength(before + 1);
       expect(types.at(-1)).toBe("provisional.resolved");
       expect(types.slice(before)).not.toContain("provisional.attached");
+      // No run.started, so reap never sees the worktree: the refusal must remove it.
+      expect(workspaceNames()).toEqual(known);
+      const listed = git("-C", join(tmp, "fx"), "worktree", "list");
+      expect(listed.trim().split("\n")).toHaveLength(known.length + 1);
     },
   );
+
+  it("refuses --after on a command other than run", () => {
+    const out = cli("reap", "--state-dir", stateDir, "--after", "decision-x");
+    expect(out.status, out.stderr).toBe(64);
+    expect(out.stderr).toContain("helmwright: --after is for run only\n");
+  });
 
   it(
     "reaps the worktree of a dependent run that did not complete",

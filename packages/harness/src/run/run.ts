@@ -44,8 +44,8 @@ import {
 } from "../floor/provisional.ts";
 import { provisionalState } from "../floor/provisional-state.ts";
 import {
-  AFTER_REFUSALS,
   AfterRefused,
+  attachedRecord,
   preflightAfter,
   type AfterPlan,
 } from "./after.ts";
@@ -1110,8 +1110,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     if (!(error instanceof RangeError)) throw error;
     throw new UsageError(`--state-dir: ${errorMessage(error)}`);
   }
-  // PB-2b: a missing ref is re-created (create-only) once nothing else can refuse the run.
-  after?.restoreRef();
   const log = openSessionLog(join(stateDir, LOG_FILE));
   try {
     // OD-B54-1: a changed Task is refused before anything else is created.
@@ -1163,6 +1161,10 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     });
     const containers = new Set<string>();
     const seqBefore = log.lastSeq();
+    // PB-2b: a missing ref is re-created (create-only) after the last refusal that does not
+    // need the start transaction (Task change, Docker, worktree, Ring 0). Only that
+    // transaction's race check can still refuse the run; the ref then stays, equal to the log.
+    after?.restoreRef();
     const outcome = await executeRun({
       log,
       graphId,
@@ -1190,16 +1192,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             : [run];
         if (after === undefined) return head;
         // PB-2b: in run.started's transaction, so a resolve cannot slip in between.
-        const now = provisionalState(log.events()).decisions;
-        if (now.get(after.decisionId)?.resolved !== undefined) {
-          throw new Error("run refused: " + AFTER_REFUSALS.resolved);
-        }
-        const attached = {
-          ...{ kind: "provisional.attached", decisionId: after.decisionId },
-          runId,
-          commit: after.commit,
-        };
-        return [...head, { type: "provisional.attached", payload: attached }];
+        return [...head, attachedRecord(log.events(), after, runId)];
       },
       engine,
       tools: BROKER_TOOLS,
@@ -1388,10 +1381,11 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         ? {}
         : { checkDesync: options.checkDesync }),
     }).catch((error: unknown) => {
-      // B5-4: the start transaction failed (e.g. a changed Task raced in): with no
-      // run.started, reap never sees this worktree. A changed last seq may be another
-      // process's event, so the worktree is then kept.
-      if (log.lastSeq() === seqBefore) {
+      // B5-4: the start transaction failed (e.g. a changed Task or a resolve raced in): with
+      // no run.started, reap never sees this worktree. Decided by this run's own events, not
+      // by the last seq, which another process's event also changes. A run with a logged
+      // event has a run.started (one transaction), so reap owns its worktree.
+      if (log.lastSeq() === seqBefore || log.events({ runId }).length === 0) {
         attempt(() =>
           runGit(task.repo, ["worktree", "remove", "--force", workspace]),
         );
