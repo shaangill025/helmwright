@@ -109,7 +109,7 @@ const commands = (calls: Call[]) => calls.map((call) => call.args?.[0]);
 describe("dockerRunArgs", () => {
   it("pins the base image by digest, and the Dockerfile builds on it", () => {
     expect(SANDBOX_BASE_IMAGE).toBe(
-      "node:26-slim@sha256:930557a230abacbc3f4fd9b8648abf8f4bee1e17cb72195dcdfb2f709bc85b33",
+      "node:26-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39",
     );
     const dockerfile = readFileSync(
       join(SANDBOX_DOCKERFILE_DIR, "Dockerfile"),

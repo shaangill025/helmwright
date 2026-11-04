@@ -9,8 +9,19 @@
       "packages/harness/test/sandbox/docker.integration.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-11-04",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "package.json",
+    "ring": 2,
+    "assumption": "Security pins (owner 2026-11-04): pnpm.overrides fast-uri 3.1.9 (ajv) and minimatch 11.0.1 (ESLint; no fixed 10.x), and vite 8.3.3 as an exact root devDependency because an override does not reach vitest's peer. All dev-only. Remove each pin when its parent's own range resolves to a fixed version.",
+    "evidence": [
+      "osv-scanner GHSA-g3hv-75wg-m249, GHSA-587h-7wmj-h5pm, GHSA-w74x-v6f9-j3xg (2026-11-04)"
+    ],
+    "added": "2026-11-04",
+    "lastReviewed": "2026-11-04",
+    "reviewTrigger": ["milestone"]
   },
   {
     "component": "packages/harness/src/sandbox",
