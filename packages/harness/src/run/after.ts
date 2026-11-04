@@ -137,7 +137,12 @@ export function preflightAfter(
   const zero = "0".repeat(commit.length);
   const restoreRef = () => {
     if (value !== undefined) return;
-    git(common, ["update-ref", "--no-deref", "--", ref, commit, zero]);
+    try {
+      git(common, ["update-ref", "--no-deref", "--", ref, commit, zero]);
+    } catch (error) {
+      // A concurrent run may have created the same ref: equal to the log is fine.
+      if (refValue(common, ref) !== commit) throw error;
+    }
   };
   return {
     decisionId,

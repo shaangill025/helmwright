@@ -4063,6 +4063,65 @@ describe("dependent run, --after (e2e, PB-2b)", () => {
     },
   );
 
+  it(
+    "refuses a run whose lost ref is re-created with another value, and drops its worktree",
+    { timeout: 3 * T },
+    async () => {
+      const { id, fx } = firstFork();
+      const ref = PROVISIONAL + id;
+      git("-C", fx, "update-ref", "-d", ref);
+      const known = workspaceNames();
+      const before = logEvents().length;
+      const task = afterTask("fx-after.turns.json", "task-2");
+      const { exited } = startCli(
+        ...["run", task, "--state-dir", stateDir, "--after", id],
+      );
+      // The ref was missing at the preflight; another run creates it with its own value.
+      const until = performance.now() + 60_000;
+      while (
+        workspaceNames().length === known.length &&
+        performance.now() < until
+      ) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      expect(workspaceNames()).toHaveLength(known.length + 1);
+      git("-C", fx, "update-ref", ref, FX_BASE_COMMIT);
+      const { status, stdout } = await exited;
+      expect(status, stdout).not.toBe(0);
+      expect(logEvents()).toHaveLength(before);
+      expect(workspaceNames()).toEqual(known);
+      const listed = git("-C", fx, "worktree", "list");
+      expect(listed.trim().split("\n")).toHaveLength(known.length + 1);
+      expect(git("-C", fx, "rev-parse", ref).trim()).toBe(FX_BASE_COMMIT);
+    },
+  );
+
+  it(
+    "accepts a lost ref that another run re-created with the logged value",
+    { timeout: 3 * T },
+    async () => {
+      const { id, commit, fx } = firstFork();
+      const ref = PROVISIONAL + id;
+      git("-C", fx, "update-ref", "-d", ref);
+      const known = workspaceNames();
+      const task = afterTask("fx-after.turns.json", "task-2");
+      const { exited } = startCli(
+        ...["run", task, "--state-dir", stateDir, "--after", id],
+      );
+      const until = performance.now() + 60_000;
+      while (
+        workspaceNames().length === known.length &&
+        performance.now() < until
+      ) {
+        await new Promise((r) => setTimeout(r, 2));
+      }
+      git("-C", fx, "update-ref", ref, commit);
+      const { status, stdout } = await exited;
+      expect(status, stdout).toBe(0);
+      expect(git("-C", fx, "rev-parse", ref).trim()).toBe(commit);
+    },
+  );
+
   it("refuses --after on a command other than run", () => {
     const out = cli("reap", "--state-dir", stateDir, "--after", "decision-x");
     expect(out.status, out.stderr).toBe(64);

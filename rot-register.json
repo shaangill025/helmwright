@@ -584,10 +584,11 @@
   {
     "component": "packages/harness/src/run/after.ts",
     "ring": 0,
-    "assumption": "PB-2b: run --after <decisionId> is refused (exit 64, fixed text, nothing written to the log or disk) for an unknown, architecture, cap-refused, fork-less, resolved or other-repository decision, a ref that differs from the log, or a missing ref and commit. A missing ref with its commit present is re-created create-only. The run's base, config and worktree come from the provisional commit; run.recorded, provisional.attached, run.started are logged in one transaction that re-checks the decision is unresolved. Owner ruling: reap keeps only COMPLETED runs on an unresolved decision (reap result field kept). The repo is matched by realpath of the logged run.started.repo.",
+    "assumption": "PB-2b: run --after <decisionId> is refused (exit 64, fixed text, nothing written to the log or disk) for an unknown, architecture, cap-refused, fork-less, resolved or other-repository decision, a ref that differs from the log, or a missing ref and commit. A missing ref with its commit present is re-created create-only just before the start transaction (a concurrent creator with the same value is fine, another value or any other failure refuses the run and drops its worktree); a refusal in that transaction leaves the ref, whose value equals the logged commit. The run's base, config and worktree come from the provisional commit; run.recorded, provisional.attached, run.started are logged in one transaction that re-checks the decision is unresolved. Owner ruling: reap keeps only COMPLETED runs on an unresolved decision (reap result field kept). The repo is matched by realpath of the logged run.started.repo.",
     "evidence": [
       "decisions X3",
       "packages/harness/test/e2e/cli.test.ts",
+      "packages/harness/test/run/after.test.ts",
       "packages/harness/test/config/config.test.ts"
     ],
     "added": "2026-10-17",

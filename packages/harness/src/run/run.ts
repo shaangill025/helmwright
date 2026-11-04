@@ -1117,6 +1117,13 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
     const workspace = join(realpathSync(workspaceRoot), runId);
     mkdirSync(workspace, { mode: 0o700 });
+    // Before run.started is logged, reap never sees this worktree: every refusal drops it.
+    const dropWorktree = () => {
+      attempt(() =>
+        runGit(task.repo, ["worktree", "remove", "--force", workspace]),
+      );
+      rmSync(workspace, { recursive: true, force: true });
+    };
     let image: string;
     try {
       // Only orphans: other runs in this process may have live sandboxes.
@@ -1132,7 +1139,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         { timeoutMs: GIT_CHECKOUT_TIMEOUT_MS },
       );
     } catch (error) {
-      rmSync(workspace, { recursive: true, force: true }); // no worktree was added
+      dropWorktree();
       throw error;
     }
     // B5-4: read before run.recorded so the class is final. A failure is kept and
@@ -1160,11 +1167,16 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       class: intake.result.class,
     });
     const containers = new Set<string>();
-    const seqBefore = log.lastSeq();
-    // PB-2b: a missing ref is re-created (create-only) after the last refusal that does not
-    // need the start transaction (Task change, Docker, worktree, Ring 0). Only that
-    // transaction's race check can still refuse the run; the ref then stays, equal to the log.
-    after?.restoreRef();
+    // PB-2b: a missing ref is re-created (create-only) after the refusals that do not need
+    // the start transaction (Docker, worktree). The start transaction can still refuse the
+    // run (Task change, resolve race); the ref then stays, equal to the log. A failed
+    // restore refuses the run and drops the worktree.
+    try {
+      after?.restoreRef();
+    } catch (error) {
+      dropWorktree();
+      throw error;
+    }
     const outcome = await executeRun({
       log,
       graphId,
@@ -1385,12 +1397,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       // no run.started, reap never sees this worktree. Decided by this run's own events, not
       // by the last seq, which another process's event also changes. A run with a logged
       // event has a run.started (one transaction), so reap owns its worktree.
-      if (log.lastSeq() === seqBefore || log.events({ runId }).length === 0) {
-        attempt(() =>
-          runGit(task.repo, ["worktree", "remove", "--force", workspace]),
-        );
-        rmSync(workspace, { recursive: true, force: true });
-      }
+      if (log.events({ runId }).length === 0) dropWorktree();
       throw error;
     });
     const provisionalOn = after?.chain ?? [];
