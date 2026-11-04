@@ -16,9 +16,9 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
-/** node:26-slim (Node 26.10.0), multi-arch index digest. Has user `node` (uid 1000). */
+/** node:26-slim (Node 26.13.0), multi-arch index digest. Has user `node` (uid 1000). */
 export const SANDBOX_BASE_IMAGE =
-  "node:26-slim@sha256:930557a230abacbc3f4fd9b8648abf8f4bee1e17cb72195dcdfb2f709bc85b33";
+  "node:26-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39";
 /** Build context of the sandbox image: the base without npm/npx. */
 export const SANDBOX_DOCKERFILE_DIR = fileURLToPath(
   new URL("../../sandbox", import.meta.url),

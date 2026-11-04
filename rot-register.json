@@ -9,8 +9,20 @@
       "packages/harness/test/sandbox/docker.integration.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-11-04",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "package.json",
+    "ring": 2,
+    "assumption": "Security fix (owner 2026-11-04), no overrides (the config guard rejects them): vite 8.3.3 is an exact root devDependency so vitest's peer resolves to it; fast-uri 3.1.9 is a lockfile bump inside ajv's range; minimatch 10.2.6 (ESLint, no fixed 10.x) is covered by the owner exception in sensors.yml until 2026-12-04. All dev-only. Remove the vite entry when vitest's own resolution is fixed, and the exception when ESLint allows minimatch 11.",
+    "evidence": [
+      "osv-scanner GHSA-g3hv-75wg-m249, GHSA-587h-7wmj-h5pm, GHSA-w74x-v6f9-j3xg (2026-11-04)",
+      "docs/sensor-floor.md Owner exceptions"
+    ],
+    "added": "2026-11-04",
+    "lastReviewed": "2026-11-04",
+    "reviewTrigger": ["milestone"]
   },
   {
     "component": "packages/harness/src/sandbox",
