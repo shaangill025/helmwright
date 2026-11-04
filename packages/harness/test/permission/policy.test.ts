@@ -244,6 +244,28 @@ describe("evaluate with the default policy", () => {
     expect(verdict(action, input)).toEqual({ tier, ruleId });
   });
 
+  it("asks for offload.grep under a policy that has no offload.grep rule", () => {
+    const old = {
+      ...BASE,
+      rules: BASE.rules.filter((r) => !r.action.startsWith("offload.")),
+    };
+    expect(old.rules).toHaveLength(BASE.rules.length - 1);
+    expect(verdict("offload.grep", grepIn("a".repeat(64)), old)).toEqual({
+      tier: "ask",
+      ruleId: "default.ask",
+    });
+  });
+
+  it("refuses an offload.grep pattern over 4096 characters (the bound on its cost)", () => {
+    const at = { id: "a".repeat(64), pattern: "x".repeat(4096) };
+    expect(verdict("offload.grep", at).tier).toBe("allow");
+    const over = { id: "a".repeat(64), pattern: "x".repeat(4097) };
+    expect(verdict("offload.grep", over)).toEqual({
+      tier: "deny",
+      ruleId: "schema.invalid-input",
+    });
+  });
+
   it("shows an offload.grep target by its id and pattern, never a path", () => {
     const { target } = evaluate(
       BASE,

@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -20,6 +21,9 @@ export const OFFLOAD_SOURCE_CEILING_BYTES = 8_388_608;
 /**
  * The most bytes of an offload file that replay or `offload.grep` reads: stdout and
  * stderr, each cut at OFFLOAD_SOURCE_CEILING_BYTES, joined by a short marker line.
+ * The 16 bytes of slack: the marker "\n[stderr]\n" is 10 bytes; a stream cut in the
+ * middle of a character decodes to U+FFFD (3 bytes), so each stream can grow by up
+ * to 2 bytes. 10 + 2 + 2 = 14 <= 16.
  */
 export const MAX_OFFLOAD_FILE_BYTES = 2 * OFFLOAD_SOURCE_CEILING_BYTES + 16;
 
@@ -108,7 +112,12 @@ export function offloadFaults(events: readonly Event[], dir: string): string[] {
     let data: Buffer;
     try {
       const path = join(dir, sha256 + ".txt");
-      if (statSync(path).size > MAX_OFFLOAD_FILE_BYTES) {
+      const info = lstatSync(path);
+      if (!info.isFile()) {
+        fault("file is not a regular file");
+        continue;
+      }
+      if (info.size > MAX_OFFLOAD_FILE_BYTES) {
         fault("file is too large to check");
         continue;
       }
@@ -181,7 +190,7 @@ export interface GrepResult {
 
 /**
  * `line` if it fits `max` bytes; else a window of at most `max` bytes that starts
- * about GREP_CONTEXT_BYTES before the first `pattern` (so the match shows), both
+ * about GREP_CONTEXT_BYTES before the first `pattern` (so the start of the match shows), both
  * ends on character edges, each cut end marked with `…`.
  */
 const windowAround = (line: string, pattern: string, max: number): string => {
@@ -226,7 +235,14 @@ export function grepOffload(
   let data: Buffer;
   try {
     const path = join(dir, id + ".txt");
-    if (statSync(path).size > MAX_OFFLOAD_FILE_BYTES) {
+    const info = lstatSync(path);
+    if (!info.isFile()) {
+      return {
+        status: "error",
+        output: "offloaded output is not a regular file",
+      };
+    }
+    if (info.size > MAX_OFFLOAD_FILE_BYTES) {
       return {
         status: "error",
         output: "offloaded file is too large to search",

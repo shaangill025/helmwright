@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   truncateSync,
   writeFileSync,
 } from "node:fs";
@@ -23,7 +25,10 @@ import {
   type ToolResult,
 } from "../../src/index.ts";
 import {
+  GREP_DEFAULT_MATCHES,
+  GREP_MAX_MATCHES,
   OFFLOAD_SOURCE_CEILING_BYTES,
+  grepOffload,
   offload,
   offloadFaults,
   pointerLine,
@@ -145,7 +150,55 @@ describe("offload.grep", () => {
     expect(Buffer.byteLength(shown)).toBeLessThanOrEqual(512 + 3 * 2 + 3);
   });
 
-  it("refuses a file over twice the source ceiling without reading it (C1)", async () => {
+  it("shows a window of multi-byte characters without splitting one", async () => {
+    const line = "😀".repeat(300) + "NEEDLE" + "é".repeat(300);
+    const id = store(line + "\n");
+    const r = await grep({ id, pattern: "NEEDLE" });
+    expect(r.status).toBe("ok");
+    expect(r.output).toContain("NEEDLE");
+    expect(r.output).not.toContain("�");
+  });
+
+  it("refuses a symlink or a directory in place of the file, with no read", async () => {
+    mkdirSync(offloadDir(), { recursive: true });
+    const text = "linked needle\n";
+    const real = join(dir, "real.txt");
+    writeFileSync(real, text);
+    const linked = createHash("sha256").update(text).digest("hex");
+    symlinkSync(real, join(offloadDir(), linked + ".txt"));
+    const folder = "e".repeat(64);
+    mkdirSync(join(offloadDir(), folder + ".txt"));
+    for (const id of [linked, folder]) {
+      const r = await grep({ id, pattern: "needle" });
+      expect(r).toEqual({
+        status: "error",
+        output: "offloaded output is not a regular file",
+      });
+    }
+  });
+
+  it("makes replay fault a symlink in place of the file", () => {
+    const text = "linked\n";
+    const real = join(dir, "real.txt");
+    writeFileSync(real, text);
+    const sha256 = createHash("sha256").update(text).digest("hex");
+    mkdirSync(offloadDir(), { recursive: true });
+    symlinkSync(real, join(offloadDir(), sha256 + ".txt"));
+    const payload = {
+      ...{ kind: "tool.output.offloaded", toolCallId: "call-1", sha256 },
+      ...{ bytes: Buffer.byteLength(text), truncatedAtSource: false },
+    };
+    const event: Event = {
+      ...{ schemaVersion: 1, eventId: "e1", seq: 3, graphId: "g", runId: "r" },
+      ...{ nodeId: "n", at: "2026-10-17T00:00:00.000Z", payload },
+      type: "tool.output.offloaded",
+    };
+    expect(offloadFaults([event], offloadDir())).toEqual([
+      "seq 3: tool.output.offloaded file is not a regular file",
+    ]);
+  });
+
+  it("refuses a file over twice the source ceiling before it reads the file (C1)", async () => {
     const id = "c".repeat(64);
     mkdirSync(offloadDir(), { recursive: true });
     const file = join(offloadDir(), id + ".txt");
@@ -182,9 +235,21 @@ describe("offload.grep", () => {
     const id = store(("a".repeat(5000) + "\n").repeat(1000));
     const started = performance.now();
     const r = await grep({ id, pattern: "a".repeat(4095) + "b" });
-    expect(performance.now() - started).toBeLessThan(20_000);
+    // A smoke guard only: a synchronous search cannot be interrupted, and the wall
+    // clock depends on the machine. The real bound is structural: the policy caps the
+    // pattern at 4096 characters (next test) and the file at MAX_OFFLOAD_FILE_BYTES.
+    expect(performance.now() - started).toBeLessThan(10_000);
     expect(r.status).toBe("ok");
     expect(r.output).toContain("0 of 0 matches shown");
+  });
+
+  it("refuses a pattern over 4096 characters, the bound on the cost of a search", async () => {
+    const id = store("needle\n");
+    const ok = await grep({ id, pattern: "n".repeat(4096) });
+    expect(ok.status).toBe("ok");
+    const r = await grep({ id, pattern: "n".repeat(4097) });
+    expect(r.status).toBe("denied");
+    expect(r.output).toContain("invalid input for offload.grep");
   });
 
   it.each([
@@ -245,6 +310,99 @@ describe("offload.grep", () => {
     expect(denied.status).toBe("denied");
     expect(denied.output).toContain("denied");
     expect(entries.map((e) => e.type)).toEqual(["permission.evaluated"]);
+  });
+
+  it("asks, and with no one present is denied, under a policy without the rule", async () => {
+    const id = store("needle\n");
+    const old: PermissionPolicy = {
+      ...DEFAULT_PERMISSION_POLICY,
+      version: "default-2",
+      rules: DEFAULT_PERMISSION_POLICY.rules.filter(
+        (r) => r.id !== "offload.grep.run",
+      ),
+    };
+    const r = await grep({ id, pattern: "needle" }, broker(old));
+    expect(r.status).toBe("denied");
+    expect(entries.map((e) => e.payload)).toMatchObject([
+      { action: "offload.grep", tier: "ask", ruleId: "default.ask" },
+      { presence: "none" },
+      { answer: "denied", by: "noPresence" },
+    ]);
+  });
+});
+
+describe("grepOffload (the guards at the layer that opens the file)", () => {
+  const BYTES = MAX_TOOL_OUTPUT_BYTES;
+  const INVALID = {
+    status: "denied",
+    output: "invalid input for offload.grep",
+  };
+  const good = (): string => store("needle\n");
+
+  it("has the limits the policy repeats", () => {
+    expect(GREP_MAX_MATCHES).toBe(200);
+    expect(GREP_DEFAULT_MATCHES).toBe(50);
+  });
+
+  it("finds a match for a good id (the control for the refusals)", () => {
+    const r = grepOffload(
+      offloadDir(),
+      { id: good(), pattern: "needle" },
+      BYTES,
+    );
+    expect(r.status).toBe("ok");
+    expect(r.output).toContain("1: needle");
+  });
+
+  it.each([
+    ["a traversal id", "../../etc/passwd"],
+    ["a 64-character traversal id", ".".repeat(2) + "/".repeat(62)],
+    ["an id with the suffix", "a".repeat(64) + ".txt"],
+    ["a hex id with a trailing slash", "a".repeat(63) + "/"],
+    ["an uppercase id", "A".repeat(64)],
+    ["a short id", "abc"],
+    ["an empty id", ""],
+  ])("refuses %s", (_name, id) => {
+    expect(grepOffload(offloadDir(), { id, pattern: "x" }, BYTES)).toEqual(
+      INVALID,
+    );
+  });
+
+  it("does not read a file outside its directory through an id", () => {
+    // A readable file one level up, named so that join(dir, id + ".txt") would reach it.
+    const leak = join(dir, "leak.txt");
+    writeFileSync(leak, "needle leak\n");
+    mkdirSync(offloadDir(), { recursive: true });
+    const r = grepOffload(
+      offloadDir(),
+      { id: "../leak", pattern: "needle" },
+      BYTES,
+    );
+    expect(r).toEqual(INVALID);
+    expect(r.output).not.toContain("leak");
+  });
+
+  it.each([
+    ["an empty pattern", { pattern: "" }],
+    ["maxMatches 0", { pattern: "x", maxMatches: 0 }],
+    ["maxMatches 201", { pattern: "x", maxMatches: 201 }],
+    ["maxMatches 1.5", { pattern: "x", maxMatches: 1.5 }],
+    ["maxMatches NaN", { pattern: "x", maxMatches: Number.NaN }],
+  ])("refuses %s", (_name, rest) => {
+    const id = good();
+    expect(grepOffload(offloadDir(), { id, ...rest }, BYTES)).toEqual(INVALID);
+  });
+
+  it("accepts maxMatches 1 and 200", () => {
+    const id = good();
+    for (const maxMatches of [1, 200]) {
+      const r = grepOffload(
+        offloadDir(),
+        { id, pattern: "needle", maxMatches },
+        BYTES,
+      );
+      expect(r.status).toBe("ok");
+    }
   });
 });
 

@@ -7,6 +7,8 @@ import {
   type ToolOutputOffloaded,
 } from "@helmwright/schema";
 import {
+  GREP_DEFAULT_MATCHES,
+  GREP_MAX_MATCHES,
   OFFLOAD_SOURCE_CEILING_BYTES,
   grepOffload,
   offload,
@@ -280,8 +282,7 @@ const execute: Action = {
 const offloadGrep: Action = {
   spec: {
     name: "offload.grep",
-    description:
-      'Searches an offloaded tool output for a literal string (not a regex). Input: { "id": "<64 hex from the pointer>", "pattern": "text", "maxMatches": 1-200, default 50 }',
+    description: `Searches an offloaded tool output for a literal string (not a regex). Input: { "id": "<64 hex from the pointer>", "pattern": "text", "maxMatches": 1-${String(GREP_MAX_MATCHES)}, default ${String(GREP_DEFAULT_MATCHES)} }`,
   },
   handle(input, context) {
     const { id, pattern, maxMatches } = input;
