@@ -138,6 +138,9 @@ const HELMWRIGHT_GLOBS = [
   "packages/harness/src/objects/**",
   "packages/harness/test/objects/**",
   "packages/harness/test/ledger/**",
+  // B11 (owner 2026-10-17): the credential proxy is Ring 0.
+  "packages/harness/src/proxy/**",
+  "packages/harness/test/proxy/**",
   // FX (OQ-FX-3, 2026-10-09): the seeded fixture repo feeds the acceptance and baseline runs.
   "packages/harness/test/e2e/fixtures/fx-*",
   "packages/harness/test/e2e/fx-repo.ts",
