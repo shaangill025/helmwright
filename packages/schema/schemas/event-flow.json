@@ -118,6 +118,7 @@
         "decision.opened -> provisional.opened",
         "decision.opened -> provisional.refused",
         "decision.opened -> run.terminated",
+        "run.recorded -> provisional.attached",
         "run.recorded -> run.started",
         "task.created -> run.recorded"
       ]
@@ -180,6 +181,7 @@
         "provisional.resolved"
       ],
       "edges": [
+        "provisional.attached -> run.started",
         "provisional.opened -> decision.opened",
         "provisional.opened -> floor.checked",
         "provisional.refused -> decision.opened",

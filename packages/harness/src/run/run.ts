@@ -1504,6 +1504,8 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
         ...provisionalFaults(events, [
           ...log.events({ type: "provisional.opened" }),
           ...log.events({ type: "provisional.refused" }),
+          ...log.events({ type: "provisional.attached" }),
+          ...log.events({ type: "provisional.resolved" }),
         ]),
       ],
       objectFaults: objectFaults(events, [

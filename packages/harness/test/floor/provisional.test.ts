@@ -106,6 +106,18 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     expect(provisionalFaults(missing, earlier)).toEqual([
       expect.stringContaining("owner decision without provisional.opened"),
     ]);
+    // F1 (PB-2a review 2): any provisional type, even attached, proves a post-PB-1 log.
+    const onlyAttached = [
+      event(0, "provisional.attached", {
+        kind: "provisional.attached",
+        decisionId: "decision-other",
+        runId: "run-0",
+        commit: base,
+      }),
+    ];
+    expect(provisionalFaults(missing, onlyAttached)).toEqual([
+      expect.stringContaining("owner decision without provisional.opened"),
+    ]);
     // B1 (owner ruling 2026-10-17): a run that did not end completed is due no fork.
     const ended = (terminal: object) => [
       ...missing.slice(0, 2),
@@ -155,25 +167,239 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     expect(provisionalFaults(log(change)).length).toBeGreaterThan(0);
   });
 
-  it.each(["provisional.attached", "provisional.resolved"])(
-    "faults a reserved %s until PB-2 and PB-3 define it (A1)",
-    (type) => {
-      const retyped = log();
-      retyped[1] = event(1, type, {
-        kind: type,
-        decisionId: id,
-        runId: "run-1",
-        commit: "a".repeat(40),
-      });
-      expect(provisionalFaults(retyped)).toEqual([
-        expect.stringContaining("reserved provisional event " + type),
-      ]);
-    },
-  );
+  it("faults a reserved provisional.resolved until PB-3 defines it (A1)", () => {
+    const retyped = log();
+    retyped[1] = event(1, "provisional.resolved", {
+      kind: "provisional.resolved",
+      decisionId: id,
+      runId: "run-1",
+      commit: "a".repeat(40),
+    });
+    expect(provisionalFaults(retyped)).toEqual([
+      expect.stringContaining(
+        "reserved provisional event provisional.resolved",
+      ),
+    ]);
+  });
 
   it("faults a rejected floor and a missing owner decision", () => {
     expect(provisionalFaults(log({}, "reject")).length).toBeGreaterThan(0);
     expect(provisionalFaults(log().slice(1)).length).toBeGreaterThan(0);
+  });
+});
+
+// PB-2a: a dependent run "run-2" is built on the provisional commit that "run-1" forked.
+const commit = provisionalCommitId(tree, base, id);
+const inRun = (runId: string, e: Event): Event => ({ ...e, runId });
+/** The run that forked the commit, in the whole-log history. */
+const forkEvent = inRun("run-1", event(1, "provisional.opened", opened()));
+const attachedPayload = (change: object = {}) => ({
+  kind: "provisional.attached",
+  decisionId: id,
+  runId: "run-2",
+  commit,
+  ...change,
+});
+/** run-2's events: recorded, attached, started, checked, with each part overridable. */
+function dependent(
+  options: {
+    attached?: object | null;
+    start?: string;
+    check?: string;
+  } = {},
+): Event[] {
+  const { attached = {}, start = commit, check = commit } = options;
+  return [
+    event(10, "run.recorded", { taskId: "task-2" }),
+    ...(attached === null
+      ? []
+      : [event(11, "provisional.attached", attachedPayload(attached))]),
+    event(12, "run.started", { baseCommit: start }),
+    event(13, "floor.checked", { ...checkedPayload(), baseCommit: check }),
+  ].map((e) => inRun("run-2", e));
+}
+const history = (...more: Event[]): Event[] => [forkEvent, ...more];
+
+describe("provisional.attached replay rules (PB-2a)", () => {
+  it("finds no fault in a well-formed dependent run", () => {
+    expect(provisionalFaults(dependent(), history())).toEqual([]);
+  });
+
+  it("finds no fault in an ordinary run with no attached event or fork base", () => {
+    const plain = dependent({ attached: null, start: base, check: base });
+    expect(provisionalFaults(plain, history())).toEqual([]);
+  });
+
+  // Rule 1.
+  it("faults an invalid payload and a kind that is not the type", () => {
+    for (const attached of [
+      { commit: "not-an-oid" },
+      { kind: "provisional.opened" },
+    ]) {
+      const run = dependent({ attached, start: base, check: base });
+      expect(provisionalFaults(run, history())).toEqual([
+        "seq 11: provisional.attached that is not a valid provisional event",
+      ]);
+    }
+  });
+
+  it("faults a schema-valid payload of another kind (kind is not the type)", () => {
+    const run = [
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(11, "provisional.attached", refused),
+      event(12, "run.started", { baseCommit: base }),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(run, history())).toEqual([
+      "seq 11: provisional.attached that is not a valid provisional event",
+    ]);
+  });
+
+  // Rule 2.
+  it("faults a payload runId that is not the event's", () => {
+    expect(
+      provisionalFaults(dependent({ attached: { runId: "run-9" } }), history()),
+    ).toEqual(["seq 11: attached runId is not the event's"]);
+  });
+
+  // Rule 3.
+  it("faults a second attached event in one run", () => {
+    const twice = [
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(11, "provisional.attached", attachedPayload()),
+      event(12, "provisional.attached", attachedPayload()),
+      event(13, "run.started", { baseCommit: commit }),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(twice, history())).toEqual([
+      "seq 12: second provisional.attached in one run",
+    ]);
+  });
+
+  // Rule 4.
+  it("faults an attached event not between run.recorded and run.started", () => {
+    const text = (seq: number) =>
+      `seq ${String(seq)}: provisional.attached is not between run.recorded and run.started`;
+    const late = [
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(12, "run.started", { baseCommit: commit }),
+      event(14, "provisional.attached", attachedPayload()),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(late, history())).toEqual([text(14)]);
+    const early = [
+      event(9, "provisional.attached", attachedPayload()),
+      event(10, "run.recorded", { taskId: "task-2" }),
+      event(12, "run.started", { baseCommit: commit }),
+    ].map((e) => inRun("run-2", e));
+    expect(provisionalFaults(early, history())).toEqual([text(9)]);
+    const unrecorded = dependent().slice(1);
+    expect(provisionalFaults(unrecorded, history())).toEqual([text(11)]);
+  });
+
+  // Rule 5.
+  it("faults a decision with no earlier provisional.opened", () => {
+    const text = "seq 11: attached decision has no earlier provisional.opened";
+    expect(provisionalFaults(dependent(), [])).toEqual([text]);
+    const refusal = inRun("run-1", event(1, "provisional.refused", refused));
+    expect(provisionalFaults(dependent(), [refusal])).toEqual([text]);
+    const later = { ...forkEvent, seq: 20 };
+    expect(provisionalFaults(dependent(), [later])).toEqual([text]);
+    expect(
+      provisionalFaults(
+        dependent({ attached: { decisionId: "decision-x" } }),
+        history(),
+      ),
+    ).toEqual([text]);
+  });
+
+  // Rule 6.
+  it("faults a commit that is not the opened commit", () => {
+    const other = "e".repeat(40);
+    expect(
+      provisionalFaults(
+        dependent({ attached: { commit: other }, start: other, check: other }),
+        history(),
+      ),
+    ).toEqual([
+      "seq 11: attached commit is not the decision's provisional commit",
+    ]);
+  });
+
+  // Rule 7.
+  it("faults an attach to a decision opened in the same run", () => {
+    const self = dependent().map((e) => inRun("run-1", e));
+    const own = [
+      ...self.slice(0, 1),
+      inRun("run-1", event(5, "provisional.opened", opened())),
+      ...self.slice(1),
+    ];
+    const ownAttached = own.map((e) =>
+      e.type === "provisional.attached"
+        ? { ...e, payload: attachedPayload({ runId: "run-1" }) }
+        : e,
+    ) as Event[];
+    const fork = ownAttached.filter((e) => e.type === "provisional.opened");
+    expect(provisionalFaults(ownAttached, fork)).toEqual([
+      "seq 11: attached to a decision opened in the same run",
+      // The forged fork row is also out of place for a plain PB-1 check.
+      "seq 5: provisional.opened is not directly after its owner decision",
+      "seq 5: provisional base commit is not floor.checked's",
+    ]);
+  });
+
+  // Rule 8.
+  it("faults a run.started or floor.checked base that is not the commit", () => {
+    expect(provisionalFaults(dependent({ start: base }), history())).toEqual([
+      "seq 12: run.started base commit is not the attached commit",
+    ]);
+    expect(provisionalFaults(dependent({ check: base }), history())).toEqual([
+      "seq 13: floor.checked base commit is not the attached commit",
+    ]);
+  });
+
+  // Rule 9.
+  it("faults an attach above a resolved decision", () => {
+    const resolved = inRun(
+      "run-3",
+      event(5, "provisional.resolved", {
+        kind: "provisional.resolved",
+        decisionId: id,
+        outcome: "confirmed",
+        chosenOption: "a",
+        resolvedBy: "owner-tty:none",
+      }),
+    );
+    expect(provisionalFaults(dependent(), history(resolved))).toEqual([
+      "seq 11: attached after the decision was resolved",
+    ]);
+    const after = { ...resolved, seq: 50 };
+    expect(provisionalFaults(dependent(), history(after))).toEqual([]);
+  });
+});
+
+describe("floor base rule (PB-2a, 1.3)", () => {
+  it("faults a run on a provisional commit with no attached event", () => {
+    expect(provisionalFaults(dependent({ attached: null }), history())).toEqual(
+      [
+        "seq 12: run on a provisional commit without provisional.attached",
+        "seq 13: run on a provisional commit without provisional.attached",
+      ],
+    );
+  });
+
+  it("allows the provisional commit only as the attached commit", () => {
+    const other = "d".repeat(40);
+    const second = dependent({
+      attached: { commit: other },
+      start: other,
+      check: other,
+    });
+    // Attached to another commit, the run's base is that commit, not a fork's; rule 6 speaks.
+    expect(provisionalFaults(second, history())).toEqual([
+      "seq 11: attached commit is not the decision's provisional commit",
+    ]);
+  });
+
+  it("leaves a run's own fork base alone", () => {
+    expect(provisionalFaults(log(), history())).toEqual([]);
   });
 });
 

@@ -542,17 +542,44 @@
   {
     "component": "packages/harness/src/floor/provisional.ts",
     "ring": 0,
-    "assumption": "PB-1 (X3 revised): a run that ends COMPLETED with a passing floor and an owner decision of class technology or scope forks one provisional commit per decision (owner ruling 2026-10-17: a failed or incomplete run forks none). The commit holds the floor's candidateTree, whose loose objects come from the floor's own pass (a pack or an incomplete tree fails closed), the base commit as parent, a fixed identity, epoch 0 and the decision ID, so replay recomputes it. Host objects are written before the log transaction and may stay unreferenced (gc-able) if it fails. The ref refs/helmwright/provisional/<id> is created create-only after the log commits. Past 10 open, provisional.refused is logged and the run fails; the count is advisory across concurrent runs. M1 unblock, by the owner: git update-ref -d refs/helmwright/provisional/<id>. A failed update-ref (PROVISIONAL_FAILED) is not repaired in PB-1: PB-2/PB-3 treat the log as truth and re-create it create-only.",
+    "assumption": "PB-1 (X3 revised): a run that ends COMPLETED with a passing floor and an owner decision of class technology or scope forks one provisional commit per decision (owner ruling 2026-10-17: a failed or incomplete run forks none). The commit holds the floor's candidateTree, whose loose objects come from the floor's own pass (a pack or incomplete tree fails closed), the base commit as parent, a fixed identity, epoch 0 and the decision ID, so replay recomputes it. Host objects are written before the log transaction and may stay unreferenced (gc-able) if it fails. The ref refs/helmwright/provisional/<id> is created create-only after the log commits. Past 10 open, provisional.refused is logged and the run fails; the count is advisory across concurrent runs. Owner unblock: git update-ref -d <ref>. PB-2a: replay checks provisional.attached (nine rules) and the floor base rule. No writer of attached until PB-2b; resolved is PB-3. PB-2b/PB-3 treat the log as truth and will re-create a lost ref create-only.",
     "evidence": [
       "decisions X3",
       "decisions PB-1 fork rule",
       "decisions OQ-AD-3",
       "packages/harness/test/floor/provisional.test.ts",
+      "packages/harness/test/floor/provisional-state.test.ts",
       "packages/harness/test/e2e/cli.test.ts"
     ],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/floor/provisional.ts",
+    "facet": "base-rule",
+    "ring": 0,
+    "assumption": "PB-2a floor base rule: a run whose run.started or floor.checked base commit is a logged fork commit, with no provisional.attached of its own for that commit, is one replay fault. 2026-11-04: the rule is strict for now, and PB-3a will exempt a fork whose decision was resolved confirmed before the run's run.started (so a main branch fast-forwarded onto a confirmed commit replays clean). It catches only a base that IS a fork commit, not a descendant of one (for example an owner commit made by hand on the provisional ref); that is a limit of the log-only design, and PB-2b --after is the supported path.",
+    "evidence": [
+      "decisions X3",
+      "packages/harness/test/floor/provisional.test.ts",
+      "packages/harness/test/e2e/cli.test.ts"
+    ],
+    "added": "2026-11-04",
+    "lastReviewed": "2026-11-04",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/floor/provisional-state.ts",
+    "ring": 0,
+    "assumption": "PB-2a: which decision a run waits on is a pure function of the whole log: owner decisions, their fork (opened, refused or none), the first attached and first resolved event, and chains up through the opening run's own attached decision. A cycle stops at the first repeated run. No file, git or clock is read. A run is provisional while any decision in its chain has no provisional.resolved; an unknown decision counts as unresolved. PB-2b (--after, reap) and PB-3 (resolve) build on it.",
+    "evidence": [
+      "decisions X3",
+      "packages/harness/test/floor/provisional-state.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["milestone"]
   },
   {
     "component": "packages/harness/src/index.ts",
@@ -755,7 +782,7 @@
   {
     "component": "packages/schema/schemas/provisional-event.schema.json",
     "ring": 0,
-    "assumption": "provisional.opened logs the decision, its class (scope or technology), the commit, tree and base commit and the ref under refs/helmwright/provisional/, never a recommendation (Q48); provisional.refused logs a fork refused at the cap; provisional.attached and provisional.resolved are reserved (PB-2, PB-3) and not written yet. That the commit is recomputed from the tree, base commit and decision ID, and its position after its owner decision, are replay's checks, not the schema's.",
+    "assumption": "provisional.opened logs the decision, its class (scope or technology), the commit, tree and base commit and the ref under refs/helmwright/provisional/, never a recommendation (Q48); provisional.refused logs a fork refused at the cap; provisional.attached (PB-2) logs a run built on a fork's commit, between run.recorded and run.started, with no writer until PB-2b; provisional.resolved is reserved (PB-3). That the commit is recomputed from the tree, base commit and decision ID, an event's position, and the attached rules, are replay's checks, not the schema's.",
     "evidence": ["decisions X3", "packages/schema/test/event-flow.test.ts"],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",

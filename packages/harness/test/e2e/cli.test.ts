@@ -3648,9 +3648,19 @@ describe("provisional branch (e2e, PB-1)", () => {
       }
       const reserved = cli("replay", run.out.runId, "--state-dir", stateDir);
       expect(reserved.status, reserved.stdout).toBe(3);
-      expect(reserved.stdout).toContain(
-        "reserved provisional event provisional.attached",
-      );
+      // PB-2a: attached is defined; the retyped row is out of place, names no fork and
+      // is not the base of its run (rules 4, 5 and 8).
+      const found = JSON.parse(reserved.stdout) as {
+        permissionFaults: string[];
+      };
+      expect(found.permissionFaults).toEqual([
+        "seq 38: provisional.attached is not between run.recorded and run.started",
+        "seq 38: attached decision has no earlier provisional.opened",
+        "seq 2: run.started base commit is not the attached commit",
+        "seq 39: floor.checked base commit is not the attached commit",
+        // The attached row still proves a post-PB-1 log, so the missing fork is found.
+        "seq 37: owner decision without provisional.opened or provisional.refused",
+      ]);
     },
   );
 

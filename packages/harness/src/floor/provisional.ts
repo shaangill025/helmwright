@@ -30,13 +30,16 @@ const IDENTITY = "helmwright <helmwright@localhost> 0 +0000";
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const DECISION = /^decision-[A-Za-z0-9][A-Za-z0-9_-]{0,118}$/;
 const PROVISIONAL_CLASSES = new Set(["technology", "scope"]);
-const RESERVED_TYPES = new Set([
-  "provisional.attached",
-  "provisional.resolved",
-]);
+const RESERVED_TYPES = new Set(["provisional.resolved"]);
 const PROVISIONAL_TYPES = new Set([
   "provisional.opened",
   "provisional.refused",
+]);
+/** Every provisional type: a log holding one is from a build at or after PB-1. */
+const ANY_PROVISIONAL_TYPES = new Set([
+  ...PROVISIONAL_TYPES,
+  "provisional.attached",
+  "provisional.resolved",
 ]);
 
 /** The provisional ref of `decisionId`. @throws Error for a bad ID */
@@ -214,6 +217,102 @@ export function planProvisional(
 }
 
 /**
+ * PB-2a faults of one run's `provisional.attached` events, and of the base commits of its
+ * `run.started` and `floor.checked`, given `history` (the provisional events of the whole
+ * log). Each fixed text carries the event's `seq`. An attached event must be valid, name
+ * its own run, be the run's only one and sit after `run.recorded` and before `run.started`;
+ * name a decision with an earlier `provisional.opened` made by another run, and that
+ * fork's commit; come before any `provisional.resolved` of the decision; and be the base
+ * commit of `run.started` and `floor.checked`. A base that is any logged fork's commit
+ * needs an attached event with that commit (the floor base rule).
+ */
+function attachedFaults(
+  events: readonly Event[],
+  history: readonly Event[],
+  faults: string[],
+): void {
+  const recorded = events.find((e) => e.type === "run.recorded");
+  const started = events.find((e) => e.type === "run.started");
+  const checked = events.find((e) => e.type === "floor.checked");
+  const attaches = events.filter((e) => e.type === "provisional.attached");
+  const forks = history.filter((h) => h.type === "provisional.opened");
+  const ownAttached = new Set<string>();
+  for (const [n, e] of attaches.entries()) {
+    const fault = (text: string) =>
+      faults.push(`seq ${String(e.seq)}: ${text}`);
+    const p = e.payload;
+    if (!validateProvisionalEvent({ ...p }) || p["kind"] !== e.type) {
+      fault(e.type + " that is not a valid provisional event");
+      continue;
+    }
+    const decisionId = String(p["decisionId"]);
+    const commit = String(p["commit"]);
+    ownAttached.add(commit);
+    if (p["runId"] !== e.runId) fault("attached runId is not the event's");
+    if (n > 0) fault("second provisional.attached in one run");
+    if (
+      recorded === undefined ||
+      started === undefined ||
+      !(recorded.seq < e.seq && e.seq < started.seq)
+    ) {
+      fault("provisional.attached is not between run.recorded and run.started");
+    }
+    const fork = history.find(
+      (h) =>
+        h.type === "provisional.opened" &&
+        h.payload["decisionId"] === decisionId &&
+        h.seq < e.seq,
+    );
+    if (fork === undefined) {
+      fault("attached decision has no earlier provisional.opened");
+    } else {
+      if (fork.payload["commit"] !== commit) {
+        fault("attached commit is not the decision's provisional commit");
+      }
+      if (events.some((x) => x.seq === fork.seq && x.runId === fork.runId)) {
+        fault("attached to a decision opened in the same run");
+      }
+    }
+    if (
+      history.some(
+        (h) =>
+          h.type === "provisional.resolved" &&
+          h.payload["decisionId"] === decisionId &&
+          h.seq < e.seq,
+      )
+    ) {
+      fault("attached after the decision was resolved");
+    }
+    for (const [name, base] of [
+      ["run.started", started],
+      ["floor.checked", checked],
+    ] as const) {
+      if (base !== undefined && base.payload["baseCommit"] !== commit) {
+        faults.push(
+          `seq ${String(base.seq)}: ${name} base commit is not the attached commit`,
+        );
+      }
+    }
+  }
+  // The floor base rule is strict for now: PB-3a will exempt a fork whose decision was
+  // resolved confirmed before this run's run.started, so that a main branch fast-forwarded
+  // onto a confirmed commit replays clean.
+  const forkCommits = new Set(forks.map((f) => f.payload["commit"]));
+  for (const base of [started, checked]) {
+    const commit = base?.payload["baseCommit"];
+    if (
+      base !== undefined &&
+      forkCommits.has(commit) &&
+      !ownAttached.has(String(commit))
+    ) {
+      faults.push(
+        `seq ${String(base.seq)}: run on a provisional commit without provisional.attached`,
+      );
+    }
+  }
+}
+
+/**
  * Replay faults of one run's provisional events (Q68a), each fixed text with the event's
  * `seq`: an invalid payload, a commit not recomputed from its tree, base commit and
  * decision ID, a tree or base commit that is not `floor.checked`'s, a ref or class that is
@@ -221,7 +320,8 @@ export function planProvisional(
  * one for a decision, or a floor that did not pass. A passing floor whose owner decision
  * of class technology or scope has neither `provisional.opened` nor `provisional.refused`
  * is a fault, unless the log is from before PB-1: `history` (all provisional events of
- * the whole log; default this run's) has none before that `floor.checked`. An extra fork
+ * the whole log; default this run's) has none before that `floor.checked`. PB-2a adds
+ * `attachedFaults`; `provisional.resolved` stays reserved until PB-3. An extra fork
  * (one logged for a run that is not owed one, such as a failed run) is not faulted for
  * that: the run-end retry path can end a run with its floor events already logged, and
  * each event is still checked for itself above.
@@ -233,9 +333,10 @@ export function provisionalFaults(
   const faults: string[] = [];
   const checked = events.find((e) => e.type === "floor.checked");
   const seen = new Set<string>();
+  attachedFaults(events, history, faults);
   for (const [index, e] of events.entries()) {
     if (RESERVED_TYPES.has(e.type)) {
-      // PB-2 and PB-3 define these; until then a log holding one is not from this build.
+      // PB-3 defines this; until then a log holding one is not from this build.
       faults.push(`seq ${String(e.seq)}: reserved provisional event ${e.type}`);
       continue;
     }
@@ -295,7 +396,7 @@ export function provisionalFaults(
   }
   if (checked?.payload["verdict"] === "pass") {
     const legacy = !history.some(
-      (h) => PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
+      (h) => ANY_PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
     );
     // Owner ruling 2026-10-17: only a run that ended completed forks, so a fork is due
     // only for a `completed` terminal. A run failed by PROVISIONAL_REFUSED or
