@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 
 /** node:26-slim (Node 26.13.0), multi-arch index digest. Has user `node` (uid 1000). */
 export const SANDBOX_BASE_IMAGE =
-  "node:26-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39";
+  "node:26-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072";
 /** Build context of the sandbox image: the base without npm/npx. */
 export const SANDBOX_DOCKERFILE_DIR = fileURLToPath(
   new URL("../../sandbox", import.meta.url),
