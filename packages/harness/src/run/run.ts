@@ -42,6 +42,13 @@ import {
   planProvisional,
   provisionalFaults,
 } from "../floor/provisional.ts";
+import { provisionalState } from "../floor/provisional-state.ts";
+import {
+  AfterRefused,
+  attachedRecord,
+  preflightAfter,
+  type AfterPlan,
+} from "./after.ts";
 import { loadScriptedEngine } from "../engine/scripted.ts";
 import { floorFaults } from "../floor/events.ts";
 import { recommendationKey } from "../floor/key.ts";
@@ -915,6 +922,8 @@ export interface RunTaskOptions {
   readonly onIntake?: (shown: IntakeShown) => void;
   /** A-dep-4: called with what the early dependency check shows (`RunSetup.onEarly`). */
   readonly onEarly?: (shown: EarlyShown) => void;
+  /** PB-2b: build on the provisional commit of this owner decision (`--after`). */
+  readonly after?: string;
 }
 
 /** What a run shows of its intake: the class and its friction (N8). */
@@ -961,6 +970,8 @@ export interface RunTaskResult extends RunEnd {
   readonly runId: string;
   readonly nodeId: string;
   readonly workspace: string;
+  /** PB-2b: the decisions this run waits on (`--after`, then its chain); else empty. */
+  readonly provisionalOn: readonly string[];
 }
 
 const LOG_FILE = "session.sqlite";
@@ -1018,9 +1029,19 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     throw new UsageError(`task.engine.turns: ${errorMessage(error)}`);
   }
   checkRepoRoot(task.repo);
+  // PB-2b: --after is checked against the log and the repo before anything is created.
+  let after: AfterPlan | undefined;
+  if (options.after !== undefined) {
+    try {
+      after = preflightAfter(options.stateDir, task.repo, options.after);
+    } catch (error) {
+      if (!(error instanceof AfterRefused)) throw error;
+      throw new UsageError(error.message, { cause: error });
+    }
+  }
   let config: RunConfig;
   try {
-    config = loadRunConfig(task.repo);
+    config = loadRunConfig(task.repo, after?.commit);
   } catch (error) {
     if (!(error instanceof ConfigError)) throw error;
     throw new UsageError(error.message, { cause: error });
@@ -1096,6 +1117,13 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
     const workspace = join(realpathSync(workspaceRoot), runId);
     mkdirSync(workspace, { mode: 0o700 });
+    // Before run.started is logged, reap never sees this worktree: every refusal drops it.
+    const dropWorktree = () => {
+      attempt(() =>
+        runGit(task.repo, ["worktree", "remove", "--force", workspace]),
+      );
+      rmSync(workspace, { recursive: true, force: true });
+    };
     let image: string;
     try {
       // Only orphans: other runs in this process may have live sandboxes.
@@ -1111,7 +1139,7 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         { timeoutMs: GIT_CHECKOUT_TIMEOUT_MS },
       );
     } catch (error) {
-      rmSync(workspace, { recursive: true, force: true }); // no worktree was added
+      dropWorktree();
       throw error;
     }
     // B5-4: read before run.recorded so the class is final. A failure is kept and
@@ -1139,7 +1167,16 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       class: intake.result.class,
     });
     const containers = new Set<string>();
-    const seqBefore = log.lastSeq();
+    // PB-2b: a missing ref is re-created (create-only) after the refusals that do not need
+    // the start transaction (Docker, worktree). The start transaction can still refuse the
+    // run (Task change, resolve race); the ref then stays, equal to the log. A failed
+    // restore refuses the run and drops the worktree.
+    try {
+      after?.restoreRef();
+    } catch (error) {
+      dropWorktree();
+      throw error;
+    }
     const outcome = await executeRun({
       log,
       graphId,
@@ -1161,9 +1198,13 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
       // OD-B54-1: checked again in run.started's transaction; a same Task is reused.
       records: () => {
         const run = { type: "run.recorded", payload: { ...recorded } };
-        return recordedTask(log, created) === "new"
-          ? [{ type: "task.created", payload: { ...created } }, run]
-          : [run];
+        const head =
+          recordedTask(log, created) === "new"
+            ? [{ type: "task.created", payload: { ...created } }, run]
+            : [run];
+        if (after === undefined) return head;
+        // PB-2b: in run.started's transaction, so a resolve cannot slip in between.
+        return [...head, attachedRecord(log.events(), after, runId)];
       },
       engine,
       tools: BROKER_TOOLS,
@@ -1352,18 +1393,15 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
         ? {}
         : { checkDesync: options.checkDesync }),
     }).catch((error: unknown) => {
-      // B5-4: the start transaction failed (e.g. a changed Task raced in): with no
-      // run.started, reap never sees this worktree. A changed last seq may be another
-      // process's event, so the worktree is then kept.
-      if (log.lastSeq() === seqBefore) {
-        attempt(() =>
-          runGit(task.repo, ["worktree", "remove", "--force", workspace]),
-        );
-        rmSync(workspace, { recursive: true, force: true });
-      }
+      // B5-4: the start transaction failed (e.g. a changed Task or a resolve raced in): with
+      // no run.started, reap never sees this worktree. Decided by this run's own events, not
+      // by the last seq, which another process's event also changes. A run with a logged
+      // event has a run.started (one transaction), so reap owns its worktree.
+      if (log.events({ runId }).length === 0) dropWorktree();
       throw error;
     });
-    return { ...outcome, graphId, runId, nodeId, workspace };
+    const provisionalOn = after?.chain ?? [];
+    return { ...outcome, graphId, runId, nodeId, workspace, provisionalOn };
   } finally {
     log.close();
   }
@@ -1525,6 +1563,8 @@ export function replayRun(runId: string, stateDir: string): ReplayResult {
 export interface ReapResult {
   /** Run IDs whose worktrees were removed. */
   readonly worktrees: string[];
+  /** PB-2b: completed runs on an unresolved provisional decision, whose worktrees stay. */
+  readonly kept: string[];
   /** Orphaned sandbox containers removed; null if reaping them failed. */
   readonly containers: number | null;
   /** What could not be reaped (a run ID or "containers"), and why. */
@@ -1555,12 +1595,24 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
     events.filter((e) => e.type === "run.terminated").map((e) => e.runId),
   );
   const worktrees: string[] = [];
+  const kept: string[] = [];
   const failures: { target: string; error: string }[] = [];
+  // PB-2b (owner): a COMPLETED run built on a still-unresolved decision keeps its
+  // worktree: nothing else holds its work.
+  const state = provisionalState(events);
   for (const { type, runId, payload } of events) {
     const { repo, workspace } = payload;
     if (type !== "run.started" || !ended.has(runId)) continue;
     if (typeof repo !== "string" || typeof workspace !== "string") continue;
     if (!existsSync(workspace)) continue;
+    if (
+      state.attached.has(runId) &&
+      state.completed.has(runId) &&
+      state.provisional(runId)
+    ) {
+      kept.push(runId);
+      continue;
+    }
     try {
       const own = join(realpathSync(join(root, WORKSPACES)), runId);
       if (realpathSync(workspace) !== own) continue;
@@ -1576,5 +1628,5 @@ export async function reapRuns(stateDir: string): Promise<ReapResult> {
   } catch (error) {
     failures.push({ target: "containers", error: errorMessage(error) });
   }
-  return { worktrees, containers, failures };
+  return { worktrees, kept, containers, failures };
 }

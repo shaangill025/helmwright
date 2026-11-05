@@ -135,6 +135,29 @@ describe("loadRunConfig", { timeout: T }, () => {
     );
   });
 
+  it("reads from a given commit, not HEAD (PB-2b)", () => {
+    const at = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    const next = { ...DEFAULT_PERMISSION_POLICY, version: "strict-2" };
+    commit(file(JSON.stringify({ permissions: { policy: next } })));
+    expect(loadRunConfig(repo).policy.version).toBe("strict-2");
+    const old = loadRunConfig(repo, at);
+    expect(old.baseCommit).toBe(at);
+    expect(old.policy.version).toBe(DEFAULT_PERMISSION_POLICY.version);
+    expect(old.record.ring0Sha256).not.toBe(
+      loadRunConfig(repo).record.ring0Sha256,
+    );
+  });
+
+  it("refuses a base that is not a commit (PB-2b)", () => {
+    for (const bad of ["e".repeat(40), "HEAD", "not-an-oid"]) {
+      const error = thrown(() => loadRunConfig(repo, bad)) as ConfigError;
+      expect(error, bad).toBeInstanceOf(ConfigError);
+      expect(error.message, bad).toBe("task.repo has no such base commit");
+    }
+  });
+
   it("gives a ConfigError no cause (N3)", () => {
     const relax = {
       ...DEFAULT_PERMISSION_POLICY,

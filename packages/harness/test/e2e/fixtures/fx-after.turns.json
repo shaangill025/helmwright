@@ -1,0 +1,24 @@
+[
+  {
+    "text": "Using the duration library the provisional commit already depends on.",
+    "toolCalls": [
+      {
+        "id": "call-1",
+        "name": "execute",
+        "input": {
+          "argv": [
+            "sh",
+            "-c",
+            "cat > app/src/units.js <<'EOF'\nimport { parseDuration } from \"@helmwright/fx-duration\";\n\n/** Parses a duration such as 90s into whole milliseconds. */\nexport function toMillis(text) {\n  return parseDuration(text);\n}\nEOF\n"
+          ]
+        }
+      }
+    ],
+    "claimsDone": false
+  },
+  {
+    "text": "app/src/units.js converts durations with @helmwright/fx-duration.",
+    "toolCalls": [],
+    "claimsDone": true
+  }
+]

@@ -16,7 +16,7 @@ import {
 } from "./run/run.ts";
 
 const USAGE =
-  "usage: cli.ts run <task.json> --state-dir <dir> [--class <class> --reason <text>]\n" +
+  "usage: cli.ts run <task.json> --state-dir <dir> [--class <class> --reason <text>] [--after <decisionId>]\n" +
   "       cli.ts replay <runId> --state-dir <dir>\n" +
   "       cli.ts reap --state-dir <dir>\n" +
   "       cli.ts inspect --state-dir <dir> [--from-seq <n>] [--limit <1-1000>]\n" +
@@ -96,6 +96,7 @@ function command(args: readonly string[]) {
         reason: { type: "string" },
         "from-seq": { type: "string" },
         limit: { type: "string" },
+        after: { type: "string" },
       },
     });
   } catch (error) {
@@ -116,13 +117,23 @@ function command(args: readonly string[]) {
   if (to !== undefined && name !== "run") {
     throw new UsageError("--class is for run only");
   }
-  const override =
+  const classOverride =
     to === undefined || reason === undefined
       ? {}
       : { intakeOverride: { to, reason } };
+  const override = {
+    ...classOverride,
+    ...(parsed.values.after === undefined
+      ? {}
+      : { after: parsed.values.after }),
+  };
   const { "from-seq": from, limit } = parsed.values;
   if ((from ?? limit) !== undefined && name !== "inspect") {
     throw new UsageError("--from-seq and --limit are for inspect only");
+  }
+  const { after } = parsed.values;
+  if (after !== undefined && name !== "run") {
+    throw new UsageError("--after is for run only");
   }
   const page = {
     fromSeq: count(from, 0),
@@ -295,6 +306,15 @@ async function main(args: readonly string[]): Promise<number> {
     if (provisional.length > 0) {
       const refs = displayText(provisional.join(", "));
       console.error("helmwright: provisional ref: " + refs);
+    }
+    // PB-2b: the run's work is provisional until every decision it waits on is resolved.
+    const [waits] = end.provisionalOn;
+    if (waits !== undefined) {
+      const chain = displayText(end.provisionalOn.join(", "));
+      const first = displayText(waits);
+      console.error(
+        `helmwright: provisional until ${first} is resolved (chain: ${chain})`,
+      );
     }
     for (const warning of end.warnings) {
       // Already escaped by the run.
