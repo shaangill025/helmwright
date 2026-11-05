@@ -3658,6 +3658,8 @@ describe("provisional branch (e2e, PB-1)", () => {
         "seq 38: attached decision has no earlier provisional.opened",
         "seq 2: run.started base commit is not the attached commit",
         "seq 39: floor.checked base commit is not the attached commit",
+        // The attached row still proves a post-PB-1 log, so the missing fork is found.
+        "seq 37: owner decision without provisional.opened or provisional.refused",
       ]);
     },
   );

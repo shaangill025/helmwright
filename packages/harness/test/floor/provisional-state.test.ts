@@ -181,6 +181,29 @@ describe("provisionalState (PB-2a)", () => {
     expect(looped.chain("run-1")).toEqual(["decision-2", "decision-1"]);
   });
 
+  it("keeps the first provisional.opened, and a refused fork stays refused (F2)", () => {
+    seq = 0;
+    const state = provisionalState([
+      started("run-1"),
+      event("run-1", "decision.opened", owner("decision-1")),
+      event("run-1", "provisional.opened", opened("decision-1", "c")),
+      event("run-1", "provisional.opened", opened("decision-1", "e")),
+      event("run-1", "decision.opened", owner("decision-r")),
+      event("run-1", "provisional.refused", {
+        kind: "provisional.refused",
+        decisionId: "decision-r",
+        reason: "cap",
+      }),
+      event("run-1", "provisional.opened", opened("decision-r", "f")),
+    ]);
+    expect(state.decisions.get("decision-1")).toMatchObject({
+      fork: "opened",
+      commit: oid("c"),
+    });
+    expect(state.decisions.get("decision-r")?.fork).toBe("refused");
+    expect(state.decisions.get("decision-r")?.commit).toBeUndefined();
+  });
+
   it("counts an attach to an unknown decision as unresolved", () => {
     seq = 0;
     const state = provisionalState([

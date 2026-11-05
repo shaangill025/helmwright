@@ -35,6 +35,12 @@ const PROVISIONAL_TYPES = new Set([
   "provisional.opened",
   "provisional.refused",
 ]);
+/** Every provisional type: a log holding one is from a build at or after PB-1. */
+const ANY_PROVISIONAL_TYPES = new Set([
+  ...PROVISIONAL_TYPES,
+  "provisional.attached",
+  "provisional.resolved",
+]);
 
 /** The provisional ref of `decisionId`. @throws Error for a bad ID */
 export function provisionalRef(decisionId: string): string {
@@ -390,7 +396,7 @@ export function provisionalFaults(
   }
   if (checked?.payload["verdict"] === "pass") {
     const legacy = !history.some(
-      (h) => PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
+      (h) => ANY_PROVISIONAL_TYPES.has(h.type) && h.seq < checked.seq,
     );
     // Owner ruling 2026-10-17: only a run that ended completed forks, so a fork is due
     // only for a `completed` terminal. A run failed by PROVISIONAL_REFUSED or

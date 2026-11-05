@@ -106,6 +106,18 @@ describe("provisionalFaults (PB-1, Q68a)", () => {
     expect(provisionalFaults(missing, earlier)).toEqual([
       expect.stringContaining("owner decision without provisional.opened"),
     ]);
+    // F1 (PB-2a review 2): any provisional type, even attached, proves a post-PB-1 log.
+    const onlyAttached = [
+      event(0, "provisional.attached", {
+        kind: "provisional.attached",
+        decisionId: "decision-other",
+        runId: "run-0",
+        commit: base,
+      }),
+    ];
+    expect(provisionalFaults(missing, onlyAttached)).toEqual([
+      expect.stringContaining("owner decision without provisional.opened"),
+    ]);
     // B1 (owner ruling 2026-10-17): a run that did not end completed is due no fork.
     const ended = (terminal: object) => [
       ...missing.slice(0, 2),
