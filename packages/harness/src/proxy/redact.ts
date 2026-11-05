@@ -11,7 +11,15 @@ export interface ProxyLogEntry {
   status: number;
   latencyMs: number;
   requestSha256: string;
+  /** A fixed marker for a rare case; any other value is dropped. */
+  event?: ProxyLogEvent;
 }
+
+export type ProxyLogEvent = "handler_error" | "server_tool_use";
+const EVENTS: ReadonlySet<unknown> = new Set<ProxyLogEvent>([
+  "handler_error",
+  "server_tool_use",
+]);
 
 const KEYS = [
   "runId",
@@ -21,6 +29,7 @@ const KEYS = [
   "status",
   "latencyMs",
   "requestSha256",
+  "event",
 ] as const;
 
 /** Copy only the allowlisted fields of `raw` (tokens keeps only input and output). */
@@ -36,6 +45,8 @@ export function logEntry(
         input: Number(t?.input ?? 0),
         output: Number(t?.output ?? 0),
       };
+    } else if (key === "event") {
+      if (EVENTS.has(raw["event"])) picked["event"] = raw["event"];
     } else if (Object.hasOwn(raw, key)) {
       picked[key] = raw[key];
     }

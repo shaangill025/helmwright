@@ -871,5 +871,19 @@
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
     "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/proxy/server.ts",
+    "facet": "refusals",
+    "ring": 0,
+    "assumption": "After PRICES_VERIFIED flips, the only remote upstream is https://api.anthropic.com (exact host, port 443 or none, no userinfo, path /, no query); loopback test upstreams stay legal. A request is refused with 400 before any hold when bytes-as-tokens cannot bound its cost: a tools[] entry with a type other than custom, a content source.type other than base64 or text, mcp_servers, container, service_tier, or a cache_control.ttl other than absent or 5m (a 1h write bills 2x). A 2xx reply with usage.server_tool_use settles at no less than the worst case and logs event server_tool_use; a handler throw logs one line with event handler_error. Allowing any of these needs its own pricing and test.",
+    "evidence": [
+      "decisions Spend",
+      "packages/harness/test/proxy/server-refusals.test.ts",
+      "packages/harness/test/proxy/server-upstream.test.ts"
+    ],
+    "added": "2026-11-05",
+    "lastReviewed": "2026-11-05",
+    "reviewTrigger": ["engine", "milestone"]
   }
 ]
