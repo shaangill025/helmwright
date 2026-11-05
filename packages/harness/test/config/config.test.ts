@@ -233,6 +233,19 @@ describe("loadRunConfig", { timeout: T }, () => {
     }
   });
 
+  it("admits the default offload threshold and refuses another without a fixture (Q69, 07 rule 1)", () => {
+    const bytes = (value: number) =>
+      file(JSON.stringify({ tools: { offloadBytes: value } }));
+    commit(bytes(16_384));
+    expect(loadRunConfig(repo).record.source).toBe("file");
+    commit(bytes(4096));
+    expect(() => loadRunConfig(repo)).toThrow(
+      "tools.offloadBytes 4096 is not admitted: no fixture (07 rule 1)",
+    );
+    commit(bytes(100));
+    expect(() => loadRunConfig(repo)).toThrow(/tools\/offloadBytes/);
+  });
+
   it("refuses an executable file", () => {
     git("update-index", "--chmod=+x", CONFIG_FILE);
     git(

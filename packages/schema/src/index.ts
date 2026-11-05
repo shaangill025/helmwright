@@ -153,6 +153,7 @@ export const CONFIG_DEFAULTS = deepFreeze({
     consequences: "signalsAndReviews",
     tutor: "justInTimeAndConceptMap",
   },
+  tools: { offloadBytes: 16_384 },
   topology: "sessionHarnessOneProcess",
 } as const satisfies HelmwrightConfig);
 

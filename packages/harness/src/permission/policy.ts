@@ -89,6 +89,11 @@ export interface PermissionRequest {
 }
 
 export interface PermissionTarget {
+  /**
+   * Exception (Q69): `offload.grep` has kind "path", but its value is the pseudo-path
+   * `offload/<id>.txt` (the id is 64 hex characters), not a resolved host path; no
+   * handler acts on it, and the handler maps the id itself.
+   */
   readonly kind: "path" | "ref" | "remote" | "setting" | "argv" | "amount";
   /** Display only: normalized (a path is its resolved host path) and escaped. */
   readonly value: string;
@@ -248,7 +253,9 @@ type Field =
   | "args"
   | "body"
   | "usd"
-  | "json";
+  | "json"
+  | "hex64"
+  | "count";
 type Spec = readonly [
   PermissionTarget["kind"],
   Readonly<Record<string, Field>>,
@@ -261,6 +268,11 @@ const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   "fs.read": ["path", { path: "text" }],
   "fs.edit": ["path", { path: "text" }],
   "fs.delete": ["path", { path: "text" }],
+  // Q69: a literal search of one offloaded output, named by its SHA-256, never a path.
+  "offload.grep": [
+    "path",
+    { id: "hex64", pattern: "text", maxMatches: "count" },
+  ],
   commit: ["ref", { ref: "ref", paths: "texts" }],
   "deps.add": ["argv", { packages: "names" }],
   "config.set": ["setting", { setting: "text", value: "json" }],
@@ -272,6 +284,9 @@ const ACTIONS: Readonly<Record<PermissionAction, Spec>> = {
   publish: ["remote", { destination: "destination" }],
   deploy: ["remote", { destination: "destination" }],
 };
+
+/** Fields an input may leave out (the broker applies their defaults). */
+const OPTIONAL_FIELDS: ReadonlySet<string> = new Set(["maxMatches"]);
 
 /** Typed actions without an M1 handler; they exist so the policy can rule on them (Q6). */
 export const PERMISSION_ONLY_ACTIONS: readonly PermissionAction[] = deepFreeze(
@@ -462,6 +477,10 @@ function isField(kind: Field, v: unknown): boolean {
       return typeof v === "number" && v > 0 && v <= MAX_CAP_USD;
     case "json":
       return v !== undefined && shallow(v, MAX_DEPTH);
+    case "hex64":
+      return typeof v === "string" && /^[0-9a-f]{64}$/.test(v);
+    case "count":
+      return Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 200;
   }
 }
 
@@ -485,8 +504,14 @@ function parseInput(
   }
   const record = input as Record<string, unknown>;
   const keys = Object.keys(record);
+  const names = Object.keys(fields);
+  const required = names.filter((name) => !OPTIONAL_FIELDS.has(name)).length;
   const valid =
-    keys.length === Object.keys(fields).length &&
+    keys.length >= required &&
+    keys.length <= names.length &&
+    names.every(
+      (name) => OPTIONAL_FIELDS.has(name) || Object.hasOwn(record, name),
+    ) &&
     keys.every((key) => {
       const kind = Object.hasOwn(fields, key) ? fields[key] : undefined;
       return kind !== undefined && isField(kind, record[key]);
@@ -663,13 +688,16 @@ function factsFor(
   const list = argv ?? fields["packages"];
   // A push shows the ref it pushes.
   const shownRef = requested === "push" ? pushBranch(ref) : ref;
+  const offloadId = requested === "offload.grep" ? fields["id"] : undefined;
   const raw =
     resolved?.real ??
-    (list === undefined
-      ? [setting, fields["destination"], shownRef]
-          .filter((s) => typeof s === "string")
-          .join(" ") || "spend.cap"
-      : canonical(list));
+    (typeof offloadId === "string"
+      ? `offload/${offloadId}.txt`
+      : list === undefined
+        ? [setting, fields["destination"], shownRef]
+            .filter((s) => typeof s === "string")
+            .join(" ") || "spend.cap"
+        : canonical(list));
   // N5: an argv is cut like a detail; any other value only if it cannot fit (N4).
   const [value, valueCut] =
     list === undefined ? fitted(raw) : bounded(raw, MAX_DETAIL);
@@ -677,13 +705,15 @@ function factsFor(
   const detail =
     requested === "config.set"
       ? canonical(fields["value"])
-      : requested === "commit"
-        ? canonical([...staged].sort())
-        : typeof capUsd === "number"
-          ? `${String(capUsd)} USD`
-          : typeof body === "string"
-            ? body
-            : undefined;
+      : requested === "offload.grep"
+        ? canonical(fields["pattern"])
+        : requested === "commit"
+          ? canonical([...staged].sort())
+          : typeof capUsd === "number"
+            ? `${String(capUsd)} USD`
+            : typeof body === "string"
+              ? body
+              : undefined;
   const [shown, cut] =
     detail === undefined ? [undefined, false] : bounded(detail, MAX_DETAIL);
   // B9b-3c: a cut target's full form, for the prompt's view; absent past the bound.
@@ -830,6 +860,7 @@ export const EGRESS: Readonly<Record<PermissionAction, boolean>> = deepFreeze({
   "fs.read": false,
   "fs.edit": false,
   "fs.delete": false,
+  "offload.grep": false,
   commit: false,
   "deps.add": false,
   "config.set": false,
