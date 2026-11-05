@@ -400,7 +400,7 @@ describe("helmwright's own config (B6-5, OQ2)", () => {
       source: "file",
       sha256: createHash("sha256").update(bytes).digest("hex"),
     });
-    expect(config.policy.version).toBe("helmwright-1");
+    expect(config.policy.version).toBe("helmwright-2");
     expect(config.policy).toEqual(
       resolvePolicy(DEFAULT_PERMISSION_POLICY, parsed.permissions.policy),
     );

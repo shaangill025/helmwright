@@ -169,38 +169,46 @@
   {
     "component": "packages/harness/src/broker/offload.ts",
     "ring": 0,
-    "assumption": "Q69: a tool output over 16384 bytes is written whole, once per content, to <stateDir>/offload/<sha256>.txt (mode 0600, outside the sandbox workspace); the engine sees a head and tail preview plus a pointer line that is a pure function of the logged tool.output.offloaded event, so replay derives the same context. The sandbox captures at most 8 MiB per stream; past it the pointer says the output was cut at source. Offload files persist outside the sandbox with the same 0600 trust as the session log; reaping and retention of offload files are deferred to M2 with Q7 retention.",
+    "assumption": "Q69: a tool output over tools.offloadBytes (default 16384, owner bounds 1024 to 65536; the broker's MAX_TOOL_OUTPUT_BYTES is CONFIG_DEFAULTS.tools.offloadBytes until a fixture PR wires the loaded value, M2) is written whole, once per content, to <stateDir>/offload/<sha256>.txt (0600, outside the sandbox workspace); the engine sees a head, a tail and a pointer line that is a pure function of the logged event. The sandbox captures at most 8 MiB per stream. Retention is deferred to M2 with Q7. offload.grep: a literal search (no regex), at most 200 matches, a 512-byte window around the first match of a long line, files over 2 x 8 MiB + 16 refused. Any id in the shared offload dir is readable by any run of that state dir: an id is the sha256 of the content, so grep is a confirmation oracle only.",
     "evidence": [
       "decisions Q69",
       "packages/harness/test/broker/offload.test.ts",
       "packages/harness/test/broker/broker.test.ts",
-      "packages/harness/test/e2e/offload.test.ts"
+      "packages/harness/test/broker/grep.test.ts",
+      "packages/harness/test/e2e/offload.test.ts",
+      "packages/schema/test/helmwright-config.test.ts"
     ],
     "added": "2026-10-16",
-    "lastReviewed": "2026-10-16",
+    "lastReviewed": "2026-11-04",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/schema/schemas/tool-event.schema.json",
     "ring": 0,
-    "assumption": "Q69: tool.output.offloaded records the call, the SHA-256 and byte count of the offloaded text and whether the sandbox cut it at source; kind equals the event type, which the writer checks.",
-    "evidence": ["decisions Q69", "packages/harness/test/e2e/offload.test.ts"],
+    "assumption": "Q69: tool.output.offloaded records the call, the SHA-256 and byte count of the offloaded text and whether the sandbox cut it at source; kind equals the event type, which the writer checks. The optional pointerVersion (absent means 1, the original pointer text; 2 adds the offload.grep hint) keeps the pointer a pure function of the logged event, so an old log replays with its old text.",
+    "evidence": [
+      "decisions Q69",
+      "packages/harness/test/broker/grep.test.ts",
+      "packages/harness/test/e2e/offload.test.ts"
+    ],
     "added": "2026-10-16",
-    "lastReviewed": "2026-10-16",
+    "lastReviewed": "2026-10-17",
     "reviewTrigger": ["engine", "milestone"]
   },
   {
     "component": "packages/harness/src/permission/policy.ts",
     "ring": 0,
-    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy changed (default-2), so every repo with a default-1 baseline is asked once at its next run.",
+    "assumption": "Rulings are deterministic with no model in the path: the always-ask set is checked before any rule in every governance mode, rules match in order, the first match wins and no match asks; Ring 0 paths are always-ask: a generic floor in every repository plus the project's own committed list (OQ2; helmwright's is in its helmwright.config.json). A helmwright checkout whose HEAD predates helmwright.config.json gets only the generic floor, so open branches are rebased onto B6-5 before self-hosted runs. The default policy is default-3 (Q69 adds the offload.grep rule), so every repo whose baseline is an earlier default is asked once at its next run. Exception (Q69): an offload.grep target has kind path but holds the pseudo-path offload/<id>.txt (64 hex), not a host path, so no path rule or Ring 0 path check applies to it; the handler maps the id inside <stateDir>/offload itself, and a worktree or runBranch scope never matches it (the action falls through to the next rule or the default).",
     "evidence": [
       "06 Ring 0 contents",
       "decisions Q51",
       "decisions B9 owner decisions",
-      "packages/harness/test/permission/policy.test.ts"
+      "decisions Q69",
+      "packages/harness/test/permission/policy.test.ts",
+      "packages/harness/test/broker/grep.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-07",
+    "lastReviewed": "2026-11-04",
     "reviewTrigger": ["milestone"]
   },
   {
@@ -598,7 +606,7 @@
   {
     "component": "packages/schema/schemas/helmwright-config.schema.json",
     "ring": 0,
-    "assumption": "Design 08's per-project settings fit one JSON file whose every key is optional; each setting lists its default and its 08 alternatives, a policy override can only tighten the default policy, and the hint stays at most 1024 bytes.",
+    "assumption": "Design 08's per-project settings fit one JSON file whose every key is optional; each setting lists its default and its 08 alternatives, a policy override can only tighten the default policy, and the hint stays at most 1024 bytes. tools.offloadBytes is an integer from 1024 to 65536, default 16384 (Q69); only the default is admitted until a fixture exists for another value.",
     "evidence": [
       "08 Configuration schema",
       "07 rule 1",
@@ -606,10 +614,11 @@
       "decisions Q58",
       "decisions Q53",
       "decisions Q51 owner answers",
+      "decisions Q69",
       "packages/schema/test/helmwright-config.test.ts"
     ],
     "added": "2026-10-07",
-    "lastReviewed": "2026-10-14",
+    "lastReviewed": "2026-11-04",
     "reviewTrigger": ["milestone"]
   },
   {

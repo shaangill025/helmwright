@@ -23,4 +23,8 @@ export interface ToolOutputOffloaded {
    */
   bytes: number;
   truncatedAtSource: boolean;
+  /**
+   * Which pointer text the engine saw (Q69). Absent means 1, the original text; 2 adds the hint to search the file with `offload.grep`. The pointer is a pure function of this payload, so an old log keeps its old text on replay.
+   */
+  pointerVersion?: 1 | 2;
 }

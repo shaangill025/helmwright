@@ -208,7 +208,11 @@ describe("exfiltration guard (guard 1)", () => {
   });
 
   it("has an egress entry for every action; exactly the remote six (N6)", () => {
-    const actions = ["execute", ...PERMISSION_ONLY_ACTIONS].sort();
+    const actions = [
+      "execute",
+      "offload.grep",
+      ...PERMISSION_ONLY_ACTIONS,
+    ].sort();
     expect(Object.keys(EGRESS).sort()).toEqual(actions);
     const egress = actions.filter((a) => EGRESS[a as keyof typeof EGRESS]);
     expect(egress).toEqual([

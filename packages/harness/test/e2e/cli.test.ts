@@ -444,7 +444,7 @@ function expectReplayMatches(runId: string, events: readonly Event[]): void {
   // The digest covers the tools offered (logged in run.started) and the context.
   const started = events.find((e) => e.type === "run.started");
   const tools = started?.payload["tools"] as ToolSpec[] | undefined;
-  expect(tools?.map((t) => t.name)).toEqual(["execute"]);
+  expect(tools?.map((t) => t.name)).toEqual(["execute", "offload.grep"]);
   const messages = deriveMessages(events, runId);
   expect(recorded).toBe(contextDigest(messages, tools ?? []));
   // B5-4b: the whole log's projections match, and the Task and Run relations hold.
@@ -488,7 +488,7 @@ describe("helmwright CLI (e2e)", () => {
         ...["message.appended", "floor.signalled", "floor.checked"],
         "run.terminated",
       ]);
-      expect(events[0]?.payload["policyVersion"]).toBe("default-2");
+      expect(events[0]?.payload["policyVersion"]).toBe("default-3");
       // Allowed in the worktree without asking: one ruling, then the effect.
       const evaluated = events.find((e) => e.type === "permission.evaluated");
       expect(evaluated?.payload).toMatchObject({
@@ -498,7 +498,7 @@ describe("helmwright CLI (e2e)", () => {
         tier: "allow",
         guard: "policy",
         ruleId: "execute.worktree",
-        policyVersion: "default-2",
+        policyVersion: "default-3",
       });
       const called = events.find((e) => e.type === "loop.tool.called");
       expect(called?.payload).toMatchObject({ name: "execute", status: "ok" });
@@ -1652,7 +1652,7 @@ describe("helmwright.config.json (e2e)", () => {
       const started = startedOf(first.out.runId);
       expect(started).toMatchObject({
         baseCommit: base,
-        policyVersion: "default-2",
+        policyVersion: "default-3",
         config: { source: "default" },
       });
       const config = started?.["config"] as Record<string, string>;
@@ -1678,7 +1678,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(second.status, second.stderr).toBe(0);
       expect(startedOf(second.out.runId)).toMatchObject({
         baseCommit: git("-C", repo, "rev-parse", "HEAD").trim(),
-        policyVersion: "default-2",
+        policyVersion: "default-3",
         config: {
           source: "file",
           sha256: sha256(text),
@@ -1968,7 +1968,7 @@ describe("helmwright.config.json (e2e)", () => {
       expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
       const events = expectWellFormedLog(out.runId);
       expect(events[0]?.payload).toMatchObject({
-        policyVersion: "helmwright-1",
+        policyVersion: "helmwright-2",
         config: { source: "file", sha256: sha256(bytes) },
       });
       expect(
@@ -1979,7 +1979,7 @@ describe("helmwright.config.json (e2e)", () => {
         {
           ...{ toolCallId: RING0_ID, action: "config.set", tier: "alwaysAsk" },
           ...{ ruleId: "always-ask.ring0-setting" },
-          policyVersion: "helmwright-1",
+          policyVersion: "helmwright-2",
         },
         { toolCallId: RING0_ID, presence: "none" },
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
@@ -2037,7 +2037,138 @@ describe("helmwright.config.json (e2e)", () => {
       expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
         {
           ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
-          ...{ policyVersion: "default-2", target: { value: "permissions" } },
+          ...{ policyVersion: "default-3", target: { value: "permissions" } },
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
+    },
+  );
+
+  it(
+    "asks once in a repo whose latest baseline is a default-2 one (Q69, S4)",
+    { timeout: T },
+    () => {
+      // The default-2 policy, frozen here as data (it has no offload.grep rule).
+      // It is a literal, not derived from DEFAULT_PERMISSION_POLICY, so a later
+      // change to the default cannot change what this baseline stands for.
+      const rule = (
+        id: string,
+        action: string,
+        scope: string,
+        tier: string,
+      ) => {
+        return { id, action, scope, tier };
+      };
+      const policy = {
+        ...{ version: "default-2", governance: "tiered" },
+        rules: [
+          rule("execute.worktree", "execute", "worktree", "allow"),
+          rule("fs.read.worktree", "fs.read", "worktree", "allow"),
+          rule("fs.edit.worktree", "fs.edit", "worktree", "allow"),
+          rule("fs.delete.worktree", "fs.delete", "worktree", "allow"),
+          rule("fs.read.outside", "fs.read", "any", "ask"),
+          rule("fs.edit.outside", "fs.edit", "any", "ask"),
+          rule("commit.run-branch", "commit", "runBranch", "allow"),
+          rule("deps.add", "deps.add", "any", "ask"),
+        ],
+        alwaysAsk: ["push", "pr.open", "pr.merge", "comment", "publish"].concat(
+          ["deploy", "spend.raiseCap"],
+        ),
+        ring0Paths: [
+          "evals/**",
+          ".github/**",
+          "eslint.config.*",
+          "tsconfig*.json",
+        ]
+          .concat(["vitest.config.*", ".prettierrc*", "package.json"])
+          .concat(["pnpm-workspace.yaml", ".node-version"])
+          .concat(["helmwright.config.json", ".npmrc", ".pnpmfile.cjs"]),
+        ring0Settings: ["intake.classification", "permissions"]
+          .concat([
+            "harnessLoop.selfImprovementModel",
+            "harnessLoop.codeEvolution",
+          ])
+          .concat(["harnessLoop.evalMix", "security.sensorSet"])
+          .concat(["ontology.objectModel", "spend.cap"]),
+      };
+      const scratch = join(tmp, "scratch");
+      git("init", "--quiet", scratch);
+      writeFileSync(
+        join(scratch, CONFIG),
+        JSON.stringify({ permissions: { policy } }),
+      );
+      git("-C", scratch, "add", CONFIG);
+      git(
+        ...["-C", scratch, "-c", "user.name=e2e", "-c", "user.email=e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "old"],
+      );
+      const before = loadRunConfig(scratch);
+      expect(runTask("write-file.turns.json").status).toBe(0);
+      const ring0Sha256 = before.record.ring0Sha256;
+      rawAppend("run.started", { config: { ring0Sha256 } });
+      rawAppend("config.accepted", {
+        ...{ repo: join(repo, ".git"), ring0Sha256, how: "default" },
+        settings: ring0SettingDigests(before.ring0),
+      });
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      // Only `permissions` changed: it is the first changed setting, the ask's target.
+      expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
+          ...{ tier: "alwaysAsk", target: { value: "permissions" } },
+        },
+        { toolCallId: RING0_ID, presence: "none" },
+        { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },
+      ]);
+    },
+  );
+
+  it(
+    "asks once in a checkout whose latest baseline is a helmwright-1 one (Q69, S5)",
+    { timeout: T },
+    () => {
+      // helmwright's own committed policy as it was at helmwright-1: no offload.grep rule.
+      const own = fileURLToPath(
+        new URL("../../../../helmwright.config.json", import.meta.url),
+      );
+      const config = JSON.parse(readFileSync(own, "utf8")) as {
+        permissions: { policy: { version: string; rules: { id: string }[] } };
+      };
+      const { policy } = config.permissions;
+      policy.version = "helmwright-1";
+      policy.rules = policy.rules.filter((r) => r.id !== "offload.grep.run");
+      const scratch = join(tmp, "scratch");
+      git("init", "--quiet", scratch);
+      writeFileSync(join(scratch, CONFIG), JSON.stringify(config));
+      git("-C", scratch, "add", CONFIG);
+      git(
+        ...["-C", scratch, "-c", "user.name=e2e", "-c", "user.email=e@x.com"],
+        ...["-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "old"],
+      );
+      const before = loadRunConfig(scratch);
+      expect(runTask("write-file.turns.json").status).toBe(0);
+      const ring0Sha256 = before.record.ring0Sha256;
+      rawAppend("run.started", { config: { ring0Sha256 } });
+      rawAppend("config.accepted", {
+        ...{ repo: join(repo, ".git"), ring0Sha256, how: "default" },
+        settings: ring0SettingDigests(before.ring0),
+      });
+      // The repo now commits the current helmwright policy: one ask, for `permissions`.
+      commitConfig((path) => {
+        writeFileSync(path, readFileSync(own));
+      });
+      const { status, stderr, out } = runTask("write-file.turns.json");
+      expect(status, stderr).toBe(1);
+      expect(out.terminal).toEqual({ kind: "failed", error: NOT_APPROVED });
+      const events = logEvents().filter((e) => e.runId === out.runId);
+      expect(events.slice(2, 5).map((e) => e.payload)).toMatchObject([
+        {
+          ...{ toolCallId: RING0_ID, ruleId: "always-ask.ring0-setting" },
+          ...{ tier: "alwaysAsk", target: { value: "permissions" } },
         },
         { toolCallId: RING0_ID, presence: "none" },
         { toolCallId: RING0_ID, answer: "denied", by: "noPresence" },

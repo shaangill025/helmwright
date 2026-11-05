@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
@@ -17,6 +18,15 @@ import { validateToolEvent, type Event } from "@helmwright/schema";
  */
 export const OFFLOAD_SOURCE_CEILING_BYTES = 8_388_608;
 
+/**
+ * The most bytes of an offload file that replay or `offload.grep` reads: stdout and
+ * stderr, each cut at OFFLOAD_SOURCE_CEILING_BYTES, joined by a short marker line.
+ * The 16 bytes of slack: the marker "\n[stderr]\n" is 10 bytes; a stream cut in the
+ * middle of a character decodes to U+FFFD (3 bytes), so each stream can grow by up
+ * to 2 bytes. 10 + 2 + 2 = 14 <= 16.
+ */
+export const MAX_OFFLOAD_FILE_BYTES = 2 * OFFLOAD_SOURCE_CEILING_BYTES + 16;
+
 /** What the log records of one offload; the pointer line is a function of it alone. */
 export interface OffloadFact {
   /** Lowercase hex SHA-256 of the offloaded text (UTF-8). */
@@ -24,6 +34,11 @@ export interface OffloadFact {
   readonly bytes: number;
   /** The sandbox hit OFFLOAD_SOURCE_CEILING_BYTES, so the file is itself cut. */
   readonly truncatedAtSource: boolean;
+  /**
+   * The logged `pointerVersion`: absent or 1 is the original text; 2 adds the
+   * `offload.grep` hint. A field of the event, so an old log replays with its old text.
+   */
+  readonly pointerVersion?: 1 | 2 | undefined;
 }
 
 /** Sets `mode` on `path` if it exists with any group/other permission bit. */
@@ -96,7 +111,17 @@ export function offloadFaults(events: readonly Event[], dir: string): string[] {
     }
     let data: Buffer;
     try {
-      data = readFileSync(join(dir, sha256 + ".txt"));
+      const path = join(dir, sha256 + ".txt");
+      const info = lstatSync(path);
+      if (!info.isFile()) {
+        fault("file is not a regular file");
+        continue;
+      }
+      if (info.size > MAX_OFFLOAD_FILE_BYTES) {
+        fault("file is too large to check");
+        continue;
+      }
+      data = readFileSync(path);
     } catch {
       fault("file is missing");
       continue;
@@ -111,11 +136,13 @@ export function offloadFaults(events: readonly Event[], dir: string): string[] {
 
 /** The pointer line of a tool result, built from the logged facts alone (Q68a). */
 export function pointerLine(fact: OffloadFact): string {
-  const { sha256, bytes, truncatedAtSource } = fact;
+  const { sha256, bytes, truncatedAtSource, pointerVersion } = fact;
   const cut = truncatedAtSource
     ? `, truncated at source: only the first ${String(OFFLOAD_SOURCE_CEILING_BYTES)} bytes of each stream were captured`
     : "";
-  return `[output offloaded: ${String(bytes)} bytes${cut}, sha256 ${sha256}]`;
+  const hint =
+    pointerVersion === 2 ? `; search it with offload.grep id ${sha256}` : "";
+  return `[output offloaded: ${String(bytes)} bytes${cut}, sha256 ${sha256}${hint}]`;
 }
 
 const isContinuation = (byte: number | undefined): boolean =>
@@ -142,4 +169,115 @@ export function withPreview(
   const head = bytes.subarray(0, headEnd).toString("utf8");
   const tail = bytes.subarray(tailStart).toString("utf8");
   return [head, tail, pointer].join("\n");
+}
+
+/** Q69: the most matches `offload.grep` returns, and how many it returns by default. */
+export const GREP_MAX_MATCHES = 200;
+export const GREP_DEFAULT_MATCHES = 50;
+/** The most bytes of one matching line shown (512 bytes plus a marker at each cut end). */
+const GREP_LINE_BYTES = 512;
+/** The bytes of a long line shown before its first match. */
+const GREP_CONTEXT_BYTES = 128;
+/** Room kept for the closing count line. */
+const GREP_FOOTER_BYTES = 96;
+const HEX64 = /^[0-9a-f]{64}$/;
+
+/** What `grepOffload` returns: the broker maps it onto a tool result. */
+export interface GrepResult {
+  readonly status: "ok" | "error" | "denied";
+  readonly output: string;
+}
+
+/**
+ * `line` if it fits `max` bytes; else a window of at most `max` bytes that starts
+ * about GREP_CONTEXT_BYTES before the first `pattern` (so the start of the match shows), both
+ * ends on character edges, each cut end marked with `…`.
+ */
+const windowAround = (line: string, pattern: string, max: number): string => {
+  const bytes = Buffer.from(line, "utf8");
+  if (bytes.length <= max) return line;
+  const at = Buffer.byteLength(line.slice(0, line.indexOf(pattern)));
+  let start = Math.max(0, at - GREP_CONTEXT_BYTES);
+  while (start < bytes.length && isContinuation(bytes[start])) start += 1;
+  let end = Math.min(bytes.length, start + max);
+  while (end > start && isContinuation(bytes[end])) end -= 1;
+  const text = bytes.subarray(start, end).toString("utf8");
+  return (start > 0 ? "…" : "") + text + (end < bytes.length ? "…" : "");
+};
+
+/**
+ * Q69: the lines of the offloaded output `id` that contain `pattern` as a literal
+ * string (no regex, so no ReDoS), as `<line number>: <text>`, at most `maxMatches`
+ * of them and `maxBytes` bytes in all (a long line is shown as a GREP_LINE_BYTES window around its first match), then a
+ * count line. The file is `<dir>/<id>.txt` only: `id` is 64 lowercase hex characters
+ * or the call is denied, so no path is ever accepted. A file that no longer hashes to
+ * its id is refused, as `offloadFaults` would flag it.
+ */
+export function grepOffload(
+  dir: string,
+  input: {
+    readonly id: string;
+    readonly pattern: string;
+    readonly maxMatches?: number | undefined;
+  },
+  maxBytes: number,
+): GrepResult {
+  const { id, pattern, maxMatches = GREP_DEFAULT_MATCHES } = input;
+  if (
+    !HEX64.test(id) ||
+    pattern === "" ||
+    !Number.isInteger(maxMatches) ||
+    maxMatches < 1 ||
+    maxMatches > GREP_MAX_MATCHES
+  ) {
+    return { status: "denied", output: "invalid input for offload.grep" };
+  }
+  let data: Buffer;
+  try {
+    const path = join(dir, id + ".txt");
+    const info = lstatSync(path);
+    if (!info.isFile()) {
+      return {
+        status: "error",
+        output: "offloaded output is not a regular file",
+      };
+    }
+    if (info.size > MAX_OFFLOAD_FILE_BYTES) {
+      return {
+        status: "error",
+        output: "offloaded file is too large to search",
+      };
+    }
+    data = readFileSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { status: "error", output: "no offloaded output with that id" };
+    }
+    return { status: "error", output: "offloaded output could not be read" };
+  }
+  if (createHash("sha256").update(data).digest("hex") !== id) {
+    return { status: "error", output: "offloaded file does not match its id" };
+  }
+  const budget = maxBytes - GREP_FOOTER_BYTES;
+  const lines: string[] = [];
+  let used = 0;
+  let total = 0;
+  let number = 0;
+  let full = false;
+  for (const line of data.toString("utf8").split("\n")) {
+    number += 1;
+    if (!line.includes(pattern)) continue;
+    total += 1;
+    if (full || lines.length >= maxMatches) continue;
+    const shown = `${String(number)}: ${windowAround(line, pattern, GREP_LINE_BYTES)}`;
+    const size = Buffer.byteLength(shown) + 1;
+    if (used + size > budget) {
+      full = true;
+      continue;
+    }
+    lines.push(shown);
+    used += size;
+  }
+  const footer = `[${String(lines.length)} of ${String(total)} matches shown]`;
+  return { status: "ok", output: [...lines, footer].join("\n") };
 }

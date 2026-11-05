@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import {
+  CONFIG_DEFAULTS,
   validateToolEvent,
   type PermissionPolicy,
   type ToolOutputOffloaded,
 } from "@helmwright/schema";
 import {
+  GREP_DEFAULT_MATCHES,
+  GREP_MAX_MATCHES,
   OFFLOAD_SOURCE_CEILING_BYTES,
+  grepOffload,
   offload,
   pointerLine,
   withPreview,
@@ -155,7 +159,7 @@ type Ruled =
 /** Wall-clock bound on one `execute` (the loop's signal may end it sooner). */
 export const EXECUTE_TIMEOUT_MS = 120_000;
 /** Q69: the tool result text shows at most this much of an output (head and tail), plus a pointer line. */
-export const MAX_TOOL_OUTPUT_BYTES = 16_384;
+export const MAX_TOOL_OUTPUT_BYTES = CONFIG_DEFAULTS.tools.offloadBytes;
 
 const denied = (output: string): ToolResult => ({ status: "denied", output });
 /** S6: a sandbox not confirmed removed may still touch the worktree. */
@@ -256,6 +260,7 @@ const execute: Action = {
         sha256,
         bytes,
         truncatedAtSource,
+        pointerVersion: 2,
       };
       if (!validateToolEvent(payload)) {
         throw new Error("tool.output.offloaded cannot be logged");
@@ -269,12 +274,36 @@ const execute: Action = {
         context.halt(PERMISSION_LOG_FAILED);
         throw error;
       }
-      return pointerLine({ sha256, bytes, truncatedAtSource });
+      return pointerLine({ ...payload });
     });
   },
 };
 
-const ACTIONS = new Map<string, Action>([[execute.spec.name, execute]]);
+const offloadGrep: Action = {
+  spec: {
+    name: "offload.grep",
+    description: `Searches an offloaded tool output for a literal string (not a regex). Input: { "id": "<64 hex from the pointer>", "pattern": "text", "maxMatches": 1-${String(GREP_MAX_MATCHES)}, default ${String(GREP_DEFAULT_MATCHES)} }`,
+  },
+  handle(input, context) {
+    const { id, pattern, maxMatches } = input;
+    const valid =
+      typeof id === "string" &&
+      typeof pattern === "string" &&
+      (maxMatches === undefined || typeof maxMatches === "number");
+    if (!valid)
+      return Promise.resolve(denied("invalid input for offload.grep"));
+    const found = grepOffload(
+      context.offloadDir,
+      { id, pattern, maxMatches },
+      MAX_TOOL_OUTPUT_BYTES,
+    );
+    return Promise.resolve(found);
+  },
+};
+
+const ACTIONS = new Map<string, Action>(
+  [execute, offloadGrep].map((a) => [a.spec.name, a]),
+);
 /** The tools offered to the engine; other typed actions are permission-only (Q6). */
 export const BROKER_TOOLS: readonly ToolSpec[] = [...ACTIONS.values()].map(
   (a) => a.spec,

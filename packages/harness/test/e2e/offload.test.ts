@@ -86,8 +86,15 @@ function runScript(script: string, limits: object = LIMITS): string {
     name: "execute",
     input: { argv: ["sh", "-c", script] },
   };
+  return runCalls([[call]], limits);
+}
+
+/** Runs one scripted turn per entry of `batches`, then done; returns the run's ID. */
+function runCalls(batches: object[][], limits: object = LIMITS): string {
   const turns = [
-    { text: "printing", toolCalls: [call], claimsDone: false },
+    ...batches.map((toolCalls) => ({
+      ...{ text: "acting", toolCalls, claimsDone: false },
+    })),
     { text: "done", toolCalls: [], claimsDone: true },
   ];
   writeFileSync(join(tmp, "turns.json"), JSON.stringify(turns));
@@ -128,6 +135,7 @@ describe("eager offload (e2e, Q69)", () => {
         sha256: sha,
         bytes: Buffer.byteLength(FULL),
         truncatedAtSource: false,
+        pointerVersion: 2,
       });
       const file = join(stateDir, "offload", sha + ".txt");
       expect(readFileSync(file, "utf8")).toBe(FULL);
@@ -136,11 +144,58 @@ describe("eager offload (e2e, Q69)", () => {
       // The pointer in the logged tool result is built from the logged event alone.
       const results = JSON.stringify(deriveMessages(all, runId));
       const fact = { sha256: sha, bytes: Buffer.byteLength(FULL) };
-      expect(results).toContain(
-        pointerLine({ ...fact, truncatedAtSource: false }),
-      );
+      const pointer = pointerLine({
+        ...{ ...fact, truncatedAtSource: false, pointerVersion: 2 },
+      });
+      expect(results).toContain(pointer);
+      expect(pointer).toContain(`search it with offload.grep id ${sha}`);
       expect(results).not.toContain("[output truncated]");
 
+      const replay = cli("replay", runId, "--state-dir", stateDir);
+      expect(replay.status, replay.stderr).toBe(0);
+      expect(JSON.parse(replay.stdout)).toMatchObject({
+        match: true,
+        permissionFaults: [],
+      });
+    },
+  );
+
+  it(
+    "retrieves a match from the offloaded output with offload.grep",
+    { timeout: T },
+    () => {
+      const full = FULL + "NEEDLE-line has $pecial (chars)\n";
+      const sha = createHash("sha256").update(full).digest("hex");
+      const print = {
+        id: "call-1",
+        name: "execute",
+        input: {
+          argv: [
+            ...["sh", "-c"],
+            `${BIG}; echo 'NEEDLE-line has $pecial (chars)'`,
+          ],
+        },
+      };
+      const search = {
+        id: "call-2",
+        name: "offload.grep",
+        input: { id: sha, pattern: "$pecial (chars)", maxMatches: 5 },
+      };
+      const runId = runCalls([[print], [search]]);
+      const all = events().filter((e) => e.runId === runId);
+      expectFlowDeclared(all);
+      const ruled = all.filter((e) => e.type === "permission.evaluated");
+      expect(ruled.map((e) => e.payload["action"])).toEqual([
+        "execute",
+        "offload.grep",
+      ]);
+      expect(ruled[1]?.payload).toMatchObject({ tier: "allow" });
+      const tools = deriveMessages(all, runId).flatMap((m) =>
+        m.role === "tool" ? [[m.status, m.text]] : [],
+      );
+      expect(tools[1]?.[0]).toBe("ok");
+      expect(tools[1]?.[1]).toContain("5001: NEEDLE-line has $pecial (chars)");
+      expect(tools[1]?.[1]).toContain("1 of 1 matches shown");
       const replay = cli("replay", runId, "--state-dir", stateDir);
       expect(replay.status, replay.stderr).toBe(0);
       expect(JSON.parse(replay.stdout)).toMatchObject({

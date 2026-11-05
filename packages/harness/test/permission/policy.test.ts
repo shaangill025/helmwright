@@ -192,8 +192,8 @@ describe("evaluate with the default policy", () => {
     ["execute", x("sh", "-c", "npm i x"), "ask", "deps.add"],
     ["deps.add", { packages: ["left-pad"] }, "ask", "deps.add"],
     ["fs.read", p("src/a.ts"), "allow", "fs.read.worktree"],
-    ["offload.grep", grepIn("a".repeat(64)), "ask", "default.ask"],
-    ["offload.grep", grepIn("a".repeat(64), 200), "ask", "default.ask"],
+    ["offload.grep", grepIn("a".repeat(64)), "allow", "offload.grep.run"],
+    ["offload.grep", grepIn("a".repeat(64), 200), "allow", "offload.grep.run"],
     ["fs.read", p(".github/workflows/ci.yml"), "allow", "fs.read.worktree"],
     ["fs.edit", p("/workspace/src/a.ts"), "allow", "fs.edit.worktree"],
     ["fs.delete", p("src/a.ts"), "allow", "fs.delete.worktree"],
@@ -242,6 +242,28 @@ describe("evaluate with the default policy", () => {
     ],
   ])("%s %j → %s (%s)", (action, input, tier, ruleId) => {
     expect(verdict(action, input)).toEqual({ tier, ruleId });
+  });
+
+  it("asks for offload.grep under a policy that has no offload.grep rule", () => {
+    const old = {
+      ...BASE,
+      rules: BASE.rules.filter((r) => !r.action.startsWith("offload.")),
+    };
+    expect(old.rules).toHaveLength(BASE.rules.length - 1);
+    expect(verdict("offload.grep", grepIn("a".repeat(64)), old)).toEqual({
+      tier: "ask",
+      ruleId: "default.ask",
+    });
+  });
+
+  it("refuses an offload.grep pattern over 4096 characters (the bound on its cost)", () => {
+    const at = { id: "a".repeat(64), pattern: "x".repeat(4096) };
+    expect(verdict("offload.grep", at).tier).toBe("allow");
+    const over = { id: "a".repeat(64), pattern: "x".repeat(4097) };
+    expect(verdict("offload.grep", over)).toEqual({
+      tier: "deny",
+      ruleId: "schema.invalid-input",
+    });
   });
 
   it("shows an offload.grep target by its id and pattern, never a path", () => {
@@ -491,7 +513,7 @@ describe("per-project Ring 0 paths (B6-5, OQ2)", () => {
 
   it("lists every helmwright-source glob in helmwright's own policy", () => {
     const own = helmwrightPolicy();
-    expect(own.version).toBe("helmwright-1");
+    expect(own.version).toBe("helmwright-2");
     expect(own.ring0Paths).toEqual([...BASE.ring0Paths, ...HELMWRIGHT_GLOBS]);
     expect({
       ...own,
@@ -1189,7 +1211,7 @@ describe("verdicts carry what the event writer needs (B9b-2a)", () => {
       action: "deps.add",
       requested: "execute",
       guard: "policy",
-      policyVersion: "default-2",
+      policyVersion: "default-3",
     });
   });
 
