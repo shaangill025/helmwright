@@ -15,7 +15,7 @@ import {
   usageCostMicroUsd,
   type Usage,
 } from "./ledger.ts";
-import { logEntry, type ProxyLogEntry } from "./redact.ts";
+import { logEntry, type ProxyLogEntry, type ProxyLogEvent } from "./redact.ts";
 
 export const DEFAULT_UPSTREAM = "https://api.anthropic.com";
 export const ANTHROPIC_VERSION = "2023-06-01";
@@ -30,6 +30,19 @@ const MIN_TOKEN_LENGTH = 32;
  * only names this proxy.
  */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]"]);
+
+const ANTHROPIC_HOST = "api.anthropic.com";
+
+/** The one remote upstream: exact host, https, default port, no userinfo, root path. */
+const isAnthropicOrigin = (u: URL) =>
+  u.protocol === "https:" &&
+  u.hostname === ANTHROPIC_HOST &&
+  (u.port === "" || u.port === "443") &&
+  u.username === "" &&
+  u.password === "" &&
+  u.pathname === "/" &&
+  u.search === "" &&
+  u.hash === "";
 
 const PATHS = new Set(["/v1/messages", "/v1/messages/count_tokens"]);
 /**
@@ -89,6 +102,65 @@ function send(
     ...(status === 413 ? { connection: "close" } : {}),
   });
   res.end(body);
+}
+
+const UNPRICED_KEYS = ["mcp_servers", "container", "service_tier"];
+const PRICED_SOURCES = new Set(["base64", "text"]);
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Why a body cannot be priced by the pre-flight bound, or undefined if it can.
+ * Fail-closed allowlist: a server tool, a source the API fetches (url, file), an
+ * MCP server, a container, a service tier or a non-default cache ttl all bill in
+ * ways that bytes-as-tokens does not bound. Walks the whole body (no recursion).
+ */
+export function unboundedShape(
+  body: Record<string, unknown>,
+): string | undefined {
+  for (const key of UNPRICED_KEYS) {
+    if (Object.hasOwn(body, key))
+      return `${key} is not supported by this proxy`;
+  }
+  if (Array.isArray(body["tools"])) {
+    for (const tool of body["tools"] as unknown[]) {
+      if (
+        isRecord(tool) &&
+        Object.hasOwn(tool, "type") &&
+        tool["type"] !== "custom"
+      ) {
+        return "only custom tools are supported by this proxy";
+      }
+    }
+  }
+  const stack: unknown[] = [body];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (Array.isArray(node)) {
+      // One at a time: a spread of a huge array overflows the call stack.
+      for (const item of node as unknown[]) stack.push(item);
+    } else if (isRecord(node)) {
+      const source = node["source"];
+      if (
+        (node["type"] === "image" || node["type"] === "document") &&
+        isRecord(source) &&
+        !PRICED_SOURCES.has(String(source["type"]))
+      ) {
+        return "only base64 and text content sources are supported by this proxy";
+      }
+      const cache = node["cache_control"];
+      if (
+        isRecord(cache) &&
+        Object.hasOwn(cache, "ttl") &&
+        cache["ttl"] !== "5m"
+      ) {
+        return "only the 5m cache ttl is supported by this proxy";
+      }
+      for (const value of Object.values(node)) stack.push(value);
+    }
+  }
+  return undefined;
 }
 
 class TooLarge extends Error {}
@@ -217,6 +289,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
       "refusing a non-loopback upstream: model prices are not verified (PRICES_VERIFIED)",
     );
   }
+  // After the flip the key may go to exactly one remote origin: the Anthropic API.
+  if (!LOOPBACK_HOSTS.has(base.hostname) && !isAnthropicOrigin(base)) {
+    throw new Error(
+      `refusing an upstream that is not ${ANTHROPIC_HOST} (https, port 443, no userinfo, path /)`,
+    );
+  }
   if (process.env["NODE_TLS_REJECT_UNAUTHORIZED"] === "0") {
     throw new Error(
       "refusing to start: TLS verification is disabled (NODE_TLS_REJECT_UNAUTHORIZED=0)",
@@ -281,7 +359,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     const requestSha256 = createHash("sha256").update(body).digest("hex");
     const requested = typeof parsed.model === "string" ? parsed.model : "";
     const model = priceOf(requested) === undefined ? "unpriced" : requested;
-    const record = (status: number, tokens: Usage, cost: number) => {
+    const record = (
+      status: number,
+      tokens: Usage,
+      cost: number,
+      event?: ProxyLogEvent,
+    ) => {
       log(
         logEntry({
           runId: options.runId,
@@ -294,6 +377,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
           status,
           latencyMs: Date.now() - started,
           requestSha256,
+          ...(event === undefined ? {} : { event }),
         }),
       );
     };
@@ -312,6 +396,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
         "invalid_request_error",
         "streaming is not supported by this proxy yet",
       );
+      return;
+    }
+
+    const unbounded = unboundedShape(parsed);
+    if (unbounded !== undefined) {
+      reject(400, "invalid_request_error", unbounded);
       return;
     }
 
@@ -406,6 +496,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
 
     let usage: Usage = {};
     let cost = 0;
+    let event: ProxyLogEvent | undefined;
     if (reservation !== undefined) {
       const ok = upstream.status >= 200 && upstream.status < 300;
       if (ok) {
@@ -423,6 +514,13 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
           usage.output_tokens === undefined
         )
           cost = worstCase;
+        // A server tool (web search, ...) bills a fee that the token usage does
+        // not show, so the call is settled at the token cost plus the worst
+        // case: never under the bill.
+        if ((usage as { server_tool_use?: unknown }).server_tool_use != null) {
+          cost += worstCase;
+          event = "server_tool_use";
+        }
       }
       // Settle the actual cost, even above the hold: it was spent.
       if (!settleOrFail(reservation, cost, upstream.status, usage)) return;
@@ -432,7 +530,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
       send(res, 502, "api_error", "upstream redirect refused");
       return;
     }
-    record(upstream.status, usage, cost);
+    record(upstream.status, usage, cost, event);
     res.writeHead(upstream.status, {
       ...upstream.headers,
       "content-length": upstream.body.length,
@@ -441,7 +539,26 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   };
 
   const server = createServer((req, res) => {
+    const started = Date.now();
     handle(req, res).catch(() => {
+      // One allowlisted line, so a failing ledger is visible; never the error
+      // text, which could echo a body, a header or the key.
+      try {
+        log(
+          logEntry({
+            runId: options.runId,
+            model: "unpriced",
+            tokens: {},
+            cost: 0,
+            status: 500,
+            latencyMs: Date.now() - started,
+            requestSha256: "none",
+            event: "handler_error",
+          }),
+        );
+      } catch {
+        // A failing log sink must not stop the 500 below.
+      }
       if (!res.headersSent) send(res, 500, "api_error", "proxy error");
       else res.destroy();
     });

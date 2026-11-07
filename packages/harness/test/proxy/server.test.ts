@@ -222,7 +222,7 @@ describe("startProxy refusals", () => {
       await expect(
         startProxy({ ...base(), upstreamBaseUrl: url }),
         url,
-      ).rejects.toThrow(/loopback/);
+      ).rejects.toThrow(/plain http/);
     }
     for (const url of ["http://127.0.0.1:9", "http://[::1]:9"]) {
       const proxy = await startProxy({ ...base(), upstreamBaseUrl: url });
