@@ -1,7 +1,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
-import { preflightCostMicroUsd } from "../../src/proxy/ledger.ts";
+import {
+  preflightCostMicroUsd,
+  usageCostMicroUsd,
+} from "../../src/proxy/ledger.ts";
 import { FAKE_KEY, MODEL, TOKEN, useHarness } from "./support/fake-upstream.ts";
 
 const h = useHarness();
@@ -36,6 +39,17 @@ const REFUSED: Record<string, string> = {
     content: [
       { type: "image", source: { type: "url", url: "https://example.com/a" } },
     ],
+  }),
+  // Kept refused (fail closed): the API prices a "content" document source by
+  // its inner blocks, and this proxy has not verified that bound.
+  "document with a content source": withContent({
+    type: "document",
+    source: { type: "content", content: "hi" },
+  }),
+  "null ttl": withContent({
+    type: "text",
+    text: "m",
+    cache_control: { type: "ephemeral", ttl: null },
   }),
   mcp_servers: ask({ mcp_servers: [] }),
   container: ask({ container: "c1" }),
@@ -79,7 +93,51 @@ describe("bodies the pre-flight bound cannot cover", () => {
     expect((await h.call(proxy, { body })).status).toBe(200);
   });
 
-  it("settles a reply with server_tool_use at the hold and logs it", async () => {
+  it("allows a field named source that is not an image or document block", async () => {
+    const proxy = await h.start();
+    const bodies = [
+      ask({
+        tools: [
+          {
+            name: "t",
+            input_schema: {
+              type: "object",
+              properties: { source: { type: "string" } },
+            },
+          },
+        ],
+      }),
+      withContent({
+        type: "tool_use",
+        id: "t1",
+        name: "git",
+        input: { source: { type: "git", url: "https://example.com/r" } },
+      }),
+    ];
+    for (const body of bodies) {
+      expect((await h.call(proxy, { body })).status, body).toBe(200);
+    }
+  });
+
+  it("answers 400 or 200, never 500, to a very large array or object", async () => {
+    // Large caps: the byte-based hold of these bodies must not hit the cap (402).
+    const proxy = await h.start({ runCapUsd: 24, totalCapUsd: 25 });
+    const big = Array.from({ length: 200_000 }, () => 0);
+    const wide = Object.fromEntries(big.map((_, i) => [`k${String(i)}`, 0]));
+    for (const input of [big, wide]) {
+      const body = withContent({
+        type: "tool_use",
+        id: "t1",
+        name: "n",
+        input,
+      });
+      const status = (await h.call(proxy, { body })).status;
+      expect([200, 400]).toContain(status);
+    }
+    expect(h.logs.some((l) => l.event === "handler_error")).toBe(false);
+  });
+
+  it("settles a reply with server_tool_use at token cost plus the hold", async () => {
     const proxy = await h.start();
     h.reply = {
       status: 200,
@@ -96,8 +154,14 @@ describe("bodies the pre-flight bound cannot cover", () => {
     const sent = h.seen[0]?.body ?? "";
     const worst = preflightCostMicroUsd(MODEL, 1000, Buffer.byteLength(sent));
     expect(worst).toBeGreaterThan(0);
-    expect(h.reopen().totalMicroUsd()).toBe(worst);
-    expect(h.logs[0]?.cost).toBe(worst);
+    const tokens = usageCostMicroUsd(MODEL, {
+      input_tokens: 10,
+      output_tokens: 5,
+    });
+    expect(tokens).toBeGreaterThan(0);
+    const expected = (tokens ?? 0) + (worst ?? 0);
+    expect(h.reopen().totalMicroUsd()).toBe(expected);
+    expect(h.logs[0]?.cost).toBe(expected);
     expect(h.logs[0]?.event).toBe("server_tool_use");
   });
 });

@@ -138,10 +138,15 @@ export function unboundedShape(
   while (stack.length > 0) {
     const node = stack.pop();
     if (Array.isArray(node)) {
-      stack.push(...(node as unknown[]));
+      // One at a time: a spread of a huge array overflows the call stack.
+      for (const item of node as unknown[]) stack.push(item);
     } else if (isRecord(node)) {
       const source = node["source"];
-      if (isRecord(source) && !PRICED_SOURCES.has(String(source["type"]))) {
+      if (
+        (node["type"] === "image" || node["type"] === "document") &&
+        isRecord(source) &&
+        !PRICED_SOURCES.has(String(source["type"]))
+      ) {
         return "only base64 and text content sources are supported by this proxy";
       }
       const cache = node["cache_control"];
@@ -152,7 +157,7 @@ export function unboundedShape(
       ) {
         return "only the 5m cache ttl is supported by this proxy";
       }
-      stack.push(...Object.values(node));
+      for (const value of Object.values(node)) stack.push(value);
     }
   }
   return undefined;
@@ -510,9 +515,10 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
         )
           cost = worstCase;
         // A server tool (web search, ...) bills a fee that the token usage does
-        // not show, so the call is settled at no less than the worst case.
+        // not show, so the call is settled at the token cost plus the worst
+        // case: never under the bill.
         if ((usage as { server_tool_use?: unknown }).server_tool_use != null) {
-          cost = Math.max(cost, worstCase);
+          cost += worstCase;
           event = "server_tool_use";
         }
       }

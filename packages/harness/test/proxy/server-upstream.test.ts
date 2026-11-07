@@ -46,6 +46,8 @@ describe("upstream allowlist after PRICES_VERIFIED flips", () => {
   it("refuses every host but api.anthropic.com", async () => {
     for (const url of [
       "https://relay.example",
+      "https://evilapi.anthropic.com",
+      "https://x.api.anthropic.com",
       "https://api.anthropic.com.",
       "https://api.anthropic.com:8443",
       "https://user:pw@api.anthropic.com",

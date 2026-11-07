@@ -11,6 +11,7 @@ describe("log redaction", () => {
       status: 200,
       latencyMs: 4,
       requestSha256: "ab",
+      event: "x-api-key secret",
       authorization: "Bearer secret",
       "x-api-key": "secret",
       body: "secret",
