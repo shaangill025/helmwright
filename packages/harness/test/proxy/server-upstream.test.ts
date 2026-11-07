@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import type * as Ledger from "../../src/proxy/ledger.ts";
 
 // Test-only: pretend the price verification is done, to check the allowlist that
 // must hold after the flip. The production constant stays false.
 vi.mock("../../src/proxy/ledger.ts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/proxy/ledger.ts")>()),
+  ...(await importOriginal<typeof Ledger>()),
   PRICES_VERIFIED: true,
 }));
 
