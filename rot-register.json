@@ -810,7 +810,8 @@
       "decisions Native engine credentials",
       "decisions Spend",
       "packages/harness/test/proxy/keychain.test.ts",
-      "packages/harness/test/proxy/redact.test.ts"
+      "packages/harness/test/proxy/redact.test.ts",
+      "packages/harness/test/proxy/ledger.test.ts"
     ],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
@@ -823,6 +824,33 @@
     "evidence": [
       "decisions Native engine credentials",
       "packages/harness/test/proxy/keychain.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["engine", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/proxy/ledger.ts",
+    "facet": "price-table",
+    "ring": 0,
+    "assumption": "UNVERIFIED: MODEL_PRICES for claude-opus-5-5 are placeholder rates (input 5, output 25 micro-USD per token; cache write x1.25, cache read x0.1), not read from a published price list, and the pre-flight bound treats a request byte as an input token. The prices must be verified from Anthropic's pricing page before the first live call; until PRICES_VERIFIED is true the server allows only loopback upstreams. The Console spend limit on the dedicated key is the independent backstop.",
+    "evidence": [
+      "decisions Native engine models",
+      "decisions Spend",
+      "packages/harness/test/proxy/ledger.test.ts"
+    ],
+    "added": "2026-10-17",
+    "lastReviewed": "2026-10-17",
+    "reviewTrigger": ["model", "milestone"]
+  },
+  {
+    "component": "packages/harness/src/proxy/ledger.ts",
+    "facet": "file-state",
+    "ring": 0,
+    "assumption": "The spend ledger file (version 2) is changed only under an exclusive <path>.lock (open wx, 5 s bounded wait, a lock older than 30 s is stale: one breaker wins a rename, and a holder releases only its own inode). Known limit: a holder paused past the stale age can overlap one writer. Each hold is written before the call and replaced by the actual cost on settle; if the hold is gone the cost is still added to the run (an instance that never saw the hold throws); a failed settle write throws and keeps the hold, and a hold left by a crash counts as spent until the owner edits the file. Known limit: a missing file is a fresh ledger, so deleting it resets the spend; other bad content throws. Known limit: the lock and the file are local-disk, single-host.",
+    "evidence": [
+      "decisions Spend",
+      "packages/harness/test/proxy/ledger.test.ts"
     ],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
