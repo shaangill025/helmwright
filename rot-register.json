@@ -864,7 +864,9 @@
     "evidence": [
       "decisions Native engine credentials",
       "decisions Spend",
-      "packages/harness/test/proxy/server.test.ts"
+      "packages/harness/test/proxy/server.test.ts",
+      "packages/harness/test/proxy/server-caps.test.ts",
+      "packages/harness/test/proxy/server-hardening.test.ts"
     ],
     "added": "2026-10-17",
     "lastReviewed": "2026-10-17",
